@@ -218,5 +218,19 @@ def _fetch_statistics(
         period="5minute",
         units=None,
         types={"mean", "change"},
+        start_time_as_datetime=True,
     )
+
+    # Defensive normalization: depending on the HA core version,
+    # statistics_during_period may still return "start" as a float unix
+    # timestamp even when start_time_as_datetime=True is not honoured
+    # (older/newer cores differ here). Normalize to tz-aware datetime so
+    # downstream code (and async_add_external_statistics) always gets a
+    # real datetime object instead of crashing on `.tzinfo`.
+    for rows in result.values():
+        for row in rows:
+            start_val = row.get("start")
+            if isinstance(start_val, (int, float)):
+                row["start"] = datetime.fromtimestamp(start_val, tz=timezone.utc)
+
     return result
