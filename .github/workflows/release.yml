@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout effy
+        uses: actions/checkout@v6
+        with:
+          path: effy
+
+      - name: Update manifest.json version and requirements
+        run: |
+          EFFY_VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$EFFY_VERSION"\
+            '.version = $v' \
+            effy/custom_components/effy/manifest.json \
+            > /tmp/manifest.json
+          mv /tmp/manifest.json \
+            effy/custom_components/effy/manifest.json
+
+      - name: Generate strings.json from translations/en.json
+        run: |
+          cp effy/custom_components/effy/translations/en.json \
+            effy/custom_components/effy/strings.json
+
+      - name: Build release ZIP
+        run: |
+          cd effy/custom_components/effy
+          zip -r ../../../effy.zip .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: effy.zip
+          generate_release_notes: true

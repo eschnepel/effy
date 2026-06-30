@@ -1,0 +1,49 @@
+{
+  "domain": "effy",
+  "name": "Effy",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Effy konfigurieren",
+        "description": "Effektive PV-Verlustverteilung einrichten. Eingänge (PV, Batterieimport, Netzimport) und Ausgänge (Batterieexport, Netzexport) auswählen.",
+        "data": {
+          "input_sensors": "Eingangs-Sensoren (PV, BMS-Import von Batterie/Netz)",
+          "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
+          "max_history_days": "Maximale Historie (Tage)"
+        }
+      }
+    },
+    "error": {
+      "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen.",
+      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Effy Optionen",
+        "data": {
+          "input_sensors": "Eingangs-Sensoren (PV, BMS-Import von Batterie/Netz)",
+          "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
+          "max_history_days": "Maximale Historie (Tage)"
+        }
+      }
+    },
+    "error": {
+      "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen.",
+      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen."
+    }
+  },
+  "entity": {
+    "button": {
+      "recalculate_history": {
+        "name": "Historie neu berechnen"
+      }
+    },
+    "sensor": {
+      "effective_sensor": {
+        "name": "{source_name} (effektiv)"
+      }
+    }
+  }
+}

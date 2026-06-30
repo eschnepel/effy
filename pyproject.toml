@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "effy"
+version = "1.0.0"
+description = "Effective PV Loss Distribution - Calculates conversion/wiring losses across a PV + BMS system and distributes them absolutely evenly across all active input sources using a waterfall model."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache 2.0" }
+keywords = ["solar", "effective", "energy", "loss", "home-assistant"]
+classifiers = [
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Topic :: Home Automation",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[dependency-groups]
+dev = [
+  "mypy",
+  "pre-commit",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-cov",
+  "ruff",
+  "voluptuous",
+]
+
+[tool.setuptools.packages.find]
+where = ["custom_components"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "."
+no_namespace_packages = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["E", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["custom_components"]

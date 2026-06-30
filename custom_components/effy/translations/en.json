@@ -1,0 +1,49 @@
+{
+  "domain": "effy",
+  "name": "Effy",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure Effy",
+        "description": "Set up effective PV loss distribution. Select your input sources (PV, battery import, grid import) and output sinks (battery export, grid export).",
+        "data": {
+          "input_sensors": "Input sensors (PV, BMS import from battery/grid)",
+          "output_sensors": "Output sensors (BMS export to battery/grid)",
+          "max_history_days": "Maximum history (days)"
+        }
+      }
+    },
+    "error": {
+      "at_least_one_input": "Please select at least one input sensor.",
+      "at_least_one_output": "Please select at least one output sensor."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Effy Options",
+        "data": {
+          "input_sensors": "Input sensors (PV, BMS import from battery/grid)",
+          "output_sensors": "Output sensors (BMS export to battery/grid)",
+          "max_history_days": "Maximum history (days)"
+        }
+      }
+    },
+    "error": {
+      "at_least_one_input": "Please select at least one input sensor.",
+      "at_least_one_output": "Please select at least one output sensor."
+    }
+  },
+  "entity": {
+    "button": {
+      "recalculate_history": {
+        "name": "Re-calculate History"
+      }
+    },
+    "sensor": {
+      "effective_sensor": {
+        "name": "{source_name} (effective)"
+      }
+    }
+  }
+}

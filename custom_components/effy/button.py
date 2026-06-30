@@ -1,0 +1,77 @@
+"""Button platform for Effy – diagnostic history recalculation trigger."""
+
+from __future__ import annotations
+
+import logging
+
+from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import DOMAIN
+from .history import async_recalculate_history
+
+_LOGGER = logging.getLogger(__name__)
+
+RECALCULATE_BUTTON = ButtonEntityDescription(
+    key="recalculate_history",
+    name="Re-calculate History",
+    icon="mdi:history",
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the Effy diagnostic button."""
+    async_add_entities(
+        [EffyRecalculateButton(hass, entry, RECALCULATE_BUTTON)],
+        update_before_add=False,
+    )
+
+
+class EffyRecalculateButton(ButtonEntity):
+    """Button that triggers a full history recalculation.
+
+    Each press overwrites existing statistics for the configured history
+    window (ADR-004) — intentional, e.g. after a sensor list change.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        description: ButtonEntityDescription,
+    ) -> None:
+        self.hass = hass
+        self._entry = entry
+        self.entity_description = description
+        self._attr_unique_id = f"{entry.entry_id}_recalculate_history"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._entry.entry_id)},
+            name="Effy",
+            manufacturer="Effy",
+            model="PV Loss Distributor",
+        )
+
+    async def async_press(self) -> None:
+        """Trigger history recalculation."""
+        _LOGGER.info("Effy: starting history recalculation (triggered by button)")
+        try:
+            written = await async_recalculate_history(self.hass, self._entry.options)
+            _LOGGER.info("Effy: history recalculation complete – %d slots written", written)
+        except Exception:
+            # Broad catch is intentional: this runs outside a request/response
+            # cycle (button press has no caller to propagate to) — log and
+            # swallow rather than crash the entity (ADR-000 §8).
+            _LOGGER.exception("Effy: history recalculation failed")

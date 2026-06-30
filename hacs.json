@@ -1,0 +1,9 @@
+{
+  "name": "Effy",
+  "description": "Effective PV Loss Distribution - Calculates conversion/wiring losses across a PV + BMS system and distributes them absolutely evenly across all active input sources using a waterfall model.",
+  "render_readme": true,
+  "homeassistant": "2024.1.0",
+  "domains": ["sensor"],
+  "zip_release": true,
+  "filename": "effy.zip"
+}
