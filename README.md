@@ -229,6 +229,19 @@ approach was validated against a real, in-memory recorder instance
 both the initial write and the overwrite-on-rerun case, but no automated
 regression test currently runs against this in CI.
 
+This already happened once in practice, not just hypothetically: HA core
+≈2025.10+ replaced the `has_mean`/`has_sum` flags on `StatisticMetaData`
+with `mean_type` (`StatisticMeanType` enum) and a new required
+`unit_class` field, which broke history recalculation with `KeyError:
+'unit_class'` on any core new enough to require it. `history.py` now
+builds its metadata through `_build_statistic_metadata()`, which detects
+at import time whether `StatisticMeanType` exists and includes the new
+fields only when it does, falling back to the legacy flags otherwise. See
+ADR-003's `unit_class` / `mean_type` section for the full story — including
+the caveat that this particular fix could not be re-verified against a
+real instance of the newer core that originally hit the bug, only against
+the older core this integration's test suite runs against.
+
 ---
 
 ## Architecture Decision Records

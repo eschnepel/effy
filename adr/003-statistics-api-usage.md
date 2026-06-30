@@ -142,6 +142,67 @@ This call:
   (ADR-004) hold for both tables without Effy implementing its own
   delete-then-insert logic.
 
+#### `unit_class` / `mean_type`: a metadata schema migration that broke this in production
+
+Home Assistant core ≈2025.10+ replaced the `has_mean`/`has_sum` boolean
+flags on `StatisticMetaData` with `mean_type` (a `StatisticMeanType` enum:
+`NONE`, `ARITHMETIC`, `CIRCULAR`) and added a new required `unit_class`
+field (the unit converter class to use, or `None` if none applies). This
+broke Effy in the field with:
+
+```
+KeyError: 'unit_class'
+  File ".../statistics_meta.py", line 224, in _update_metadata
+    or old_metadata["unit_class"] != new_metadata["unit_class"]
+```
+
+This occurred specifically in `_update_metadata` (i.e. only on the second
+or later recalculation run, once metadata already exists for a
+`sensor.effy_*` statistic_id) — not on first creation. The traceback's own
+metadata dump showed `mean_type` already present (HA's core had derived it
+from `has_mean=True` automatically for backward compatibility), but
+`unit_class` was simply absent from the dict Effy had built, because Effy's
+code at the time only ever set `has_mean`/`has_sum`/`name`/`source`/
+`statistic_id`/`unit_of_measurement` — fields that were sufficient for the
+HA core version this integration was originally developed and tested
+against (2025.1.4), which has no `unit_class` concept at all.
+
+Two things are worth being explicit about here, since they determined the
+fix:
+
+1. The `KeyError` could only have come from Effy's own metadata dict
+   (`new_metadata` in HA's comparison `old_metadata["unit_class"] !=
+   new_metadata["unit_class"]`), not from the database-read side
+   (`old_metadata`). `old_metadata` is built from a fixed set of SQL
+   columns on every read (see `QUERY_STATISTIC_META` in
+   `statistics_meta.py`); a `NULL` column value becomes a `None` *value*
+   in that dict, not a *missing key* — so if the `unit_class` column
+   exists in the schema (which it does, in any core version new enough to
+   reference it in this comparison at all), `old_metadata` always has the
+   key. Only a hand-built dict that simply never included the key (as
+   Effy's did) can produce a `KeyError` here.
+2. **Fix:** Effy now builds `StatisticMetaData` through a single helper,
+   `_build_statistic_metadata()`, that defensively probes for
+   `StatisticMeanType` via `try`/`except ImportError` at module load time.
+   When available (newer cores), it adds `mean_type=
+   StatisticMeanType.ARITHMETIC` and `unit_class=None` to the metadata in
+   addition to the legacy `has_mean`/`has_sum` flags; when unavailable
+   (older cores, e.g. 2025.1.4, the version this was tested against), only
+   the legacy flags are sent, exactly as before. `unit_class=None` is
+   correct here regardless of core version: Effy intentionally never asks
+   the recorder to perform unit conversion — ADR-002 normalizes units
+   itself, inside `distribute_loss`, before any statistic is ever written
+   — so there is no unit-converter class for the recorder to apply.
+
+This was not independently re-verified against the newer HA core version
+that produced the original error (this integration's test environment is
+constrained to an older Python/HA combination), so the fix is based on
+direct analysis of the real production traceback and the published HA
+developer-docs changelog for this API change, not a fresh end-to-end test
+run against a matching HA core version. If recalculation still fails after
+this fix on a recent core, check the exact `StatisticMetaData` shape that
+core's `statistics_meta.py` expects before assuming the fix is wrong.
+
 This is a deliberate use of recorder internals that are **not part of
 Home Assistant's documented, versioned API surface**:
 

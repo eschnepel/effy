@@ -109,6 +109,19 @@ from homeassistant.components.sensor import SensorStateClass
 from homeassistant.core import HomeAssistant
 from homeassistant.util import slugify
 
+try:
+    # StatisticMeanType / unit_class were introduced in newer HA core
+    # releases (≈2025.10+) and are required there; older cores (this was
+    # originally developed/tested against 2025.1.4) don't have this enum
+    # and derive everything from has_mean/has_sum instead. Import
+    # defensively so the same history.py works across both API shapes.
+    from homeassistant.components.recorder.models import StatisticMeanType
+
+    _HAS_STATISTIC_MEAN_TYPE = True
+except ImportError:
+    StatisticMeanType = None  # type: ignore[assignment]
+    _HAS_STATISTIC_MEAN_TYPE = False
+
 from .calculation import SensorReading, distribute_loss, effective_in_original_unit
 from .const import (
     CONF_INPUT_SENSORS,
@@ -147,6 +160,42 @@ def _get_short_term_retention_days(hass: HomeAssistant) -> int:
         _FALLBACK_SHORT_TERM_RETENTION_DAYS,
     )
     return _FALLBACK_SHORT_TERM_RETENTION_DAYS
+
+
+def _build_statistic_metadata(statistic_id: str, unit: str) -> StatisticMetaData:
+    """Build StatisticMetaData compatible with both old and new HA core APIs.
+
+    HA core ≈2025.10+ requires (or strongly deprecates not specifying)
+    `unit_class` and `mean_type` on the metadata passed to
+    `async_import_statistics`/`async_add_external_statistics`, replacing
+    the older `has_mean`/`has_sum` boolean flags. Older cores (this
+    integration was originally developed/tested against 2025.1.4) only
+    understand `has_mean`/`has_sum` and have no `unit_class` concept at
+    all. Sending the new fields to an old core that doesn't expect them
+    has not been observed to cause problems (extra TypedDict keys are
+    ignored), so we always include both the old flags (for older cores)
+    and, when available, the new fields (required by newer cores) —
+    this matches the dict actually seen in a real recorder error log,
+    where the core had already derived `mean_type` from `has_mean` but
+    still required `unit_class` to be present explicitly.
+
+    `unit_class` is set to ``None``: Effy intentionally never asks the
+    recorder to perform unit conversion (ADR-002 normalizes units inside
+    `distribute_loss` itself, before writing), so there is no compatible
+    unit converter class to point to here.
+    """
+    metadata: StatisticMetaData = {
+        "has_mean": True,
+        "has_sum": False,
+        "name": None,
+        "source": "recorder",
+        "statistic_id": statistic_id,
+        "unit_of_measurement": unit,
+    }
+    if _HAS_STATISTIC_MEAN_TYPE:
+        metadata["mean_type"] = StatisticMeanType.ARITHMETIC  # type: ignore[typeddict-item]
+        metadata["unit_class"] = None  # type: ignore[typeddict-item]
+    return metadata
 
 
 def _get_state_class(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -380,14 +429,7 @@ async def _write_recorder_statistics(
         unit = info["unit"]
         slot_values: list[tuple[datetime, float]] = info["slot_values"]
 
-        metadata: StatisticMetaData = {
-            "has_mean": True,
-            "has_sum": False,
-            "name": None,
-            "source": "recorder",
-            "statistic_id": statistic_id,
-            "unit_of_measurement": unit,
-        }
+        metadata = _build_statistic_metadata(statistic_id, unit)
 
         # ---- Short-term (5-minute) – ADR-003 requirement ----
         short_term_slots = [
