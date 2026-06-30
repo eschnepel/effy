@@ -168,14 +168,66 @@ useful after first installation or after changing the sensor list.
 
 | Source state class | Field read | Written as |
 |---|---|---|
-| `TOTAL_INCREASING` | `change` (HA-computed delta) | `mean=val` (downgraded to TOTAL) |
+| `TOTAL_INCREASING` | `change` (HA-computed delta) | `mean=val` |
 | `TOTAL` | `mean` | `mean=val` |
 | `MEASUREMENT` | `mean` | `mean=val` |
 
-All output statistics are written with `mean` only – no `state` field.
-`state` would require the live cumulative reading, which is not available
-during recalculation. `TOTAL_INCREASING` sources are downgraded to `TOTAL`
-since the effective interval delta is exactly what `TOTAL.mean` represents.
+All output statistics are written with `mean` only – no `state`/`sum`
+field – using the same `{"has_mean": True, "has_sum": False}` metadata for
+every `effy_*` sensor, regardless of the source sensor's `state_class`.
+There is no conditional logic that treats `TOTAL_INCREASING` sources
+differently on the write side; `state` would require the live cumulative
+reading, which is not available during recalculation. For
+`TOTAL_INCREASING` sources this effectively means their interval delta is
+written as a TOTAL-style mean statistic — but that falls out naturally
+from the uniform metadata, not from a special case in the code.
+
+### ⚠️ Genuine 5-minute statistics via an internal recorder API
+
+Home Assistant's recorder stores 5-minute data in a separate
+`statistics_short_term` table, which the **public** statistics import API
+(`async_add_external_statistics`) cannot write to — it only supports
+hourly long-term statistics, and rejects any timestamp that isn't aligned
+to the top of the hour. There is no documented, versioned API to
+retroactively write 5-minute statistics for a past period; HA's own
+5-minute compiler only ever runs against "now".
+
+To still provide genuine 5-minute data (rather than silently degrading to
+hourly), Effy's `history.py` calls `Recorder.async_import_statistics(...)`
+directly with `table=StatisticsShortTerm` — a method that exists on the
+recorder instance but is not part of HA's documented integration API
+surface. It writes to **both** tables on every recalculation:
+
+- `statistics_short_term` (5-minute) – only for slots within the
+  recorder's *actually configured* `purge_keep_days` (Effy reads the live
+  value from the recorder instance at runtime — this is a single, global
+  recorder setting that is **not** configurable per entity, but users
+  commonly change it from HA's 10-day default via `configuration.yaml:
+  recorder: purge_keep_days: N`, so Effy always matches whatever is
+  actually configured); older 5-minute slots are skipped since HA's own
+  purge would delete them again regardless.
+- `statistics` (hourly, long-term) – for the entire `max_history_days`
+  window, so data survives beyond the short-term retention window (e.g.
+  for the Energy dashboard).
+
+**Practical consequence for users:** if you inspect `effy_*` sensor history
+further back than your configured `purge_keep_days` (10 days unless you
+changed it), you will see hourly granularity instead of 5-minute
+granularity — this is expected and is HA's own short-term retention at
+work, not a bug in Effy.
+
+**Practical consequence for maintainers:** this relies on private recorder
+internals (the `table` parameter of `Recorder.async_import_statistics`,
+and the `StatisticsShortTerm` / `Statistics` SQLAlchemy models) that are
+not guaranteed to be stable across Home Assistant core releases. If history
+recalculation starts failing after an HA core update, check
+`custom_components/effy/history.py`'s module docstring first — it explains
+the full reasoning and the exact internal calls involved — and consult
+ADR-003 and ADR-004 for the design history behind this choice. This
+approach was validated against a real, in-memory recorder instance
+(`pytest-homeassistant-custom-component`) during development, covering
+both the initial write and the overwrite-on-rerun case, but no automated
+regression test currently runs against this in CI.
 
 ---
 

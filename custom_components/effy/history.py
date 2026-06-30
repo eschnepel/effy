@@ -32,42 +32,63 @@ write hourly long-term statistics – there is no public API to retroactively
 write 5-minute short-term statistics (the `statistics_short_term` table).
 Short-term statistics are normally produced exclusively by the recorder's
 own periodic compiler, which always runs against "now", never against a
-caller-supplied past timestamp, and which derives them from real rows in
-the `states` table for that exact 5-minute window – not from arbitrary
-historical values supplied by an integration.
+caller-supplied past timestamp, deriving them from real `states` rows for
+that exact 5-minute window – not from arbitrary historical values supplied
+by an integration.
 
-To honour ADR-003 anyway, this module writes DIRECTLY into the recorder's
-internal SQLAlchemy models (`StatisticsShortTerm`, `Statistics`) using the
-SAME `statistic_id` the live `sensor.effy_*` entities already use (i.e.
-`source="recorder"`, `statistic_id == entity_id` – NOT the external
-`domain:object_id` form used by `async_add_external_statistics`). This
-deliberately uses *private/internal* recorder internals that:
+To honour ADR-003 anyway, this module calls the recorder instance's own
+``async_import_statistics(metadata, stats, table)`` method – a PUBLIC
+``@callback`` on the ``Recorder`` class itself (see
+``homeassistant/components/recorder/core.py``) – with
+``table=StatisticsShortTerm`` instead of the hardcoded ``table=Statistics``
+that the documented wrappers (`async_add_external_statistics` /
+`async_import_statistics` module-level function) force. This method:
 
-  - are NOT part of Home Assistant's public, versioned API surface,
-  - are NOT guaranteed to keep their signature, table schema, or behaviour
-    across HA core releases — a core update can silently break this module,
-  - require running on the recorder's own thread/session
-    (`instance.get_session()`), because `StatisticsMetaManager` and the
-    table managers are explicitly documented in HA core as "not
-    thread-safe, must be called from the recorder thread",
-  - bypass the unique-constraint-safe upsert helpers HA itself uses
-    internally, so this module does its own delete-then-insert to respect
-    ADR-004 (overwrite semantics) without violating the
-    `(metadata_id, start_ts)` unique index on both tables.
+  - is called directly from the event loop (it is a ``@callback``, not a
+    blocking function – calling it from a worker thread, e.g. via
+    ``recorder.async_add_executor_job``, raises
+    ``RuntimeError: Detected unsafe call not in recorder thread``, since
+    `StatisticsMetaManager` asserts it is only ever touched from the
+    recorder's own thread),
+  - schedules an internal ``ImportStatisticsTask`` on the recorder's task
+    queue, which the recorder thread processes asynchronously,
+  - resolves/creates statistic metadata and performs a genuine
+    update-or-insert per `(metadata_id, start)`, so re-running
+    recalculation overwrites existing rows cleanly (ADR-004),
+  - when writing to `StatisticsShortTerm`, also refreshes the recorder's
+    internal `ShortTermStatisticsRunCache` so the live periodic compiler
+    stays consistent with what we just wrote.
 
-If a future HA core version changes `db_schema.py` (column names, the
-`from_stats` classmethod, the short-term table name, or the uniqueness
-constraints), this module WILL break and must be updated. This is a
-deliberate, documented trade-off: ADR-003 demands 5-minute granularity, and
-no public Home Assistant API can deliver that retroactively.
+Because scheduling is fire-and-forget, this module calls
+``await instance.async_block_till_done()`` after queuing all import tasks,
+to ensure every task has actually been processed by the recorder thread
+before returning a row count to the caller.
+
+This still relies on ``table=StatisticsShortTerm`` being accepted by
+``async_import_statistics`` / `ImportStatisticsTask`, which is an
+implementation detail of internal recorder plumbing, not a documented,
+versioned contract:
+
+  - the ``table`` parameter and the existence of ``StatisticsShortTerm`` as
+    an importable model are NOT guaranteed to keep their name, shape, or
+    behaviour across HA core releases — a core update can silently break
+    this module, requiring an update,
+  - the public, documented wrappers (`async_add_external_statistics`,
+    `async_import_statistics` at module level) deliberately hardcode
+    ``table=Statistics`` and validate `source != DOMAIN`/`"recorder"` to
+    prevent exactly this kind of direct short-term-table write; this
+    module intentionally calls the lower-level, less-guarded method
+    instead.
 
 Two recorder tables are populated for every recalculated slot:
 
   - `statistics_short_term` (5-minute, ADR-003 requirement) – HA purges
-    this table after `purge_keep_days` (10 days by default), so only slots
+    this table after the recorder's actually configured `purge_keep_days`
+    (10 days by default, but read dynamically from `instance.keep_days`
+    at runtime since users commonly change this setting), so only slots
     within that retention window are written here. Writing further back
-    would be pointless: HA's own purge task would delete those rows again
-    within hours of the next purge cycle.
+    would be pointless: HA's own purge task deletes those rows again
+    within hours of the next purge cycle regardless of what we write.
   - `statistics` (hourly, long-term, persists forever) – populated for the
     *entire* `max_history_days` window by averaging the 5-minute effective
     values per clock-hour, so historical data survives beyond the 10-day
@@ -84,8 +105,6 @@ from typing import Any
 from homeassistant.components.recorder import get_instance as get_recorder
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
-from homeassistant.components.recorder.statistics import get_metadata_with_session
-from homeassistant.components.recorder.util import session_scope
 from homeassistant.components.sensor import SensorStateClass
 from homeassistant.core import HomeAssistant
 from homeassistant.util import slugify
@@ -103,10 +122,31 @@ _LOGGER = logging.getLogger(__name__)
 # Type alias for a single statistics row returned by the recorder
 StatRow = dict[str, Any]
 
-# HA's default short-term statistics retention (recorder purge_keep_days).
-# Slots older than this are skipped for the short-term table since HA would
-# purge them again on its own purge cycle anyway; long-term statistics
-# still get the full max_history_days window further below.
+# Fallback only used if the recorder instance somehow has no usable
+# keep_days value (should not normally happen) – matches HA's own default.
+_FALLBACK_SHORT_TERM_RETENTION_DAYS = 10
+
+
+def _get_short_term_retention_days(hass: HomeAssistant) -> int:
+    """Return the recorder's actually configured short-term retention.
+
+    Home Assistant's recorder purges `statistics_short_term` globally
+    based on a single `purge_keep_days` setting (`recorder.keep_days` on
+    the running instance) — this is NOT configurable per entity/sensor,
+    only for the recorder as a whole. The default is 10 days, but users
+    commonly change it (e.g. via `configuration.yaml: recorder:
+    purge_keep_days: N`), so the actual configured value is read at
+    runtime instead of hardcoding HA's default.
+    """
+    instance = get_recorder(hass)
+    keep_days = getattr(instance, "keep_days", None)
+    if isinstance(keep_days, int) and keep_days > 0:
+        return keep_days
+    _LOGGER.warning(
+        "Effy: could not read recorder.keep_days, falling back to %d days",
+        _FALLBACK_SHORT_TERM_RETENTION_DAYS,
+    )
+    return _FALLBACK_SHORT_TERM_RETENTION_DAYS
 
 
 def _get_state_class(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -185,6 +225,8 @@ async def async_recalculate_history(
 
     end = datetime.now(tz=timezone.utc)
     start = end - timedelta(days=max_days)
+    short_term_retention_days = _get_short_term_retention_days(hass)
+    short_term_cutoff = end - timedelta(days=short_term_retention_days)
 
     all_ids: list[str] = input_ids + output_ids
 
@@ -238,10 +280,11 @@ async def async_recalculate_history(
     # have during history recalculation; mean is sufficient for all HA
     # dashboard and Energy use-cases.
     #
-    # Writing happens via _write_recorder_statistics, which uses internal
-    # recorder APIs to populate BOTH statistics_short_term (5-min, ADR-003)
-    # and statistics (hourly, long-term) – see the module-level WARNING
-    # docstring above for why this is necessary and what the risks are.
+    # Writing happens via _write_recorder_statistics, which calls the
+    # recorder instance's own async_import_statistics() callback to
+    # populate BOTH statistics_short_term (5-min, ADR-003) and statistics
+    # (hourly, long-term) – see the module-level WARNING docstring above
+    # for why this is necessary and what the risks are.
     per_sensor: dict[str, dict[str, Any]] = {}
     for eid in input_ids:
         if not results[eid]:
@@ -254,8 +297,8 @@ async def async_recalculate_history(
     if not per_sensor:
         return 0
 
-    short_term_written: int = await recorder.async_add_executor_job(
-        _write_recorder_statistics, hass, per_sensor, start
+    short_term_written: int = await _write_recorder_statistics(
+        hass, per_sensor, short_term_cutoff
     )
 
     _LOGGER.debug(
@@ -301,107 +344,78 @@ def _fetch_statistics(
     return result
 
 
-def _write_recorder_statistics(
+async def _write_recorder_statistics(
     hass: HomeAssistant,
     per_sensor: dict[str, dict[str, Any]],
     short_term_cutoff: datetime,
 ) -> int:
-    """Blocking call: write 5-min + hourly statistics directly into the recorder DB.
+    """Write 5-min + hourly statistics into the recorder DB.
 
     *** INTERNAL RECORDER API – see module docstring WARNING above ***
 
-    Must run on the recorder's executor thread because StatisticsMetaManager
-    and the ORM session it uses are explicitly documented in HA core as not
-    thread-safe outside of it.
+    Runs directly on the EVENT LOOP (not an executor thread). For each
+    sensor in ``per_sensor``, calls the recorder instance's public
+    ``async_import_statistics(metadata, stats, table)`` @callback once for
+    the short-term (5-minute) table and once for the long-term (hourly)
+    table. This schedules internal ``ImportStatisticsTask`` jobs on the
+    recorder's own task queue, which handles metadata resolution/creation
+    and per-timestamp update-or-insert itself (ADR-004 overwrite
+    semantics), exactly as it does for HA's built-in
+    `async_add_external_statistics` calls – we are simply passing a
+    different `table` argument (`StatisticsShortTerm`) than that public
+    wrapper allows.
 
-    For each sensor in ``per_sensor``:
-      - resolves (or creates) its metadata_id via the recorder's own
-        StatisticsMetaManager, using ``source="recorder"`` and
-        ``statistic_id == entity_id`` so it lines up with the metadata the
-        live sensor already produces through normal HA recorder operation,
-      - deletes any existing short-term/long-term rows for the timestamps
-        we are about to (re)write (ADR-004 overwrite semantics – the ORM
-        does not provide an upsert for these internal tables, and the
-        ``(metadata_id, start_ts)`` columns are unique-indexed, so a plain
-        insert on a re-run would raise an integrity error),
-      - inserts fresh StatisticsShortTerm rows for every 5-minute slot
-        within the short-term retention window,
-      - inserts fresh Statistics rows for every clock-hour across the full
-        recalculation window, using the average of that hour's 5-minute
-        effective values.
+    Because ``async_import_statistics`` only schedules the work
+    (fire-and-forget), this function awaits
+    ``instance.async_block_till_done()`` once at the end so every queued
+    task has actually been processed by the recorder thread before we
+    return a row count to the caller.
 
-    Returns the number of short-term (5-minute) rows written.
+    Returns the number of short-term (5-minute) rows scheduled for write.
     """
     instance = get_recorder(hass)
-    statistic_ids = set(per_sensor.keys())
-
     short_term_written = 0
 
-    with session_scope(session=instance.get_session()) as session:
-        # Resolve metadata_id for every effy_* entity; create metadata if the
-        # sensor has never produced a recorder statistic before (e.g. right
-        # after first install, before any live update has run).
-        existing_meta = get_metadata_with_session(instance, session, statistic_ids=statistic_ids)
+    for statistic_id, info in per_sensor.items():
+        unit = info["unit"]
+        slot_values: list[tuple[datetime, float]] = info["slot_values"]
 
-        metadata_ids: dict[str, int] = {}
-        for statistic_id, info in per_sensor.items():
-            if statistic_id in existing_meta:
-                metadata_ids[statistic_id] = existing_meta[statistic_id][0]
-                continue
+        metadata: StatisticMetaData = {
+            "has_mean": True,
+            "has_sum": False,
+            "name": None,
+            "source": "recorder",
+            "statistic_id": statistic_id,
+            "unit_of_measurement": unit,
+        }
 
-            # No existing metadata (e.g. sensor never updated live yet) –
-            # create it now so the recalculation can proceed. mean_type is
-            # set the same way the live MEASUREMENT sensor would be tracked.
-            new_metadata = StatisticMetaData(
-                has_mean=True,
-                has_sum=False,
-                name=None,
-                source="recorder",
-                statistic_id=statistic_id,
-                unit_of_measurement=info["unit"],
-            )
-            _, metadata_id = instance.statistics_meta_manager.update_or_add(
-                session, new_metadata, existing_meta
-            )
-            metadata_ids[statistic_id] = metadata_id
+        # ---- Short-term (5-minute) – ADR-003 requirement ----
+        short_term_slots = [
+            (ts, val) for ts, val in slot_values if ts >= short_term_cutoff
+        ]
+        if short_term_slots:
+            short_term_stats: list[StatisticData] = [
+                {"start": ts, "mean": val} for ts, val in short_term_slots
+            ]
+            instance.async_import_statistics(metadata, short_term_stats, StatisticsShortTerm)
+            short_term_written += len(short_term_stats)
 
-        for statistic_id, info in per_sensor.items():
-            metadata_id = metadata_ids[statistic_id]
-            slot_values: list[tuple[datetime, float]] = info["slot_values"]
+        # ---- Long-term (hourly) – persists beyond the 10-day purge ----
+        hourly: dict[datetime, list[float]] = {}
+        for ts, val in slot_values:
+            hour_ts = ts.replace(minute=0, second=0, microsecond=0)
+            hourly.setdefault(hour_ts, []).append(val)
 
-            # ---- Short-term (5-minute) – ADR-003 requirement ----
-            short_term_slots = [(ts, val) for ts, val in slot_values if ts >= short_term_cutoff]
+        if hourly:
+            long_term_stats: list[StatisticData] = [
+                {"start": hour_ts, "mean": sum(vals) / len(vals)}
+                for hour_ts, vals in hourly.items()
+            ]
+            instance.async_import_statistics(metadata, long_term_stats, Statistics)
 
-            if short_term_slots:
-                start_ts_list = [ts.timestamp() for ts, _ in short_term_slots]
-                session.query(StatisticsShortTerm).filter(
-                    StatisticsShortTerm.metadata_id == metadata_id,
-                    StatisticsShortTerm.start_ts.in_(start_ts_list),
-                ).delete(synchronize_session=False)
-
-                for ts, val in short_term_slots:
-                    stat_short: StatisticData = {"start": ts, "mean": val}
-                    session.add(StatisticsShortTerm.from_stats(metadata_id, stat_short))
-                short_term_written += len(short_term_slots)
-
-            # ---- Long-term (hourly) – persists beyond the 10-day purge ----
-            hourly: dict[datetime, list[float]] = {}
-            for ts, val in slot_values:
-                hour_ts = ts.replace(minute=0, second=0, microsecond=0)
-                hourly.setdefault(hour_ts, []).append(val)
-
-            if hourly:
-                hour_ts_list = [ts.timestamp() for ts in hourly]
-                session.query(Statistics).filter(
-                    Statistics.metadata_id == metadata_id,
-                    Statistics.start_ts.in_(hour_ts_list),
-                ).delete(synchronize_session=False)
-
-                for hour_ts, vals in hourly.items():
-                    stat_long: StatisticData = {
-                        "start": hour_ts,
-                        "mean": sum(vals) / len(vals),
-                    }
-                    session.add(Statistics.from_stats(metadata_id, stat_long))
+    # All async_import_statistics calls above only *scheduled* tasks on the
+    # recorder's queue – wait for the recorder thread to actually process
+    # them before reporting a row count back to the caller.
+    await instance.async_block_till_done()
 
     return short_term_written
