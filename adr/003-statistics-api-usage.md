@@ -264,3 +264,23 @@ See ADR-004 for the overwrite mechanics in more detail.
   warning; this is accepted as the only way to satisfy the 5-minute
   requirement, and is clearly flagged in `history.py`'s module docstring for
   whoever maintains this integration through a future HA core upgrade.
+
+---
+
+## Amendment – 2026-07-01: Symmetry with the live path
+
+ADR-007 introduced slot-aligned delta computation for `TOTAL_INCREASING`
+sensors in the live coordinator.  The two paths are now symmetric:
+
+| Path | Mechanism | Window |
+|---|---|---|
+| History (`history.py`) | `statistics_during_period` → `change` field | 5-minute slot from recorder |
+| Live (`coordinator.py`) | `_slot_anchor` difference | 5-minute wall-clock slot (`_slot_start`) |
+
+Both clamp negative deltas to 0 (counter resets).  The slot alignment
+function `_slot_start` uses the same truncation as HA's own recorder, so
+live and history slots are identical in boundary position.
+
+A seamless transition occurs when a slot closes: the history path writes the
+authoritative `change` value via `async_import_statistics` (ADR-004), which
+overwrites whatever the live coordinator had accumulated.

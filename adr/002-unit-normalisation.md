@@ -59,3 +59,30 @@ The distribution ratios are identical regardless of whether we work in W or Wh.
   shown above, so the result is correct.
 - **Neutral:** kW/kWh sensors are rare in practice for individual PV strings
   but are supported transparently.
+
+---
+
+## Amendment – 2026-07-01: Unit normalisation at the reader layer (see ADR-008)
+
+The derivation above holds only when **all input sensors share the same unit
+family** (all W/kW, or all Wh/kWh).  If a configuration mixes a W-based
+MEASUREMENT sensor with a Wh-based TOTAL_INCREASING sensor, the Δt factor
+does *not* cancel and loss shares are wrong by a factor of ~12.
+
+ADR-008 resolves this by converting energy-delta values (Wh/kWh) to their
+W-equivalent average power **at the reader layer**, before a `SensorReading`
+is constructed.  The conversion is:
+
+```
+W_equiv = Wh_delta × (60 / slot_minutes)   # history path (fixed 5-min slot)
+W_equiv = Wh_delta / elapsed_h              # live path (actual window duration)
+```
+
+After this conversion every `SensorReading` entering `distribute_loss` carries
+a W or kW value regardless of the sensor's native HA unit.  The
+`original_unit` field is updated to W/kW accordingly so that
+`effective_in_original_unit` converts back correctly.
+
+`calculation.py` and `distribute_loss` remain time-agnostic and require no
+changes (ADR-000 §3 preserved).  The W/Wh identity claim in this ADR now
+applies to the *output* of the reader layer, not to raw sensor values.

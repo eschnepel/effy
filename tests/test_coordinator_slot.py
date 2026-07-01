@@ -1,0 +1,341 @@
+"""
+Unit tests for the LiveReading accumulator in EffyCoordinator.
+
+Covers:
+  - LiveReading.update_energy / update_power
+  - LiveReading.to_sensor_reading (Wh→W conversion, time-weighted average)
+  - LiveReading.reset (window roll-forward)
+  - _state_class_family mapping
+
+Uses the same importlib-by-file-path pattern as test_calculation.py (ADR-000 §6).
+HA modules are stubbed before loading so no homeassistant install is needed.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from types import ModuleType
+from unittest.mock import MagicMock
+
+import pytest
+
+# ---------------------------------------------------------------------------
+# 1. HA stubs – registered before any effy module is loaded
+# ---------------------------------------------------------------------------
+
+
+def _stub(name: str, **attrs) -> ModuleType:
+    m = ModuleType(name)
+    for k, v in attrs.items():
+        setattr(m, k, v)
+    sys.modules[name] = m
+    return m
+
+
+_stub("homeassistant")
+_stub("homeassistant.config_entries", ConfigEntry=object)
+_stub("homeassistant.core", HomeAssistant=object, Event=object, callback=lambda f: f)
+_stub("homeassistant.helpers")
+_stub(
+    "homeassistant.helpers.event",
+    async_call_later=MagicMock(),
+    async_track_state_change_event=MagicMock(),
+)
+_stub("homeassistant.components")
+
+
+class _SensorStateClass:
+    TOTAL_INCREASING = "total_increasing"
+    TOTAL = "total"
+    MEASUREMENT = "measurement"
+
+
+_stub("homeassistant.components.sensor", SensorStateClass=_SensorStateClass)
+
+# ---------------------------------------------------------------------------
+# 2. Load effy modules by file path
+# ---------------------------------------------------------------------------
+
+_base = Path(__file__).resolve().parent.parent / "custom_components" / "effy"
+
+_effy_pkg = ModuleType("effy")
+_effy_pkg.__path__ = [str(_base)]
+_effy_pkg.__package__ = "effy"
+sys.modules["effy"] = _effy_pkg
+
+
+def _load(reg_name: str, filename: str) -> ModuleType:
+    path = _base / filename
+    spec = importlib.util.spec_from_file_location(reg_name, path, submodule_search_locations=[])
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = "effy"
+    sys.modules[reg_name] = mod
+    setattr(_effy_pkg, filename.replace(".py", ""), mod)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+_calc_mod = _load("effy.calculation", "calculation.py")
+_sensor_utils_mod = _load("effy.sensor_utils", "sensor_utils.py")
+_coord_mod = _load("effy.coordinator", "coordinator.py")
+
+LiveReading = _coord_mod.LiveReading
+_state_class_family = _coord_mod._state_class_family
+_FAMILY_POWER = _coord_mod._FAMILY_POWER
+_FAMILY_ENERGY = _coord_mod._FAMILY_ENERGY
+SensorReading = _calc_mod.SensorReading
+
+SC = _SensorStateClass
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _ts(h: int, m: int, s: int = 0) -> datetime:
+    return datetime(2024, 1, 1, h, m, s, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# _state_class_family
+# ---------------------------------------------------------------------------
+
+
+class TestStateClassFamily:
+    def test_total_increasing_is_energy(self):
+        assert _state_class_family(SC.TOTAL_INCREASING, "Wh") == _FAMILY_ENERGY
+        assert _state_class_family(SC.TOTAL_INCREASING, "kWh") == _FAMILY_ENERGY
+        # Even with a W unit, TOTAL_INCREASING is always energy
+        assert _state_class_family(SC.TOTAL_INCREASING, "W") == _FAMILY_ENERGY
+
+    def test_total_with_wh_is_energy(self):
+        assert _state_class_family(SC.TOTAL, "Wh") == _FAMILY_ENERGY
+        assert _state_class_family(SC.TOTAL, "kWh") == _FAMILY_ENERGY
+
+    def test_total_with_w_is_power(self):
+        assert _state_class_family(SC.TOTAL, "W") == _FAMILY_POWER
+        assert _state_class_family(SC.TOTAL, "kW") == _FAMILY_POWER
+
+    def test_measurement_is_power(self):
+        assert _state_class_family(SC.MEASUREMENT, "W") == _FAMILY_POWER
+        assert _state_class_family(SC.MEASUREMENT, "kW") == _FAMILY_POWER
+
+    def test_none_is_power(self):
+        assert _state_class_family(None, "W") == _FAMILY_POWER
+
+
+# ---------------------------------------------------------------------------
+# LiveReading – energy family (TOTAL_INCREASING / TOTAL-as-energy)
+# ---------------------------------------------------------------------------
+
+
+class TestLiveReadingEnergy:
+    def _fresh(self, unit="Wh") -> LiveReading:
+        return LiveReading(entity_id="sensor.pv", unit=unit, family=_FAMILY_ENERGY)
+
+    # --- first event seeds anchor, delta = 0 ---
+
+    def test_first_event_not_seeded_before(self):
+        lr = self._fresh()
+        assert not lr.is_seeded()
+
+    def test_first_event_sets_anchor(self):
+        lr = self._fresh()
+        t0 = _ts(10, 0)
+        lr.update_energy(1000.0, t0)
+        assert lr.raw_start == 1000.0
+        assert lr.raw_last == 1000.0
+
+    def test_first_event_seeded_after(self):
+        lr = self._fresh()
+        lr.update_energy(1000.0, _ts(10, 0))
+        assert lr.is_seeded()
+
+    # --- second event accumulates delta ---
+
+    def test_delta_accumulates(self):
+        lr = self._fresh()
+        lr.update_energy(1000.0, _ts(10, 0))
+        lr.update_energy(1003.6, _ts(10, 3))  # +3.6 Wh in 3 min
+        assert lr.raw_last == pytest.approx(1003.6)
+        assert lr.raw_start == pytest.approx(1000.0)
+
+    # --- to_sensor_reading: Wh/h → W ---
+
+    def test_wh_to_w_conversion(self):
+        """3.6 Wh in 0.05 h (3 minutes) = 72 W."""
+        lr = self._fresh(unit="Wh")
+        lr.update_energy(1000.0, _ts(10, 0))
+        lr.update_energy(1003.6, _ts(10, 3))  # 3 min = 0.05 h
+        reading = lr.to_sensor_reading()
+        assert reading is not None
+        assert reading.original_unit == "W"
+        assert reading.raw_value == pytest.approx(3.6 / (3 / 60))
+
+    def test_kwh_to_kw_conversion(self):
+        """0.5 kWh in 0.5 h (30 minutes) = 1 kW."""
+        lr = self._fresh(unit="kWh")
+        lr.update_energy(100.0, _ts(10, 0))
+        lr.update_energy(100.5, _ts(10, 30))
+        reading = lr.to_sensor_reading()
+        assert reading is not None
+        assert reading.original_unit == "kW"
+        assert reading.raw_value == pytest.approx(1.0)
+
+    def test_zero_delta_returns_zero_w(self):
+        lr = self._fresh()
+        lr.update_energy(500.0, _ts(10, 0))
+        lr.update_energy(500.0, _ts(10, 5))
+        reading = lr.to_sensor_reading()
+        assert reading.raw_value == 0.0
+
+    def test_not_seeded_returns_none(self):
+        lr = self._fresh()
+        assert lr.to_sensor_reading() is None
+
+    # --- counter reset clamping ---
+
+    def test_counter_reset_clamps_raw_start(self):
+        lr = self._fresh()
+        lr.update_energy(9990.0, _ts(10, 0))
+        lr.update_energy(9995.0, _ts(10, 2))
+        # device reboot: counter reset mid-window
+        lr.update_energy(5.0, _ts(10, 3))
+        # raw_start moves to 5.0 so subsequent delta is non-negative
+        assert lr.raw_start == pytest.approx(5.0)
+
+    def test_after_reset_subsequent_delta_is_correct(self):
+        lr = self._fresh()
+        lr.update_energy(9990.0, _ts(10, 0))
+        lr.update_energy(0.0, _ts(10, 1))  # reset
+        lr.update_energy(2.0, _ts(10, 2))  # +2 Wh after reset
+        assert lr.raw_last - lr.raw_start == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# LiveReading – power family (MEASUREMENT / TOTAL-as-power)
+# ---------------------------------------------------------------------------
+
+
+class TestLiveReadingPower:
+    def _fresh(self, unit="W") -> LiveReading:
+        return LiveReading(entity_id="sensor.inv", unit=unit, family=_FAMILY_POWER)
+
+    def test_first_event_seeds_avg_and_updated_ts(self):
+        """First event at t==reset_ts: total_elapsed==0, so the else branch fires and
+        avg is seeded directly with the new value.  updated_ts is set so subsequent
+        events can compute a proper elapsed time from it.
+        """
+        lr = self._fresh()
+        lr.reset_ts = _ts(10, 0)
+        lr.update_power(400.0, _ts(10, 0))
+        assert lr.avg == pytest.approx(400.0)
+        assert lr.updated_ts == _ts(10, 0)
+
+    def test_time_weighted_average_two_events(self):
+        """
+        Event at t=0: 200 W
+        Event at t=4: 600 W
+        Window [reset=t0, updated=t4]:
+          old_elapsed = 0-0 = 0 s → weight of first sample = 0
+          After first event: avg = 200  (window has no area yet)
+          new_elapsed = 240 s
+          avg = (200*0 + 600*240) / 240 = 600
+        """
+        lr = self._fresh()
+        lr.reset_ts = _ts(10, 0)
+        lr.update_power(200.0, _ts(10, 0))
+        lr.update_power(600.0, _ts(10, 4))
+        # old_elapsed = (_ts(10,0) - _ts(10,0)).total_seconds() = 0
+        # new_elapsed = 240
+        # avg = (200*0 + 600*240) / 240 = 600
+        assert lr.avg == pytest.approx(600.0)
+
+    def test_time_weighted_average_three_events(self):
+        """
+        reset_ts = t=0
+        t=0:  400 W  → avg=400, updated=0
+        t=2:  600 W  → old_el=0, new_el=120 → avg=(400*0+600*120)/120=600
+        t=4: 1200 W  → old_el=120, new_el=120 → avg=(600*120+1200*120)/240=900
+        """
+        lr = self._fresh()
+        lr.reset_ts = _ts(10, 0)
+        lr.update_power(400.0, _ts(10, 0))
+        lr.update_power(600.0, _ts(10, 2))
+        lr.update_power(1200.0, _ts(10, 4))
+        assert lr.avg == pytest.approx(900.0)
+
+    def test_to_sensor_reading_returns_avg(self):
+        lr = self._fresh()
+        lr.reset_ts = _ts(10, 0)
+        lr.update_power(300.0, _ts(10, 0))
+        lr.update_power(500.0, _ts(10, 5))
+        reading = lr.to_sensor_reading()
+        assert reading is not None
+        assert reading.original_unit == "W"
+        assert reading.raw_value == pytest.approx(500.0)  # (300*0 + 500*300)/300
+
+    def test_kw_unit_preserved(self):
+        lr = self._fresh(unit="kW")
+        lr.reset_ts = _ts(10, 0)
+        lr.update_power(3.5, _ts(10, 0))
+        reading = lr.to_sensor_reading()
+        assert reading.original_unit == "kW"
+
+    def test_not_seeded_returns_none(self):
+        lr = self._fresh()
+        assert lr.to_sensor_reading() is None
+
+
+# ---------------------------------------------------------------------------
+# LiveReading.reset
+# ---------------------------------------------------------------------------
+
+
+class TestLiveReadingReset:
+    def test_power_reset_zeroes_avg(self):
+        lr = LiveReading(entity_id="s", unit="W", family=_FAMILY_POWER)
+        lr.update_power(500.0, _ts(10, 0))
+        lr.update_power(700.0, _ts(10, 3))
+        lr.reset(_ts(10, 3))
+        assert lr.avg == 0.0
+
+    def test_power_reset_ts_moves_to_last_updated(self):
+        lr = LiveReading(entity_id="s", unit="W", family=_FAMILY_POWER)
+        t_event = _ts(10, 3)
+        lr.update_power(500.0, _ts(10, 0))
+        lr.update_power(700.0, t_event)
+        lr.reset(_ts(10, 3))
+        assert lr.reset_ts == t_event
+        assert lr.updated_ts == t_event
+
+    def test_energy_reset_moves_raw_start_to_raw_last(self):
+        lr = LiveReading(entity_id="s", unit="Wh", family=_FAMILY_ENERGY)
+        lr.update_energy(1000.0, _ts(10, 0))
+        lr.update_energy(1005.0, _ts(10, 5))
+        lr.reset(_ts(10, 5))
+        assert lr.raw_start == pytest.approx(1005.0)
+        assert lr.raw_last == pytest.approx(1005.0)
+
+    def test_energy_reset_ts_moves_to_last_updated(self):
+        lr = LiveReading(entity_id="s", unit="Wh", family=_FAMILY_ENERGY)
+        t_last = _ts(10, 5)
+        lr.update_energy(1000.0, _ts(10, 0))
+        lr.update_energy(1005.0, t_last)
+        lr.reset(_ts(10, 5))
+        assert lr.reset_ts == t_last
+        assert lr.updated_ts == t_last
+
+    def test_new_window_accumulates_correctly_after_reset(self):
+        """After reset, delta in next window is relative to raw_last of previous window."""
+        lr = LiveReading(entity_id="s", unit="Wh", family=_FAMILY_ENERGY)
+        lr.update_energy(1000.0, _ts(10, 0))
+        lr.update_energy(1005.0, _ts(10, 5))
+        lr.reset(_ts(10, 5))
+        # New window: 1005 is now the anchor
+        lr.update_energy(1008.0, _ts(10, 8))
+        assert lr.raw_last - lr.raw_start == pytest.approx(3.0)

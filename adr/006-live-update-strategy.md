@@ -113,3 +113,70 @@ clean coordinator design. Option D is not worth implementing independently.
   but invisible to users at residential scale.
 - **Neutral:** On HA restart, all states are replayed, triggering an initial
   recalculation per sensor – correct behaviour for first-load initialisation.
+
+---
+
+## Amendment – 2026-07-01: LiveReading accumulator replaces the raw-value cache
+
+The original ADR described the coordinator cache as `dict[str, SensorReading | None]`
+holding the latest raw state value per entity.  This has been replaced by a
+`dict[str, LiveReading]` accumulator cache.  See ADR-007 for the full
+algorithm; the coordinator-level consequences are summarised here.
+
+### Why the raw-value cache was insufficient
+
+1. **Energy sensors (TOTAL_INCREASING / TOTAL-as-energy):** passing the
+   absolute counter total to `distribute_loss` produced numerically meaningless
+   results (effective value ≈ lifetime total).
+2. **No Wh→W conversion:** even after reducing to a slot delta, Wh and W
+   values were fed to `distribute_loss` without normalisation, producing
+   systematically wrong loss shares (ADR-008).
+3. **No time-weighted averaging for power sensors:** the last raw value
+   before a recalculation was used, ignoring all intermediate events.
+
+### `LiveReading` cache structure
+
+Each watched entity has one `LiveReading` instance, mutated in-place on
+every event.  Two families exist (see ADR-007 and ADR-008):
+
+- **ENERGY** (`TOTAL_INCREASING`, `TOTAL` with Wh/kWh): accumulates
+  `raw_start` and `raw_last`; `to_sensor_reading` computes
+  `delta_Wh / elapsed_h → W`.
+- **POWER** (`MEASUREMENT`, `TOTAL` with W/kW): accumulates a
+  time-weighted average; `to_sensor_reading` returns `avg` as-is.
+
+### `_on_state_change` dispatching
+
+```python
+if live.family == _FAMILY_POWER:
+    live.update_power(value, event_ts)
+else:
+    live.update_energy(value, event_ts)
+```
+
+No separate `_slot_anchor` dict or `_delta_reading` method exists.
+
+### `_do_refresh` cache reset
+
+After every recalculation `_reset_all_cache(now)` rolls all `LiveReading`
+accumulators forward:
+- ENERGY: `raw_start = raw_last`, `reset_ts = updated_ts`
+- POWER: `avg = 0`, `reset_ts = updated_ts`
+
+The next window begins exactly at the end of the previous one — no gap,
+no overlap.
+
+### `force_refresh` semantics
+
+`force_refresh` calls `_do_refresh` directly without re-reading any sensor
+states.  The accumulated `LiveReading` values are used as-is, then reset.
+Re-reading absolute counter states here would corrupt the energy delta
+accumulated in the current window.
+
+### `async_setup` seeding
+
+`async_setup` creates one `LiveReading` per watched entity from the current
+HA state attributes (unit, state_class) but does *not* seed any values.
+The first real `_on_state_change` event seeds the accumulator.  Until then
+`to_sensor_reading` returns `None` and the entity is excluded from the
+distribution — the correct conservative behaviour at startup.

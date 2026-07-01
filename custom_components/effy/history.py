@@ -119,9 +119,10 @@ try:
 
     _HAS_STATISTIC_MEAN_TYPE = True
 except ImportError:
-    StatisticMeanType = None  # type: ignore[assignment]
+    StatisticMeanType = None
     _HAS_STATISTIC_MEAN_TYPE = False
 
+from .sensor_utils import SLOT_MINUTES, to_power_equivalent
 from .calculation import SensorReading, distribute_loss, effective_in_original_unit
 from .const import (
     CONF_INPUT_SENSORS,
@@ -193,8 +194,8 @@ def _build_statistic_metadata(statistic_id: str, unit: str) -> StatisticMetaData
         "unit_of_measurement": unit,
     }
     if _HAS_STATISTIC_MEAN_TYPE:
-        metadata["mean_type"] = StatisticMeanType.ARITHMETIC  # type: ignore[typeddict-item]
-        metadata["unit_class"] = None  # type: ignore[typeddict-item]
+        metadata["mean_type"] = StatisticMeanType.ARITHMETIC
+        metadata["unit_class"] = None
     return metadata
 
 
@@ -214,15 +215,25 @@ def _get_unit(hass: HomeAssistant, entity_id: str) -> str:
     return unit
 
 
-def _stat_field_for(state_class: str | None) -> str:
-    """Return the statistics field to read for a given state class (ADR-003)."""
+def _stat_field_for(state_class: str | None, unit: str) -> str:
+    """Return the statistics field to read for a given state class (ADR-003).
+
+    TOTAL_INCREASING always → ``change`` (energy counter delta).
+    TOTAL → ``change`` when unit is Wh/kWh (same assumption as the live path;
+            if a TOTAL sensor turns out to carry instantaneous W values this
+            line is the only place that needs to change).
+    MEASUREMENT / None → ``mean`` (instantaneous power, already in W/kW).
+    """
     if state_class == SensorStateClass.TOTAL_INCREASING:
+        return "change"
+    if state_class == SensorStateClass.TOTAL and unit in ("Wh", "kWh"):
         return "change"
     return "mean"
 
 
 def _readings_for_slot(
     slot: datetime,
+    slot_duration_minutes: int,
     entity_ids: list[str],
     indexed: dict[str, dict[datetime, StatRow]],
     state_classes: dict[str, str | None],
@@ -230,19 +241,36 @@ def _readings_for_slot(
 ) -> list[SensorReading]:
     """Build SensorReadings for one time slot from pre-indexed statistics.
 
-    The raw statistic value is stored as-is in the original unit; normalization
-    to W happens once inside ``distribute_loss`` (ADR-002).
+    TOTAL_INCREASING / TOTAL-as-energy sensors supply a ``change`` value in
+    Wh/kWh — the energy accumulated during the slot.  MEASUREMENT / TOTAL-as-
+    power sensors supply ``mean`` in W/kW (already average instantaneous power).
+
+    To make all sensors comparable inside ``distribute_loss``, Wh/kWh deltas
+    are converted to W-equivalent average power by dividing by the slot
+    duration in hours:
+
+        W_equiv = Wh_delta / (slot_minutes / 60)
+
+    The slot duration is passed explicitly so this function does not hard-code
+    the 5-minute assumption — it is consistent with the live path which uses
+    the actual elapsed time between reset_ts and updated_ts.
+
+    ``original_unit`` is updated from Wh → W (kWh → kW) so that
+    ``effective_in_original_unit`` converts the W result back to W, which is
+    the natural output unit for an interval-average sensor value (ADR-008).
     """
     readings: list[SensorReading] = []
     for eid in entity_ids:
         slot_row: StatRow | None = indexed.get(eid, {}).get(slot)
         if slot_row is None:
             continue
-        field = _stat_field_for(state_classes.get(eid))
+        unit = units[eid]
+        field = _stat_field_for(state_classes.get(eid), unit)
         raw_val: float | None = slot_row.get(field)
         if raw_val is None:
             continue
-        readings.append(SensorReading(entity_id=eid, raw_value=raw_val, original_unit=units[eid]))
+        value, effective_unit = to_power_equivalent(raw_val, unit, slot_duration_minutes)
+        readings.append(SensorReading(entity_id=eid, raw_value=value, original_unit=effective_unit))
     return readings
 
 
@@ -312,8 +340,12 @@ async def async_recalculate_history(
     results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in input_ids}
 
     for slot in slots:
-        input_readings = _readings_for_slot(slot, input_ids, indexed, state_classes, units)
-        output_readings = _readings_for_slot(slot, output_ids, indexed, state_classes, units)
+        input_readings = _readings_for_slot(
+            slot, SLOT_MINUTES, input_ids, indexed, state_classes, units
+        )
+        output_readings = _readings_for_slot(
+            slot, SLOT_MINUTES, output_ids, indexed, state_classes, units
+        )
 
         if not input_readings:
             continue
@@ -346,9 +378,7 @@ async def async_recalculate_history(
     if not per_sensor:
         return 0
 
-    short_term_written: int = await _write_recorder_statistics(
-        hass, per_sensor, short_term_cutoff
-    )
+    short_term_written: int = await _write_recorder_statistics(hass, per_sensor, short_term_cutoff)
 
     _LOGGER.debug(
         "Effy: history recalculation wrote %d short-term slots across %d sensors",
@@ -432,9 +462,7 @@ async def _write_recorder_statistics(
         metadata = _build_statistic_metadata(statistic_id, unit)
 
         # ---- Short-term (5-minute) – ADR-003 requirement ----
-        short_term_slots = [
-            (ts, val) for ts, val in slot_values if ts >= short_term_cutoff
-        ]
+        short_term_slots = [(ts, val) for ts, val in slot_values if ts >= short_term_cutoff]
         if short_term_slots:
             short_term_stats: list[StatisticData] = [
                 {"start": ts, "mean": val} for ts, val in short_term_slots

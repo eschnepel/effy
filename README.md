@@ -33,8 +33,7 @@ All parameters are set via the UI (Config Flow + Options Flow).
 | **Output sensors** | BMS export-to-battery, BMS export-to-grid | – |
 | **Max history days** | How many days of 5-min statistics to reprocess | 28 |
 
-Sensors may be in **W, kW, Wh, or kWh**. Effy normalises everything to W
-internally and writes output sensors in the same unit as their source.
+Sensors may be in **W, kW, Wh, or kWh**. Effy converts all values to W-equivalent average power internally. Output sensors are written in W (or kW), regardless of whether the source sensor uses Wh or kWh — the output represents average power over the interval, which is the physically meaningful quantity.
 
 ---
 
@@ -104,8 +103,10 @@ The invariant `Σ effective_inputs = Σ outputs` always holds.
 | BMS bat export | output | 95 | Wh |
 | BMS grid export | output | 100 | Wh |
 
-> W and Wh are treated identically within one interval (the time factor
-> cancels because it applies equally to all terms).
+> For sensors in Wh or kWh, Effy converts the 5-minute energy delta to
+> W-equivalent average power (÷ slot duration in hours) before applying the
+> waterfall. W and kW sensors are used as-is. All values in the table
+> below are the W-equivalent figures seen by `distribute_loss`.
 
 ### Step 1 – Total loss
 
@@ -166,21 +167,19 @@ useful after first installation or after changing the sensor list.
 
 ### State-class handling during history recalculation
 
-| Source state class | Field read | Written as |
-|---|---|---|
-| `TOTAL_INCREASING` | `change` (HA-computed delta) | `mean=val` |
-| `TOTAL` | `mean` | `mean=val` |
-| `MEASUREMENT` | `mean` | `mean=val` |
+| Source state class | Field read | Wh→W conversion | Written as |
+|---|---|---|---|
+| `TOTAL_INCREASING` | `change` (HA-computed delta, Wh/kWh) | ÷ (5 min / 60) → W | `mean=val_W` |
+| `TOTAL` (Wh/kWh unit) | `change` | ÷ (5 min / 60) → W | `mean=val_W` |
+| `TOTAL` (W/kW unit) | `mean` | none | `mean=val_W` |
+| `MEASUREMENT` | `mean` | none | `mean=val_W` |
 
 All output statistics are written with `mean` only – no `state`/`sum`
-field – using the same `{"has_mean": True, "has_sum": False}` metadata for
-every `effy_*` sensor, regardless of the source sensor's `state_class`.
-There is no conditional logic that treats `TOTAL_INCREASING` sources
-differently on the write side; `state` would require the live cumulative
-reading, which is not available during recalculation. For
-`TOTAL_INCREASING` sources this effectively means their interval delta is
-written as a TOTAL-style mean statistic — but that falls out naturally
-from the uniform metadata, not from a special case in the code.
+field – using `{"has_mean": True, "has_sum": False}` metadata.  The `mean`
+value is always in W (or kW), representing the average power over the
+5-minute interval.  For `TOTAL_INCREASING` and `TOTAL`-as-energy sources
+this is the energy delta divided by the slot duration; for `MEASUREMENT`
+and `TOTAL`-as-power sources it is the HA-computed 5-minute mean directly.
 
 ### ⚠️ Genuine 5-minute statistics via an internal recorder API
 
@@ -255,3 +254,5 @@ the older core this integration's test suite runs against.
 | [004](adr/004-overwrite-history.md) | Overwrite (not append) for history statistics |
 | [005](adr/005-negative-loss-capping.md) | Capping negative loss at zero |
 | [006](adr/006-live-update-strategy.md) | Live sensor update strategy (shared coordinator with debouncing) |
+| [007](adr/007-total-increasing-live-delta.md) | Live accumulation and Wh→W conversion for energy sensors |
+| [008](adr/008-mixed-unit-comparability.md) | Comparability of W and Wh in mixed-unit configurations |
