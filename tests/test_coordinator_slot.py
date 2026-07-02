@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     # Static-only imports so mypy can resolve these as real types. Not
     # executed at runtime — the actual modules are loaded by file path
     # below (ADR-000 §6) to avoid importing homeassistant via __init__.py.
-    from effy.calculation import SensorReading as SensorReading
     from effy.coordinator import LiveReading as LiveReading
 
 # ---------------------------------------------------------------------------
@@ -96,7 +95,6 @@ def _load(reg_name: str, filename: str) -> ModuleType:
 
 
 _calc_mod = _load("effy.calculation", "calculation.py")
-_sensor_utils_mod = _load("effy.sensor_utils", "sensor_utils.py")
 _coord_mod = _load("effy.coordinator", "coordinator.py")
 
 if not TYPE_CHECKING:
