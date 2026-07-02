@@ -52,7 +52,7 @@ def _build_schema(
 
 
 class EffyConfigFlow(
-    config_entries.ConfigFlow,
+    config_entries.ConfigFlow,  # type: ignore[misc]
     domain=DOMAIN,
 ):
     """Handle a config flow for Effy."""
@@ -97,7 +97,7 @@ class EffyConfigFlow(
         return EffyOptionsFlow(config_entry)
 
 
-class EffyOptionsFlow(config_entries.OptionsFlow):
+class EffyOptionsFlow(config_entries.OptionsFlow):  # type: ignore[misc]
     """Handle options for Effy."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:

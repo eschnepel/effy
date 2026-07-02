@@ -12,8 +12,15 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    # Static-only import so mypy can resolve SensorReading as a real type.
+    # Not executed at runtime — the actual module is loaded by file path
+    # below (ADR-000 §6) to avoid importing homeassistant via __init__.py.
+    from effy.calculation import SensorReading as SensorReading
 
 _calc_path = (
     Path(__file__).resolve().parent.parent / "custom_components" / "effy" / "calculation.py"
@@ -24,7 +31,8 @@ _calculation = importlib.util.module_from_spec(_spec)
 sys.modules["effy_calculation"] = _calculation
 _spec.loader.exec_module(_calculation)
 
-SensorReading = _calculation.SensorReading
+if not TYPE_CHECKING:
+    SensorReading = _calculation.SensorReading
 distribute_loss = _calculation.distribute_loss
 effective_in_original_unit = _calculation.effective_in_original_unit
 

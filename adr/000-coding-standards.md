@@ -26,7 +26,7 @@ Three tools gate every change, run via `.github/workflows/ci.yml`:
 |---|---|---|
 | `ruff format` | Code formatting (replaces black) | `ruff format custom_components/` |
 | `ruff check` | Linting (replaces flake8/isort/pyupgrade) | `ruff check custom_components/` |
-| `mypy --strict` | Static type checking | `mypy custom_components/ --config-file mypy.ini` |
+| `mypy --strict` | Static type checking | `mypy custom_components/effy tests --config-file mypy.ini` |
 | `pytest` | Unit tests | `pytest tests/` |
 
 All four must pass with zero errors before a change is considered complete.
@@ -49,6 +49,13 @@ entities or use `@callback`), combined with targeted
 is never broad (no bare `# type: ignore` without a code, no
 `disable_error_code` at the global `[mypy]` level) — the goal is to silence
 exactly the HA-stub gap, not to weaken type checking elsewhere.
+
+The comment goes on the exact source line mypy reports, not on a nearby
+line: `misc` errors on subclassing are attached to the base-class entry in
+the class statement (e.g. `class EffySensor(SensorEntity):  # type:
+ignore[misc]`), and `untyped-decorator` errors are attached to the
+`@callback` line itself, not the `def` line below it — mypy's reported line
+number is authoritative and should never be guessed at.
 
 `calculation.py` has zero Home Assistant imports and is held to the full,
 unsuppressed strict standard — it is pure, framework-independent Python and
@@ -81,8 +88,12 @@ foundation that ADR-001/002/005 build on.
 - Built-in generics (`list[str]`, `dict[str, float]`) are used directly;
   `typing.List`/`typing.Dict` are never imported.
 - `X | None` is used instead of `Optional[X]`.
-- Every public function and method has a complete signature: parameter types
-  and a return type, including `-> None`.
+- Every function and method has a complete signature: parameter types and
+  a return type, including `-> None`. This applies to private helpers
+  (`_to_w`, `_fresh`) and test code exactly as it does to public HA-facing
+  methods — `mypy --strict` does not distinguish, and a single unannotated
+  parameter (e.g. a default-valued `unit="Wh"`) triggers `no-untyped-def`
+  just as an entirely bare signature does.
 - `@dataclass` is used for plain data containers (`SensorReading`,
   `LossDistribution`) instead of dicts or named tuples — gives attribute
   access, auto-generated `__init__`/`__repr__`/`__eq__`, and a single place
@@ -116,6 +127,20 @@ foundation that ADR-001/002/005 build on.
   (which imports `homeassistant.*`) just to test a dependency-free module.
   This keeps the test environment lightweight (`pytest` only — no
   `pytest-homeassistant-custom-component` needed).
+- Because file-path loading yields plain `ModuleType` objects, mypy cannot
+  see the real classes on attributes such as `_calc_mod.SensorReading` —
+  it only sees `Any`. Test files still get full static typing for these
+  names via a `TYPE_CHECKING`-only static import that mirrors the runtime
+  path (`if TYPE_CHECKING: from effy.calculation import SensorReading as
+  SensorReading`). This import is never executed (it runs only under
+  static analysis), so it does not reintroduce the `homeassistant`
+  dependency the file-path loading was designed to avoid; the runtime
+  assignment (`SensorReading = _calc_mod.SensorReading`) is correspondingly
+  guarded with `if not TYPE_CHECKING:` so the two bindings never conflict.
+  This is mandatory for any test module that binds a dynamically-loaded
+  class to a name used later as a type annotation — leaving it untyped
+  cascades into dozens of unrelated `attr-defined`/`valid-type` mypy errors
+  on every usage of that name, rather than a single fixable root cause.
 - Every test class documents the scenario it covers in a docstring or
   comment referencing the worked example in the README where applicable
   (see `TestWaterfallHardOverflow`, which mirrors the overflow logic

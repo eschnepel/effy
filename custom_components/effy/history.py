@@ -14,9 +14,14 @@ TOTAL_INCREASING  → request ``change`` from the statistics API (HA computes
                     the per-interval delta and handles counter resets).
 TOTAL / MEASUREMENT → request ``mean``.
 
-All sources are written back with ``mean`` only, no ``state`` field — the
-live cumulative reading needed for ``state`` is not available during
-recalculation (ADR-003).
+All sources are written back with both ``mean`` and ``state`` — the
+latter is the same per-slot effective value (there is exactly one
+effective reading per 5-minute slot, so "last/only reading in the
+interval" and "mean of the interval" coincide at short-term resolution).
+Filling ``state`` is required for consumers that read the raw per-period
+value directly instead of ``mean`` — e.g. the ``apexcharts-card`` frontend
+card renders gaps for statistics rows where ``state`` is null, even when
+``mean`` is populated (see ADR-003 amendment below).
 
 Units (ADR-002): statistic values are read and written in the sensor's
 original unit (W, kW, Wh, kWh); normalization to W happens exactly once,
@@ -356,10 +361,10 @@ async def async_recalculate_history(
             eff = effective_in_original_unit(reading.entity_id, distribution, reading.original_unit)
             results[reading.entity_id].append((slot, eff))
 
-    # Write statistics back – only mean, no state (ADR-003).
-    # state would require the live cumulative sensor reading which we don't
-    # have during history recalculation; mean is sufficient for all HA
-    # dashboard and Energy use-cases.
+    # Write statistics back – mean and state (ADR-003 amendment).
+    # state is filled with the same per-slot effective value as mean;
+    # apexcharts-card and similar frontend cards read state directly and
+    # show gaps if it is null, even when mean is present.
     #
     # Writing happens via _write_recorder_statistics, which calls the
     # recorder instance's own async_import_statistics() callback to
@@ -462,15 +467,23 @@ async def _write_recorder_statistics(
         metadata = _build_statistic_metadata(statistic_id, unit)
 
         # ---- Short-term (5-minute) – ADR-003 requirement ----
+        # state == mean here: there is exactly one effective reading per
+        # 5-minute slot, so the "last/only value in the interval" that
+        # `state` represents is the same number as the interval mean.
         short_term_slots = [(ts, val) for ts, val in slot_values if ts >= short_term_cutoff]
         if short_term_slots:
             short_term_stats: list[StatisticData] = [
-                {"start": ts, "mean": val} for ts, val in short_term_slots
+                {"start": ts, "mean": val, "state": val} for ts, val in short_term_slots
             ]
             instance.async_import_statistics(metadata, short_term_stats, StatisticsShortTerm)
             short_term_written += len(short_term_stats)
 
         # ---- Long-term (hourly) – persists beyond the 10-day purge ----
+        # `state` is the chronologically last 5-minute value within the
+        # hour (the closest analogue to "raw state at end of period"),
+        # distinct from `mean`, which averages all slots in that hour.
+        # `slot_values` is iterated in ascending slot order (see `slots`
+        # above), so the last-appended value per hour is the last one.
         hourly: dict[datetime, list[float]] = {}
         for ts, val in slot_values:
             hour_ts = ts.replace(minute=0, second=0, microsecond=0)
@@ -478,7 +491,7 @@ async def _write_recorder_statistics(
 
         if hourly:
             long_term_stats: list[StatisticData] = [
-                {"start": hour_ts, "mean": sum(vals) / len(vals)}
+                {"start": hour_ts, "mean": sum(vals) / len(vals), "state": vals[-1]}
                 for hour_ts, vals in hourly.items()
             ]
             instance.async_import_statistics(metadata, long_term_stats, Statistics)
