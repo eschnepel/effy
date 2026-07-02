@@ -35,7 +35,7 @@ async def async_setup_entry(
     )
 
 
-class EffyRecalculateButton(ButtonEntity):
+class EffyRecalculateButton(ButtonEntity):  # type: ignore[misc]
     """Button that triggers a full history recalculation.
 
     Each press overwrites existing statistics for the configured history

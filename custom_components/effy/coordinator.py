@@ -284,7 +284,7 @@ class EffyCoordinator:
     # Setup / teardown
     # ------------------------------------------------------------------
 
-    @callback
+    @callback  # type: ignore[untyped-decorator]
     def async_setup(self) -> None:
         """Register state-change listeners and seed the cache from current states."""
         all_watched = self._input_ids + self._output_ids
@@ -298,7 +298,7 @@ class EffyCoordinator:
             self._on_state_change,
         )
 
-    @callback
+    @callback  # type: ignore[untyped-decorator]
     def async_shutdown(self) -> None:
         """Cancel listeners and any pending debounce timer."""
         if self._unsub_listeners is not None:
@@ -326,7 +326,7 @@ class EffyCoordinator:
     # Event handling
     # ------------------------------------------------------------------
 
-    @callback
+    @callback  # type: ignore[untyped-decorator]
     def _on_state_change(self, event: Event) -> None:
         """Handle a state-change event for any watched entity.
 
@@ -368,7 +368,7 @@ class EffyCoordinator:
     # Recalculation
     # ------------------------------------------------------------------
 
-    @callback
+    @callback  # type: ignore[untyped-decorator]
     def _do_refresh(self, _now: Any) -> None:
         """Debounce timer fired – convert accumulators, recalculate, push, then reset."""
         self._refresh_pending = False

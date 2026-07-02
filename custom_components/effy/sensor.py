@@ -40,7 +40,7 @@ async def async_setup_entry(
     coordinator.force_refresh()
 
 
-class EffySensor(SensorEntity):
+class EffySensor(SensorEntity):  # type: ignore[misc]
     """Effective-power sensor for one input source."""
 
     _attr_should_poll = False
@@ -106,7 +106,7 @@ class EffySensor(SensorEntity):
             self._unsub_coordinator()
             self._unsub_coordinator = None
 
-    @callback
+    @callback  # type: ignore[untyped-decorator]
     def _on_distribution(self, distribution: LossDistribution) -> None:
         """Receive a new distribution result from the coordinator and update state.
 

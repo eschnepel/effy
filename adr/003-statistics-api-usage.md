@@ -38,20 +38,20 @@ sensors into two groups and issuing two separate requests.
 
 ### Writing
 
-Every `effy_*` statistic is computed as `{"start": ts, "mean": val}` –
-**mean only, no state/sum field** – regardless of the source sensor's
-`state_class`:
+Every `effy_*` statistic is computed as `{"start": ts, "mean": val, "state":
+val}` – **mean and state, no sum field** – regardless of the source
+sensor's `state_class` (see the 2026-07-02 amendment below for why `state`
+was added after this ADR was first written):
 
 | Source state class | Field read | Written as |
 |---|---|---|
-| `TOTAL_INCREASING` | `change` | `mean=val` |
-| `TOTAL` | `mean` | `mean=val` |
-| `MEASUREMENT` | `mean` | `mean=val` |
+| `TOTAL_INCREASING` | `change` | `mean=val`, `state=val` |
+| `TOTAL` | `mean` | `mean=val`, `state=val` |
+| `MEASUREMENT` | `mean` | `mean=val`, `state=val` |
 
-`state` is intentionally omitted: it represents the live cumulative sensor
-reading at the end of the interval, which is not available during history
-recalculation without re-reading the raw `states` table. `mean` alone is
-sufficient for all HA dashboard and Energy use-cases.
+`sum` is intentionally omitted: a running cumulative total would require
+Effy to manage counter resets itself across recalculation runs, which
+provides no benefit here (see the `has_sum=False` rationale below).
 
 Importantly, this is **not** a per-source-state_class branch in code –
 there is no logic anywhere in `history.py` that inspects `state_class` to
@@ -249,8 +249,8 @@ See ADR-004 for the overwrite mechanics in more detail.
   (on the read side via `change`).
 - **Pro:** A single `statistics_during_period` call is simpler and has lower
   overhead than per-state-class calls.
-- **Pro:** The write path is fully uniform – one `{"start": ts, "mean": val}`
-  for every source state class, no branching.
+- **Pro:** The write path is fully uniform – one `{"start": ts, "mean": val,
+  "state": val}` for every source state class, no branching.
 - **Pro:** Genuine 5-minute statistics exist in the recorder for `effy_*`
   sensors, satisfying the original requirement that the public statistics
   import API cannot fulfil on its own.
@@ -284,3 +284,39 @@ live and history slots are identical in boundary position.
 A seamless transition occurs when a slot closes: the history path writes the
 authoritative `change` value via `async_import_statistics` (ADR-004), which
 overwrites whatever the live coordinator had accumulated.
+
+---
+
+## Amendment – 2026-07-02: Filling `state` for frontend statistics cards
+
+This ADR originally omitted `state` on the grounds that it "represents the
+live cumulative sensor reading at the end of the interval, which is not
+available during history recalculation" — conflating `state` with `sum`.
+In practice, `state` on a `StatisticData` row is simply "the raw value
+associated with this row"; it does not require a cumulative running total,
+only *a* value for that timestamp, which Effy already has: the same
+per-slot effective value used for `mean`.
+
+The omission surfaced as a real problem: frontend cards that read
+statistics directly — `apexcharts-card` in particular, when configured
+with a `statistics`/`data_generator` series — use the `state` field rather
+than `mean`, and render a gap for any row where `state` is `null`. Since
+Effy's recalculation left `state` unset on every row it wrote, graphs built
+on `effy_*` statistics had visible gaps even though `mean` was fully
+populated and correct.
+
+**Fix:** both short-term and long-term rows now include `state`:
+
+- **Short-term (5-minute):** `state == mean` — there is exactly one
+  effective reading per 5-minute slot, so "the value at this timestamp"
+  and "the mean of this interval" are the same number.
+- **Long-term (hourly):** `state` is the chronologically **last** 5-minute
+  effective value within that hour, while `mean` remains the **average**
+  of all 5-minute values in that hour — the two fields intentionally
+  diverge here, matching how HA's own compiler distinguishes "state at end
+  of period" from "mean over period" for regular (non-externally-imported)
+  statistics.
+
+`has_sum`/`sum` remain unchanged (`False`/omitted) — this amendment only
+concerns `state`, not the sum-statistic question addressed in the original
+decision above.
