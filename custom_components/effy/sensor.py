@@ -6,7 +6,6 @@ EffyCoordinator and receive computed results via push (ADR-006 Option C).
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -20,8 +19,6 @@ from homeassistant.util import slugify
 from .calculation import LossDistribution, effective_in_original_unit
 from .const import CONF_INPUT_SENSORS, DOMAIN
 from .coordinator import EffyCoordinator
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
