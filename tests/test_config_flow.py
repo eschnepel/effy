@@ -17,7 +17,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
-import pytest
 
 if TYPE_CHECKING:
     from effy.config_flow import _outputs_missing_device_class as _outputs_missing_device_class
@@ -127,9 +126,7 @@ class TestOutputsMissingDeviceClass:
             }
         )
         assert (
-            _outputs_missing_device_class(
-                hass, ["sensor.grid_export", "sensor.battery_export"]
-            )
+            _outputs_missing_device_class(hass, ["sensor.grid_export", "sensor.battery_export"])
             is False
         )
 
@@ -141,9 +138,7 @@ class TestOutputsMissingDeviceClass:
             }
         )
         assert (
-            _outputs_missing_device_class(
-                hass, ["sensor.grid_export", "sensor.battery_export"]
-            )
+            _outputs_missing_device_class(hass, ["sensor.grid_export", "sensor.battery_export"])
             is True
         )
 

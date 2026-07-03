@@ -117,9 +117,7 @@ class EffyConfigFlow(
                 errors[CONF_INPUT_SENSORS] = "at_least_one_input"
             elif len(user_input.get(CONF_OUTPUT_SENSORS, [])) < 1:
                 errors[CONF_OUTPUT_SENSORS] = "at_least_one_output"
-            elif _outputs_missing_device_class(
-                self.hass, user_input.get(CONF_OUTPUT_SENSORS, [])
-            ):
+            elif _outputs_missing_device_class(self.hass, user_input.get(CONF_OUTPUT_SENSORS, [])):
                 errors[CONF_OUTPUT_SENSORS] = "output_needs_device_class"
             else:
                 return self.async_create_entry(
@@ -161,9 +159,7 @@ class EffyOptionsFlow(config_entries.OptionsFlow):  # type: ignore[misc]
                 errors[CONF_INPUT_SENSORS] = "at_least_one_input"
             elif len(user_input.get(CONF_OUTPUT_SENSORS, [])) < 1:
                 errors[CONF_OUTPUT_SENSORS] = "at_least_one_output"
-            elif _outputs_missing_device_class(
-                self.hass, user_input.get(CONF_OUTPUT_SENSORS, [])
-            ):
+            elif _outputs_missing_device_class(self.hass, user_input.get(CONF_OUTPUT_SENSORS, [])):
                 errors[CONF_OUTPUT_SENSORS] = "output_needs_device_class"
             else:
                 return self.async_create_entry(title="", data=user_input)
@@ -175,9 +171,7 @@ class EffyOptionsFlow(config_entries.OptionsFlow):  # type: ignore[misc]
                 input_sensors=current.get(CONF_INPUT_SENSORS, []),
                 output_sensors=current.get(CONF_OUTPUT_SENSORS, []),
                 max_history_days=current.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS),
-                smooth_low_res_kwh=current.get(
-                    CONF_SMOOTH_LOW_RES_KWH, DEFAULT_SMOOTH_LOW_RES_KWH
-                ),
+                smooth_low_res_kwh=current.get(CONF_SMOOTH_LOW_RES_KWH, DEFAULT_SMOOTH_LOW_RES_KWH),
             ),
             errors=errors,
         )

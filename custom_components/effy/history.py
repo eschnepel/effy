@@ -128,7 +128,12 @@ except ImportError:
     _HAS_STATISTIC_MEAN_TYPE = False
 
 from .sensor_utils import SLOT_MINUTES, to_power_equivalent
-from .calculation import SensorReading, distribute_loss, effective_in_original_unit, smooth_zero_noise
+from .calculation import (
+    SensorReading,
+    distribute_loss,
+    effective_in_original_unit,
+    smooth_zero_noise,
+)
 from .const import (
     CONF_INPUT_SENSORS,
     CONF_MAX_HISTORY_DAYS,
