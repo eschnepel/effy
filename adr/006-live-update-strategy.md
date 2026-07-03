@@ -161,10 +161,28 @@ No separate `_slot_anchor` dict or `_delta_reading` method exists.
 After every recalculation `_reset_all_cache(now)` rolls all `LiveReading`
 accumulators forward:
 - ENERGY: `raw_start = raw_last`, `reset_ts = updated_ts`
-- POWER: `avg = 0`, `reset_ts = updated_ts`
+- POWER: `avg` is carried forward unchanged, `reset_ts = updated_ts`
 
 The next window begins exactly at the end of the previous one — no gap,
 no overlap.
+
+**Amendment – 2026-07-03:** `_reset_all_cache` resets *every* watched
+entity on *every* debounce cycle, not just the entity(ies) that changed
+during the burst which triggered that cycle. An earlier version of this
+reset zeroed `avg` for POWER-family sensors. Since a single sensor's
+state change is enough to trigger `_do_refresh` (ADR-006 Option C), any
+sensor that did not happen to emit an event within that particular 0.3 s
+debounce window — i.e. most sensors, most cycles, when update intervals
+are staggered — had its `avg` wiped to 0 before its own next event
+arrived. This made live effective values read as ~0 W the large majority
+of the time, even though the underlying sensors held valid non-zero
+readings. `avg` is now carried forward across the reset (mirroring the
+ENERGY family's `raw_start = raw_last` carry-forward) so that a sensor's
+last known average is used as the best estimate until it next reports a
+change. This is safe: `update_power` always fully re-seeds `avg` on the
+first real event of a new window regardless of the carried-forward value
+(`old_elapsed` is 0 right after a reset), so the carry-forward only takes
+effect when no new event arrives before the next recalculation.
 
 ### `force_refresh` semantics
 

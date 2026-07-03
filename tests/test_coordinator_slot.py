@@ -285,6 +285,21 @@ class TestLiveReadingPower:
         lr.update_power(1200.0, _ts(10, 4))
         assert lr.avg == pytest.approx(900.0)
 
+    def test_first_ever_event_is_not_swamped_by_epoch(self) -> None:
+        """Regression test: a fresh LiveReading's reset_ts defaults to the
+        1970-01-01 epoch sentinel. Before the fix, the first-ever
+        update_power call computed old_elapsed against that sentinel
+        (decades of seconds) versus new_elapsed=0 for the brand new sample,
+        swamping the new value's weight to ~0 and making avg come out as
+        ~0.0 regardless of the real reading. reset_ts must be anchored to
+        the event's own timestamp on the true first call, without the
+        caller having to pre-set reset_ts (production code never does).
+        """
+        lr = self._fresh()
+        assert not lr.is_seeded()
+        lr.update_power(400.0, _ts(10, 0))
+        assert lr.avg == pytest.approx(400.0)
+
     def test_to_sensor_reading_returns_avg(self) -> None:
         lr = self._fresh()
         lr.reset_ts = _ts(10, 0)
@@ -314,12 +329,43 @@ class TestLiveReadingPower:
 
 
 class TestLiveReadingReset:
-    def test_power_reset_zeroes_avg(self) -> None:
+    def test_power_reset_carries_avg_forward(self) -> None:
+        """avg must NOT be zeroed on reset.
+
+        _do_refresh resets every watched entity on every debounce cycle,
+        not just the entity that triggered that particular cycle. If avg
+        were zeroed here, any sensor that doesn't happen to fire within the
+        same 0.3s window as the triggering sensor would report 0 W on the
+        next recalculation even though its last known value is still valid.
+        See ADR-006 amendment 2026-07-03.
+        """
         lr = LiveReading(entity_id="s", unit="W", family=_FAMILY_POWER)
         lr.update_power(500.0, _ts(10, 0))
         lr.update_power(700.0, _ts(10, 3))
         lr.reset(_ts(10, 3))
-        assert lr.avg == 0.0
+        assert lr.avg == pytest.approx(700.0)
+
+    def test_power_reading_survives_a_cycle_with_no_new_event(self) -> None:
+        """Regression test for the 'live updates are 99% zero' bug.
+
+        Simulates a sensor that reported once, then a *different* sensor's
+        event triggers a recalculation (and therefore a reset of this one
+        too) before this sensor reports again. The carried-forward average
+        must still be the last known value, not zero.
+        """
+        lr = LiveReading(entity_id="s", unit="W", family=_FAMILY_POWER)
+        lr.update_power(400.0, _ts(10, 0))
+        reading_before = lr.to_sensor_reading()
+        assert reading_before is not None
+        assert reading_before.raw_value == pytest.approx(400.0)
+
+        # A burst triggered by some other entity resets this one too,
+        # even though this sensor produced no new event.
+        lr.reset(_ts(10, 0, 30))
+
+        reading_after = lr.to_sensor_reading()
+        assert reading_after is not None
+        assert reading_after.raw_value == pytest.approx(400.0)
 
     def test_power_reset_ts_moves_to_last_updated(self) -> None:
         lr = LiveReading(entity_id="s", unit="W", family=_FAMILY_POWER)

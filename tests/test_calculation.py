@@ -35,6 +35,7 @@ if not TYPE_CHECKING:
     SensorReading = _calculation.SensorReading
 distribute_loss = _calculation.distribute_loss
 effective_in_original_unit = _calculation.effective_in_original_unit
+smooth_zero_noise = _calculation.smooth_zero_noise
 
 
 def _r(eid: str, value: float, unit: str = "W") -> SensorReading:
@@ -159,3 +160,93 @@ class TestSingleSensor:
         outputs = [_r("load", 900)]
         dist = distribute_loss(inputs, outputs)
         assert sum(dist.effective_values_w.values()) == pytest.approx(900.0)
+
+
+class TestSmoothZeroNoise:
+    """ADR-009: 25%-neighbor-steal smoothing for low-resolution kWh sensors."""
+
+    def test_alternating_single_zeros_becomes_constant(self) -> None:
+        """[10, 0, 10, 0, 10, 0, 10, 0] -> constant 5 for all interior slots.
+
+        The two series ends only have one neighbor to draw from / donate to,
+        so they land slightly off from the interior value - this is the
+        expected, documented boundary behaviour, not a bug.
+        """
+        values = [10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0]
+        result = smooth_zero_noise(values)
+        # Interior slots (indices 1..6) all converge to exactly 5.0
+        for v in result[1:-1]:
+            assert v == pytest.approx(5.0)
+
+    def test_sum_is_conserved(self) -> None:
+        """Smoothing only redistributes energy, never creates or destroys it."""
+        values = [10.0, 0.0, 10.0, 0.0, 0.0, 10.0, 0.0, 3.0]
+        result = smooth_zero_noise(values)
+        assert sum(result) == pytest.approx(sum(values))
+
+    def test_no_zeros_is_a_no_op(self) -> None:
+        values = [4.0, 5.0, 6.0, 7.0]
+        assert smooth_zero_noise(values) == values
+
+    def test_all_zeros_stays_all_zero(self) -> None:
+        """Nothing to steal from when every slot is 0 - no NaN, no crash."""
+        values = [0.0, 0.0, 0.0, 0.0]
+        result = smooth_zero_noise(values)
+        assert result == [0.0, 0.0, 0.0, 0.0]
+
+    def test_short_series_returned_unchanged(self) -> None:
+        assert smooth_zero_noise([]) == []
+        assert smooth_zero_noise([5.0]) == [5.0]
+
+    def test_isolated_single_zero_is_untouched_by_round_two(self) -> None:
+        """A single isolated zero (surrounded by non-zero values on both
+        sides, i.e. not part of a run of 2+) is entirely handled by round 1.
+        Round 2 must not touch it, or it would reintroduce the exact
+        boundary-driven unevenness round 1 already fixed.
+        """
+        values = [0.0, 20.0, 20.0]
+        result = smooth_zero_noise(values)
+        # Round 1 only: v0 has no left neighbor, gains 0.25*20=5 -> 5.0;
+        # v1 loses 5 (to v0's steal) -> 15.0. v0's run length is 1 (only
+        # index 0 is zero), so round 2 skips it entirely.
+        assert result[0] == pytest.approx(5.0)
+        assert result[1] == pytest.approx(15.0)
+        assert result[2] == pytest.approx(20.0)  # never a neighbor of any zero slot
+        assert sum(result) == pytest.approx(sum(values))
+
+    def test_double_zero_gap_uses_wider_round_two_neighborhood(self) -> None:
+        """A run of two consecutive zeros ([10, 0, 0, 10]) is only partially
+        smoothed by round 1 alone ([7.5, 2.5, 2.5, 7.5]) since each zero's
+        same-run neighbor was still 0 during round 1. Round 2 (10% from +-1,
+        5% from +-2) pulls the two middle values up further, while still
+        preserving the total sum.
+        """
+        values = [10.0, 0.0, 0.0, 10.0]
+        result = smooth_zero_noise(values)
+        assert result == pytest.approx([6.375, 3.625, 3.625, 6.375])
+        assert sum(result) == pytest.approx(sum(values))
+
+    def test_larger_gap_mask_uses_run_length_not_recomputed_zero_check(self) -> None:
+        """Round 2 must target slots based on the *original* zero-run
+        length, not on whether the value is still exactly 0.0 after round 1
+        (round 1 already moves every zero away from 0.0, so a naive 'is this
+        currently 0.0' check would find nothing to do for any gap size and
+        silently become a no-op for exactly the case round 2 exists for).
+        """
+        values = [10.0, 0.0, 0.0, 10.0]
+        result = smooth_zero_noise(values)
+        round1_only = [7.5, 2.5, 2.5, 7.5]
+        assert result != pytest.approx(round1_only)
+
+    def test_round_two_reaches_two_slots_away(self) -> None:
+        """A three-zero run pulls from its +-2 neighbors in round 2, not
+        just its immediate +-1 neighbors - i.e. a non-adjacent value can
+        still be affected by a gap two slots away.
+        """
+        values = [10.0, 0.0, 0.0, 0.0, 10.0]
+        result = smooth_zero_noise(values)
+        # The two outer 10s are each a +-2 neighbor of the far end of the
+        # 3-zero run, so both must move from their original 10.0.
+        assert result[0] != pytest.approx(10.0)
+        assert result[4] != pytest.approx(10.0)
+        assert sum(result) == pytest.approx(sum(values))
