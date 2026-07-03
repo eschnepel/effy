@@ -128,12 +128,19 @@ except ImportError:
     _HAS_STATISTIC_MEAN_TYPE = False
 
 from .sensor_utils import SLOT_MINUTES, to_power_equivalent
-from .calculation import SensorReading, distribute_loss, effective_in_original_unit
+from .calculation import (
+    SensorReading,
+    distribute_loss,
+    effective_in_original_unit,
+    smooth_zero_noise,
+)
 from .const import (
     CONF_INPUT_SENSORS,
     CONF_MAX_HISTORY_DAYS,
     CONF_OUTPUT_SENSORS,
+    CONF_SMOOTH_LOW_RES_KWH,
     DEFAULT_MAX_HISTORY_DAYS,
+    DEFAULT_SMOOTH_LOW_RES_KWH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -279,6 +286,48 @@ def _readings_for_slot(
     return readings
 
 
+def _smooth_energy_rows(
+    entity_ids: list[str],
+    indexed: dict[str, dict[datetime, StatRow]],
+    state_classes: dict[str, str | None],
+    units: dict[str, str],
+) -> None:
+    """Apply smooth_zero_noise (ADR-009) in-place to each entity's ``change`` series.
+
+    Only entities resolved to the ``change`` statistics field (ENERGY family:
+    TOTAL_INCREASING, or TOTAL with a Wh/kWh unit — see ``_stat_field_for``)
+    are candidates: this smoothing targets energy-counter quantisation noise,
+    not instantaneous power (MEASUREMENT) readings, which don't exhibit this
+    failure mode.
+
+    Mutates each row's ``"change"`` value in ``indexed`` directly so that the
+    existing ``_readings_for_slot`` / ``to_power_equivalent`` pipeline picks
+    up the smoothed values with no further changes needed downstream. Must
+    run before ``to_power_equivalent`` is applied to any of these rows (see
+    ``smooth_zero_noise`` docstring for why it needs the raw energy unit).
+    """
+    for eid in entity_ids:
+        field = _stat_field_for(state_classes.get(eid), units[eid])
+        if field != "change":
+            continue
+
+        entity_rows = indexed.get(eid)
+        if not entity_rows:
+            continue
+
+        # Only rows that actually carry a "change" value participate — a
+        # missing value is left untouched (and stays missing; _readings_for_slot
+        # already skips rows where the resolved field is None).
+        sorted_starts = [s for s in sorted(entity_rows) if entity_rows[s].get("change") is not None]
+        if len(sorted_starts) < 2:
+            continue
+
+        raw_values = [entity_rows[s]["change"] for s in sorted_starts]
+        smoothed = smooth_zero_noise(raw_values)
+        for start, value in zip(sorted_starts, smoothed):
+            entity_rows[start]["change"] = value
+
+
 def _effy_entity_id(source_entity_id: str) -> str:
     """Return the effy_* entity_id for a given input sensor (mirrors sensor.py)."""
     slug = slugify(source_entity_id.split(".")[-1])
@@ -296,6 +345,12 @@ async def async_recalculate_history(
     overwritten, not appended to — see ADR-004 for why this is intentional
     (stale rows from a previous sensor configuration must not survive a
     recalculation).
+
+    If ``CONF_SMOOTH_LOW_RES_KWH`` is enabled in ``entry_options``, each
+    energy-family sensor's raw per-slot ``change`` series is first passed
+    through ``smooth_zero_noise`` (ADR-009) to counteract quantisation noise
+    from low-resolution (2-decimal-digit) energy counters before any
+    Wh/kWh → W conversion happens.
 
     Returns the number of 5-minute short-term rows written. See the module
     WARNING docstring above for how (and why) this writes to internal
@@ -328,6 +383,9 @@ async def async_recalculate_history(
     indexed: dict[str, dict[datetime, StatRow]] = {
         eid: {row["start"]: row for row in rows} for eid, rows in raw_stats.items()
     }
+
+    if entry_options.get(CONF_SMOOTH_LOW_RES_KWH, DEFAULT_SMOOTH_LOW_RES_KWH):
+        _smooth_energy_rows(all_ids, indexed, state_classes, units)
 
     # Union of all slot timestamps, sorted
     slot_set: set[datetime] = set()

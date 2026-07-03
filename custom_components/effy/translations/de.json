@@ -9,13 +9,15 @@
         "data": {
           "input_sensors": "Eingangs-Sensoren (PV, BMS-Import von Batterie/Netz)",
           "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
-          "max_history_days": "Maximale Historie (Tage)"
+          "max_history_days": "Maximale Historie (Tage)",
+          "smooth_low_res_kwh": "Niedrig aufgelöste kWh-Sensoren glätten"
         }
       }
     },
     "error": {
       "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen.",
-      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen."
+      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen.",
+      "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren."
     }
   },
   "options": {
@@ -25,13 +27,15 @@
         "data": {
           "input_sensors": "Eingangs-Sensoren (PV, BMS-Import von Batterie/Netz)",
           "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
-          "max_history_days": "Maximale Historie (Tage)"
+          "max_history_days": "Maximale Historie (Tage)",
+          "smooth_low_res_kwh": "Niedrig aufgelöste kWh-Sensoren glätten"
         }
       }
     },
     "error": {
       "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen.",
-      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen."
+      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen.",
+      "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren."
     }
   },
   "entity": {

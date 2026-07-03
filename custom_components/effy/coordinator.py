@@ -24,7 +24,10 @@ state_change event  (always on the HA event loop)
       → convert each LiveReading to a W-equivalent SensorReading
       → distribute_loss
       → push result to subscribers
-      → reset every LiveReading (anchor = last raw value, timestamps rolled)
+      → reset every LiveReading (anchor = last raw value / last average,
+        timestamps rolled - values are carried forward, never zeroed, since
+        a reset happens on every debounce cycle regardless of which entity
+        actually triggered it)
 
 Thread safety
 -------------
@@ -170,8 +173,24 @@ class LiveReading:
     def reset(self, now: datetime) -> None:
         """Roll the accumulation window forward after a recalculation.
 
-        Power sensors: reset avg to 0, move timestamps forward.
-        Energy sensors: move raw_start to raw_last, move timestamps forward.
+        Power sensors: *carry the last computed average forward* as the seed
+        for the new window; move timestamps forward. This mirrors the energy
+        family's ``raw_start = raw_last`` carry-forward. It must NOT be
+        zeroed here: ``_do_refresh`` resets every watched entity on every
+        debounce cycle, including entities that received no event during the
+        burst that triggered this particular cycle. Zeroing `avg`
+        unconditionally would make any sensor that isn't part of the
+        triggering burst report 0 W until its own next event arrives - which,
+        for entities that update less frequently than the 0.3 s debounce
+        window, is most cycles.
+
+        Carrying `avg` forward is safe because `update_power` always
+        discards it on the first real event of a new window anyway: right
+        after reset, ``reset_ts == updated_ts``, so `old_elapsed` is 0 and
+        the first sample's weight is 1.0 (see `update_power`). The carried
+        value only matters - and is the correct best estimate - when *no*
+        new event arrives before the next recalculation.
+
         The new reset_ts is the old updated_ts (not ``now``) so there is no
         gap between the previous window and the new one.
         """
@@ -179,9 +198,7 @@ class LiveReading:
         self.reset_ts = new_reset
         self.updated_ts = new_reset
 
-        if self.family == _FAMILY_POWER:
-            self.avg = 0.0
-        else:
+        if self.family != _FAMILY_POWER:
             self.raw_start = self.raw_last
 
     def update_power(self, new_value: float, event_ts: datetime) -> None:
@@ -192,7 +209,20 @@ class LiveReading:
         with zero elapsed time (the sample covers no past interval yet); the
         running average becomes meaningful from the second event onward.
         """
-        prev_ts = self.updated_ts if self.is_seeded() else event_ts
+        if not self.is_seeded():
+            # True first-ever event for this entity: reset_ts still holds the
+            # _EPOCH sentinel (never seeded by async_setup - see module
+            # docstring amendment). Without this branch, old_elapsed would be
+            # computed against 1970-01-01 (decades of "elapsed" seconds),
+            # swamping new_elapsed (0 s) to a near-zero weight and making
+            # avg come out as ~0 regardless of new_value. Anchor reset_ts
+            # here instead, mirroring update_energy's first-event handling.
+            self.reset_ts = event_ts
+            self.avg = new_value
+            self.updated_ts = event_ts
+            return
+
+        prev_ts = self.updated_ts
         old_elapsed = (prev_ts - self.reset_ts).total_seconds()
         new_elapsed = max(0.0, (event_ts - prev_ts).total_seconds())
         total_elapsed = old_elapsed + new_elapsed
