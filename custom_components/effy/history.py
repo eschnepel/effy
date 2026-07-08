@@ -127,7 +127,7 @@ except ImportError:
     StatisticMeanType = None
     _HAS_STATISTIC_MEAN_TYPE = False
 
-from .sensor_utils import SLOT_MINUTES, to_power_equivalent
+from .sensor_utils import SLOT_MINUTES, effective_unit_for, to_power_equivalent
 from .calculation import (
     SensorReading,
     distribute_loss,
@@ -225,6 +225,50 @@ def _get_unit(hass: HomeAssistant, entity_id: str) -> str:
         return "W"
     unit: str = state.attributes.get("unit_of_measurement", "W")
     return unit
+
+
+def _get_statistics_units(hass: HomeAssistant, entity_ids: list[str]) -> dict[str, str]:
+    """Return the unit HA's compiled statistics actually store for each entity.
+
+    ``statistics_during_period`` (called with ``units=None`` in
+    ``_fetch_statistics``) returns ``change``/``mean`` values in whatever
+    unit is recorded in ``statistics_meta`` for that statistic_id — which is
+    **not guaranteed to equal** the live entity's current
+    ``unit_of_measurement`` (``_get_unit``). Home Assistant normalizes
+    statistics units independently of the live entity for certain device
+    classes precisely so historical data stays consistent even if a
+    sensor's reported unit changes later (see HA developer docs: "For
+    certain device classes, the unit of the statistics is normalized").
+    This is a separate, sync-only lookup, so callers must run it via
+    ``recorder.async_add_executor_job``, like ``_fetch_statistics``.
+
+    Falls back to an empty dict (caller uses the live unit instead) if the
+    metadata API is unavailable or its shape has changed — this is
+    read-only defensive fallback, not a hard requirement, matching the
+    version-compat approach already used for ``StatisticMeanType``
+    (ADR-003).
+    """
+    from homeassistant.components.recorder.statistics import get_metadata  # noqa: PLC0415
+
+    try:
+        metadata = get_metadata(hass, statistic_ids=set(entity_ids))
+    except Exception:
+        _LOGGER.exception(
+            "Effy: could not read statistics metadata; falling back to live "
+            "sensor units for change/mean interpretation"
+        )
+        return {}
+
+    units: dict[str, str] = {}
+    for eid, meta_entry in metadata.items():
+        try:
+            _metadata_id, meta = meta_entry
+            unit = meta.get("unit_of_measurement")
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if unit:
+            units[eid] = unit
+    return units
 
 
 def _stat_field_for(state_class: str | None, unit: str) -> str:
@@ -368,13 +412,39 @@ async def async_recalculate_history(
     all_ids: list[str] = input_ids + output_ids
 
     # Gather per-sensor metadata (event loop – states are in memory)
-    units: dict[str, str] = {eid: _get_unit(hass, eid) for eid in all_ids}
+    live_units: dict[str, str] = {eid: _get_unit(hass, eid) for eid in all_ids}
     state_classes: dict[str, str | None] = {eid: _get_state_class(hass, eid) for eid in all_ids}
+
+    # The unit `change`/`mean` values from statistics_during_period are
+    # actually expressed in can differ from the live entity's current unit
+    # (see _get_statistics_units) — read it from statistics_meta instead of
+    # assuming it matches the live state, to avoid interpreting e.g. an
+    # already-Wh value as if it were kWh (or vice versa), which would throw
+    # off every downstream Wh/kWh → W conversion by a further factor of 1000.
+    recorder = get_recorder(hass)
+    stats_units: dict[str, str] = await recorder.async_add_executor_job(
+        _get_statistics_units, hass, all_ids
+    )
+    units: dict[str, str] = {}
+    for eid in all_ids:
+        stat_unit = stats_units.get(eid)
+        live_unit = live_units[eid]
+        if stat_unit and stat_unit != live_unit:
+            _LOGGER.warning(
+                "Effy: %s's compiled statistics are stored in '%s' but the live "
+                "entity currently reports '%s'; using '%s' (the statistics unit) "
+                "to interpret change/mean values, since that is what those "
+                "values are actually expressed in",
+                eid,
+                stat_unit,
+                live_unit,
+                stat_unit,
+            )
+        units[eid] = stat_unit or live_unit
 
     # Fetch statistics – single call requesting both "mean" and "change";
     # each sensor only consumes the field matching its own state class
     # (see _stat_field_for). One call instead of two is simpler (ADR-003).
-    recorder = get_recorder(hass)
     raw_stats: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
         _fetch_statistics, hass, all_ids, start, end
     )
@@ -434,7 +504,14 @@ async def async_recalculate_history(
         if not results[eid]:
             continue
         per_sensor[_effy_entity_id(eid)] = {
-            "unit": units[eid],
+            # results[eid] holds effective_in_original_unit() output, which
+            # for an energy-family source is already a W/kW-equivalent power
+            # reading (to_power_equivalent converts before distribute_loss
+            # ever runs — ADR-008), never a genuine Wh/kWh energy figure.
+            # Writing units[eid] (the source's raw unit) here would label
+            # those W/kW numbers as Wh/kWh — a category error, not just a
+            # scale error. See the bug this fixed.
+            "unit": effective_unit_for(units[eid]),
             "slot_values": results[eid],
         }
 

@@ -3,6 +3,9 @@
 **Date:** 2026-06-30
 **Status:** Accepted
 
+**See also:** ADR-010 (2026-07-07) adds a second, independent slot-aligned
+recalculation timer alongside the debounce timer described in this ADR's
+Option C — the *Flow* below should be read together with that amendment.
 
 ---
 

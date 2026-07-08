@@ -19,6 +19,7 @@ from homeassistant.util import slugify
 from .calculation import LossDistribution, effective_in_original_unit
 from .const import CONF_INPUT_SENSORS, DOMAIN
 from .coordinator import EffyCoordinator
+from .sensor_utils import effective_unit_for
 
 
 async def async_setup_entry(
@@ -107,8 +108,17 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
     def _on_distribution(self, distribution: LossDistribution) -> None:
         """Receive a new distribution result from the coordinator and update state.
 
-        Converts the internal W value back to this sensor's own unit
-        (W, kW, Wh, or kWh) via ``effective_in_original_unit`` — see ADR-002.
+        ``distribute_loss`` (and, upstream of it, ``LiveReading.to_sensor_reading``
+        for TOTAL_INCREASING/TOTAL-as-energy sources) always works in Watts —
+        an energy-family source's raw Wh/kWh delta is converted to a
+        W-equivalent *before* it ever reaches the coordinator's distribution
+        call (ADR-008), and never converted back to an energy unit, because
+        ``_from_w`` only strips a kilo- prefix and has no notion of "per
+        hour". So the value reported here for an energy-family source is
+        always itself a power reading, and must be labeled and converted
+        as such (``effective_unit_for``) — not with the source entity's own
+        raw Wh/kWh unit, which would be a category error (energy vs. power),
+        not just a scale error. See the bug this fixed for the long version.
         """
         # Effective value may not be present if this sensor had no reading
         if self._source_entity_id not in distribution.effective_values_w:
@@ -116,7 +126,8 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
 
         src_state = self._hass.states.get(self._source_entity_id)
         if src_state:
-            self._source_unit = src_state.attributes.get("unit_of_measurement", "W")
+            raw_unit = src_state.attributes.get("unit_of_measurement", "W")
+            self._source_unit = effective_unit_for(raw_unit)
             self._attr_native_unit_of_measurement = self._source_unit
 
         self._attr_native_value = round(
