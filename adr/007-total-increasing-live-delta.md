@@ -4,6 +4,11 @@
 **Status:** Accepted — supersedes initial revision (slot-anchor approach)
 **Amended:** 2026-07-01 (LiveReading accumulator; time-based Wh→W conversion)
 
+**See also:** ADR-010 (2026-07-07) amends `LiveReading.reset()` for the
+ENERGY family (idle entities no longer collapse `reset_ts`/`updated_ts`
+together) and corrects the now-outdated "`reset` zeroes `avg`" statement in
+the POWER section below (see ADR-006's 2026-07-03 amendment instead).
+
 ---
 
 ## Context
@@ -114,11 +119,27 @@ W_equiv   = delta_Wh / elapsed_h          # Wh/h = W
 If `elapsed_h == 0` (only one event has fired, window has no duration yet)
 the result is 0 W — a conservative fallback that avoids division by zero.
 
+> **Amendment (see ADR-010, 2026-07-07):** this fallback is also what ran on
+> *every* cycle where some other entity's event triggered recalculation
+> before this entity reported again — which, for entities updating less
+> often than whatever else is triggering cycles, was most cycles. ADR-010
+> fixes this at the `reset()` level (see below), not by changing this
+> formula or this fallback.
+
 After recalculation, `reset` rolls the window:
 ```
 reset_ts  = updated_ts      # no gap between windows
 raw_start = raw_last        # next window starts from last known absolute
 ```
+
+> **Amendment (see ADR-010, 2026-07-07):** this roll-forward is now
+> conditional on whether the entity itself reported an event since its last
+> reset. If it did not (idle), `reset_ts` stays put and only `updated_ts`
+> advances to the real current time — see ADR-010 for the full mechanism
+> and why an unconditional roll-forward caused live values to flatline at
+> whatever `elapsed_h == 0` produces (0 W) on almost every cycle for
+> entities that update less often than whatever else triggers
+> recalculation.
 
 ### POWER family (`MEASUREMENT`, `TOTAL` with W/kW)
 
@@ -147,6 +168,12 @@ else:
 conversion is needed because the unit is already instantaneous power.
 
 After recalculation, `reset` zeroes `avg` and moves `reset_ts = updated_ts`.
+
+> **Correction (see ADR-006, amendment 2026-07-03):** `avg` is *not* zeroed
+> here — it is carried forward unchanged across the reset. Zeroing it caused
+> live values to read ~0 W on almost every cycle for any sensor that didn't
+> happen to fire within the same debounce window as whichever sensor
+> triggered the recalculation.
 
 ---
 

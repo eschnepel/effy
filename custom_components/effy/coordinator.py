@@ -1,5 +1,5 @@
 """
-EffyCoordinator – shared coordinator for live loss distribution (ADR-006 Option C).
+EffyCoordinator – shared coordinator for live loss distribution (ADR-006 Option C, ADR-010).
 
 Architecture
 ------------
@@ -7,9 +7,17 @@ One coordinator is created per config entry and stored in ``hass.data``.
 It owns:
   - O(M+K) state-change listeners (inputs + outputs).
   - A LiveReading cache: one entry per watched entity, updated on every
-    state-change event, reset after each debounced recalculation.
+    state-change event, reset after each recalculation.
   - A debounce timer (DEBOUNCE_SECONDS) that fires one recalculation after
     a burst of state-change events has settled.
+  - A second, independent slot-aligned timer that fires SLOT_TIMER_LEAD_SECONDS
+    before every SLOT_MINUTES wall-clock boundary, regardless of whether any
+    state-change event occurred. It does not replace or cancel the debounce
+    timer — both coexist and either may trigger a recalculation. Its purpose
+    is to give ENERGY-family entities that update less often than the debounce
+    cadence a real, honestly-computed reading close to every slot boundary,
+    instead of only being recalculated whenever some other entity happens to
+    report (see LiveReading.reset).
   - A push registry: child EffySensor instances subscribe and receive their
     computed effective value after each recalculation.
 
@@ -20,14 +28,22 @@ state_change event  (always on the HA event loop)
       → update LiveReading in _cache (time-weighted average or raw delta)
       → if no refresh pending: schedule _do_refresh(DEBOUNCE_SECONDS)
       → further events only update cache, no new timer
-  → timer fires → _do_refresh
+  → debounce timer fires → _do_refresh → _recalculate_and_reset
+slot-aligned timer fires (independent of the above)
+  → _on_slot_timer → _recalculate_and_reset → reschedules itself
+_recalculate_and_reset:
       → convert each LiveReading to a W-equivalent SensorReading
       → distribute_loss
       → push result to subscribers
-      → reset every LiveReading (anchor = last raw value / last average,
-        timestamps rolled - values are carried forward, never zeroed, since
-        a reset happens on every debounce cycle regardless of which entity
-        actually triggered it)
+      → reset every LiveReading. For an entity that reported a real event
+        since its last reset, the anchor (last raw value / last average)
+        and timestamps are carried/rolled forward together, since a reset
+        happens on every cycle regardless of which entity actually
+        triggered it. For an ENERGY entity that did NOT report since its
+        last reset, only updated_ts advances to the real current time —
+        reset_ts stays put — so the next reading reflects a real,
+        honestly-idle delta-over-elapsed-time rather than a stale carried
+        rate (see LiveReading.reset).
 
 Thread safety
 -------------
@@ -38,9 +54,14 @@ needed.
 LiveReading cache structure (per entity)
 -----------------------------------------
 All state classes share:
-  reset_ts   – wall-clock time of the last cache reset (start of the
-               current accumulation window).
-  updated_ts – wall-clock time of the most recent state-change event.
+  reset_ts   – wall-clock time of the last real anchor point (start of the
+               current accumulation window; only moves when this entity
+               itself reported, or advances to `now` for the very first
+               ever entity).
+  updated_ts – wall-clock time used as the end of the current accumulation
+               window: the most recent state-change event, OR — for an
+               ENERGY entity idle since its last reset — the real time of
+               the most recent recalculation cycle.
 
 MEASUREMENT / TOTAL  (unit: W or kW, already instantaneous power)
   avg_w      – time-weighted running average over [reset_ts, updated_ts].
@@ -50,12 +71,14 @@ MEASUREMENT / TOTAL  (unit: W or kW, already instantaneous power)
 
 TOTAL_INCREASING / TOTAL  (unit: Wh or kWh, energy counter)
   raw_start  – absolute counter value at reset_ts.
-  raw_last   – absolute counter value at updated_ts.
+  raw_last   – absolute counter value at updated_ts (unchanged while idle).
   delta      – raw_last - raw_start (≥ 0, clamped on counter reset).
   Conversion to W-equivalent at recalculation time:
     W_equiv = delta_Wh / ((updated_ts - reset_ts).total_seconds() / 3600)
   This mirrors the history path's ``change / slot_duration_h`` formula
   but uses the actual elapsed time instead of the fixed 5-minute window.
+  While idle, delta stays 0 and updated_ts keeps advancing, so this
+  honestly converges to 0 W rather than freezing at the last active rate.
 
 Note on TOTAL vs TOTAL_INCREASING:
   Both use ``change`` in the history path and are treated identically here
@@ -79,12 +102,19 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 
 from .calculation import LossDistribution, SensorReading, distribute_loss
 from .const import CONF_INPUT_SENSORS, CONF_OUTPUT_SENSORS
+from .sensor_utils import SLOT_MINUTES
 
 _LOGGER = logging.getLogger(__name__)
 
 # How long to wait after the last state-change event before recalculating.
 # See ADR-006 (Option C).
 DEBOUNCE_SECONDS = 0.3
+
+# How long before every SLOT_MINUTES wall-clock boundary the independent
+# slot-aligned timer fires (see EffyCoordinator._schedule_next_slot_timer,
+# ADR-010). A few seconds of lead time keeps this comfortably clear of the
+# boundary itself without materially shrinking the window it's meant to cover.
+SLOT_TIMER_LEAD_SECONDS = 5
 
 # Sentinel: used as reset_ts / updated_ts before the first event arrives.
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -123,6 +153,13 @@ class LiveReading:
     raw_start: float = 0.0
     # Absolute counter value from the most recent event.
     raw_last: float = 0.0
+
+    # True if update_power/update_energy has been called since the last
+    # reset() call. Used by reset() to distinguish "this entity's window
+    # closed because it actually reported" from "this entity was reset only
+    # because some other entity's event triggered a recalculation cycle" —
+    # see reset() for why that distinction matters.
+    _touched_since_reset: bool = False
 
     def is_seeded(self) -> bool:
         """True once at least one real state value has been received."""
@@ -171,35 +208,60 @@ class LiveReading:
         )
 
     def reset(self, now: datetime) -> None:
-        """Roll the accumulation window forward after a recalculation.
+        """Roll the accumulation window forward after a recalculation (ADR-010).
 
-        Power sensors: *carry the last computed average forward* as the seed
-        for the new window; move timestamps forward. This mirrors the energy
-        family's ``raw_start = raw_last`` carry-forward. It must NOT be
-        zeroed here: ``_do_refresh`` resets every watched entity on every
-        debounce cycle, including entities that received no event during the
-        burst that triggered this particular cycle. Zeroing `avg`
-        unconditionally would make any sensor that isn't part of the
-        triggering burst report 0 W until its own next event arrives - which,
-        for entities that update less frequently than the 0.3 s debounce
-        window, is most cycles.
+        ``_do_refresh`` (and the slot-aligned timer, see EffyCoordinator)
+        resets every watched entity on every cycle, including entities that
+        received no event since the last reset. What "reset" should mean for
+        such an untouched entity differs by family:
 
-        Carrying `avg` forward is safe because `update_power` always
-        discards it on the first real event of a new window anyway: right
-        after reset, ``reset_ts == updated_ts``, so `old_elapsed` is 0 and
-        the first sample's weight is 1.0 (see `update_power`). The carried
-        value only matters - and is the correct best estimate - when *no*
-        new event arrives before the next recalculation.
+        POWER: *carry the last computed average forward* as the seed for the
+        new window; move timestamps forward together (no gap). `avg` is a
+        time-weighted average already folded in at read time in
+        `update_power` — `to_sensor_reading` just returns it as-is, so
+        advancing `reset_ts`/`updated_ts` together here doesn't change what
+        gets reported; it only affects how much weight `update_power` gives
+        the carried-forward `avg` once a real event finally arrives (see
+        `update_power`).
 
-        The new reset_ts is the old updated_ts (not ``now``) so there is no
-        gap between the previous window and the new one.
+        ENERGY, touched since the last reset: same "carry forward, roll
+        together" treatment, moving raw_start to raw_last. This mirrors
+        POWER and is safe because `update_energy` re-anchors cleanly on the
+        first real event of a new window anyway.
+
+        ENERGY, NOT touched since the last reset (genuinely idle): reset_ts
+        must NOT move — it still marks the last real event. But updated_ts
+        *does* advance to the real `now`. This makes the next
+        `to_sensor_reading()` compute an honest
+        ``0 (unchanged raw_start/raw_last) / real_elapsed_h`` = 0, instead of
+        reporting a stale rate that was only true while the entity was still
+        actually reporting. Collapsing updated_ts to the old value here (as
+        for the "touched" case) would instead keep elapsed_h pinned at 0
+        indefinitely — an energy sensor that updates less often than
+        whatever triggers recalculation would then flatline at whatever its
+        last real rate happened to be, for as long as it stays quiet, which
+        is the bug this branch exists to prevent.
         """
-        new_reset = self.updated_ts if self.is_seeded() else now
-        self.reset_ts = new_reset
-        self.updated_ts = new_reset
+        if not self.is_seeded():
+            new_reset = now
+            self.reset_ts = new_reset
+            self.updated_ts = new_reset
+            if self.family != _FAMILY_POWER:
+                self.raw_start = self.raw_last
+            self._touched_since_reset = False
+            return
 
-        if self.family != _FAMILY_POWER:
-            self.raw_start = self.raw_last
+        if self.family == _FAMILY_POWER or self._touched_since_reset:
+            new_reset = self.updated_ts
+            self.reset_ts = new_reset
+            self.updated_ts = new_reset
+            if self.family != _FAMILY_POWER:
+                self.raw_start = self.raw_last
+        else:
+            # ENERGY family, genuinely idle since the last reset.
+            self.updated_ts = now
+
+        self._touched_since_reset = False
 
     def update_power(self, new_value: float, event_ts: datetime) -> None:
         """Incorporate a new instantaneous power reading (W/kW) via time-weighted average.
@@ -220,6 +282,7 @@ class LiveReading:
             self.reset_ts = event_ts
             self.avg = new_value
             self.updated_ts = event_ts
+            self._touched_since_reset = True
             return
 
         prev_ts = self.updated_ts
@@ -233,6 +296,7 @@ class LiveReading:
             self.avg = new_value
 
         self.updated_ts = event_ts
+        self._touched_since_reset = True
 
     def update_energy(self, absolute: float, event_ts: datetime) -> None:
         """Incorporate a new absolute counter reading (Wh/kWh).
@@ -249,6 +313,7 @@ class LiveReading:
             self.raw_last = absolute
             self.reset_ts = event_ts
             self.updated_ts = event_ts
+            self._touched_since_reset = True
             return
 
         if absolute < self.raw_last:
@@ -263,6 +328,7 @@ class LiveReading:
 
         self.raw_last = absolute
         self.updated_ts = event_ts
+        self._touched_since_reset = True
 
 
 def _state_class_family(state_class: str | None, unit: str) -> str:
@@ -278,6 +344,31 @@ def _state_class_family(state_class: str | None, unit: str) -> str:
     if state_class == SensorStateClass.TOTAL:
         return _FAMILY_ENERGY if unit in ("Wh", "kWh") else _FAMILY_POWER
     return _FAMILY_POWER
+
+
+def _next_slot_trigger_delay(
+    now: datetime,
+    slot_minutes: int = SLOT_MINUTES,
+    lead_seconds: float = SLOT_TIMER_LEAD_SECONDS,
+) -> float:
+    """Seconds from ``now`` until the next slot-aligned trigger.
+
+    Slot boundaries are wall-clock aligned multiples of ``slot_minutes``
+    (e.g. :00, :05, :10, ... for slot_minutes=5), matching the HA recorder
+    statistics slots used by the history path (ADR-003, sensor_utils.SLOT_MINUTES)
+    — the same grid, not a separately-invented interval. The trigger itself
+    fires ``lead_seconds`` before each boundary. If that point has already
+    passed within the current slot (i.e. ``now`` is inside the last
+    ``lead_seconds`` before/at a boundary), the delay skips forward to the
+    following slot's trigger instead of returning a zero/negative delay.
+    """
+    slot_seconds = slot_minutes * 60
+    epoch = now.timestamp()
+    current_slot_start = epoch - (epoch % slot_seconds)
+    trigger_at = current_slot_start + slot_seconds - lead_seconds
+    if trigger_at <= epoch:
+        trigger_at += slot_seconds
+    return trigger_at - epoch
 
 
 class EffyCoordinator:
@@ -307,6 +398,10 @@ class EffyCoordinator:
         self._refresh_pending: bool = False
         self._unsub_refresh: Callable[[], None] | None = None
 
+        # Slot-aligned timer state (independent of the debounce timer above —
+        # see module docstring). Self-reschedules after every firing.
+        self._unsub_slot_timer: Callable[[], None] | None = None
+
         # Listener unsubscribe handle
         self._unsub_listeners: Callable[[], None] | None = None
 
@@ -328,13 +423,18 @@ class EffyCoordinator:
             self._on_state_change,
         )
 
+        self._schedule_next_slot_timer()
+
     @callback  # type: ignore[untyped-decorator]
     def async_shutdown(self) -> None:
-        """Cancel listeners and any pending debounce timer."""
+        """Cancel listeners and any pending debounce/slot timer."""
         if self._unsub_listeners is not None:
             self._unsub_listeners()
             self._unsub_listeners = None
         self._cancel_pending_refresh()
+        if self._unsub_slot_timer is not None:
+            self._unsub_slot_timer()
+            self._unsub_slot_timer = None
 
     # ------------------------------------------------------------------
     # Subscriber management
@@ -400,11 +500,39 @@ class EffyCoordinator:
 
     @callback  # type: ignore[untyped-decorator]
     def _do_refresh(self, _now: Any) -> None:
-        """Debounce timer fired – convert accumulators, recalculate, push, then reset."""
+        """Debounce timer fired – clear debounce state, then recalculate."""
         self._refresh_pending = False
         self._unsub_refresh = None
-        now = datetime.now(tz=timezone.utc)
+        self._recalculate_and_reset(datetime.now(tz=timezone.utc))
 
+    @callback  # type: ignore[untyped-decorator]
+    def _on_slot_timer(self, _now: Any) -> None:
+        """Slot-aligned timer fired – recalculate, then reschedule for the next slot.
+
+        Deliberately does NOT touch `_refresh_pending` / `_unsub_refresh`:
+        this timer is fully independent of the debounce timer (see module
+        docstring) and must not cancel or interfere with a debounce cycle
+        that may currently be pending.
+        """
+        try:
+            self._recalculate_and_reset(datetime.now(tz=timezone.utc))
+        finally:
+            # Always reschedule, even if recalculation raised, so a single
+            # bad cycle doesn't permanently stop the slot timer.
+            self._schedule_next_slot_timer()
+
+    def _schedule_next_slot_timer(self) -> None:
+        """(Re)schedule the slot-aligned timer for its next trigger point."""
+        delay = _next_slot_trigger_delay(datetime.now(tz=timezone.utc))
+        self._unsub_slot_timer = async_call_later(self._hass, delay, self._on_slot_timer)
+
+    def _recalculate_and_reset(self, now: datetime) -> None:
+        """Convert accumulators, recalculate, push, then reset every LiveReading.
+
+        Shared by both the debounce timer (_do_refresh) and the slot-aligned
+        timer (_on_slot_timer) — the two triggers differ only in what timer
+        bookkeeping happens around this call, not in the recalculation itself.
+        """
         inputs: list[SensorReading] = []
         outputs: list[SensorReading] = []
 
@@ -426,7 +554,7 @@ class EffyCoordinator:
 
         if not inputs:
             _LOGGER.debug("Effy coordinator: no valid input readings, skipping refresh")
-            # Reset even on skip so stale accumulators don't carry over indefinitely.
+            # Reset even on skip so idle accumulators don't carry over indefinitely.
             self._reset_all_cache(now)
             return
 
@@ -453,7 +581,7 @@ class EffyCoordinator:
         accumulator that expects only deltas, corrupting the energy sensors.
         """
         self._cancel_pending_refresh()
-        self._do_refresh(None)
+        self._recalculate_and_reset(datetime.now(tz=timezone.utc))
 
     # ------------------------------------------------------------------
     # Helpers

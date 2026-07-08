@@ -103,6 +103,9 @@ if not TYPE_CHECKING:
 _state_class_family = _coord_mod._state_class_family
 _FAMILY_POWER = _coord_mod._FAMILY_POWER
 _FAMILY_ENERGY = _coord_mod._FAMILY_ENERGY
+_next_slot_trigger_delay = _coord_mod._next_slot_trigger_delay
+SLOT_MINUTES = _coord_mod.SLOT_MINUTES
+SLOT_TIMER_LEAD_SECONDS = _coord_mod.SLOT_TIMER_LEAD_SECONDS
 
 SC = _SensorStateClass
 
@@ -402,3 +405,88 @@ class TestLiveReadingReset:
         # New window: 1005 is now the anchor
         lr.update_energy(1008.0, _ts(10, 8))
         assert lr.raw_last - lr.raw_start == pytest.approx(3.0)
+
+    def test_energy_reads_honest_zero_while_idle_across_unrelated_resets(self) -> None:
+        """Regression test for the 'battery discharge stuck at a stale rate' bug.
+
+        A recalculation resets EVERY watched entity, including ones that
+        produced no event of their own — typically triggered by some other,
+        faster-updating entity. While this energy entity stays genuinely
+        idle, reset_ts must stay pinned at its last real event (not roll
+        forward with every unrelated reset), so elapsed_h keeps growing
+        honestly and delta stays 0 -> the reading is a real 0, not an
+        artifact of a zero-width window, and not a stale carried-forward
+        rate from whenever the entity last actually reported.
+        """
+        lr = LiveReading(entity_id="battery_discharge", unit="Wh", family=_FAMILY_ENERGY)
+        lr.update_energy(1000.0, _ts(10, 0, 0))
+        lr.reset(_ts(10, 0, 0))  # closes the window right after the real event
+
+        # Three unrelated recalculation cycles fire while this entity is idle.
+        lr.reset(_ts(10, 0, 10))
+        lr.reset(_ts(10, 0, 20))
+        lr.reset(_ts(10, 0, 30))
+
+        assert lr.reset_ts == _ts(10, 0, 0), "anchor must not move while idle"
+        assert lr.updated_ts == _ts(10, 0, 30), "eval point advances honestly"
+        assert lr.raw_start == pytest.approx(1000.0)
+        assert lr.raw_last == pytest.approx(1000.0)
+
+        reading_idle = lr.to_sensor_reading()
+        assert reading_idle is not None
+        assert reading_idle.raw_value == pytest.approx(0.0)
+
+        # The real next event finally arrives, 30 Wh accumulated over the
+        # full 30s gap -- must be averaged over that whole real interval,
+        # not some artificially shrunk window from the idle resets above.
+        lr.update_energy(1030.0, _ts(10, 0, 30))
+        reading_real = lr.to_sensor_reading()
+        assert reading_real is not None
+        assert reading_real.raw_value == pytest.approx(3600.0)  # 30 Wh / 30s
+
+    def test_energy_idle_reset_does_not_disturb_touched_reset_behavior(self) -> None:
+        """A reset for an entity that WAS touched must behave exactly as before,
+        regardless of how many idle resets happened to other entities in between.
+        """
+        lr = LiveReading(entity_id="s", unit="Wh", family=_FAMILY_ENERGY)
+        lr.update_energy(1000.0, _ts(10, 0, 0))
+        lr.update_energy(1005.0, _ts(10, 0, 5))
+        lr.reset(_ts(10, 0, 5))
+        assert lr.reset_ts == _ts(10, 0, 5)
+        assert lr.updated_ts == _ts(10, 0, 5)
+        assert lr.raw_start == pytest.approx(1005.0)
+
+
+# ---------------------------------------------------------------------------
+# _next_slot_trigger_delay
+# ---------------------------------------------------------------------------
+
+
+class TestNextSlotTriggerDelay:
+    def test_delay_from_start_of_slot(self) -> None:
+        now = _ts(10, 0, 0)
+        assert _next_slot_trigger_delay(now) == pytest.approx(295.0)
+
+    def test_delay_mid_slot(self) -> None:
+        now = _ts(10, 2, 30)
+        assert _next_slot_trigger_delay(now) == pytest.approx(145.0)
+
+    def test_delay_skips_to_next_slot_inside_lead_window(self) -> None:
+        # 10:04:57 is only 3s before the 10:05:00 boundary -- inside the 5s
+        # lead window, so this slot's trigger point has already passed.
+        now = _ts(10, 4, 57)
+        assert _next_slot_trigger_delay(now) == pytest.approx(298.0)
+
+    def test_delay_exactly_at_boundary(self) -> None:
+        now = _ts(10, 5, 0)
+        assert _next_slot_trigger_delay(now) == pytest.approx(295.0)
+
+    def test_custom_slot_and_lead(self) -> None:
+        now = _ts(10, 0, 0)
+        assert _next_slot_trigger_delay(now, slot_minutes=1, lead_seconds=2) == pytest.approx(58.0)
+
+    def test_uses_shared_slot_minutes_constant(self) -> None:
+        """SLOT_MINUTES must be the same 5-minute grid as the history path
+        (sensor_utils.SLOT_MINUTES) -- not a separately invented interval."""
+        assert SLOT_MINUTES == 5
+        assert SLOT_TIMER_LEAD_SECONDS == 5

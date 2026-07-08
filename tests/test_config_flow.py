@@ -83,7 +83,7 @@ def _load(reg_name: str, filename: str) -> ModuleType:
     return mod
 
 
-_const = _load("effy.const", "const.py")
+_unused_const = _load("effy.const", "const.py")
 _config_flow = _load("effy.config_flow", "config_flow.py")
 
 _outputs_missing_device_class = _config_flow._outputs_missing_device_class
