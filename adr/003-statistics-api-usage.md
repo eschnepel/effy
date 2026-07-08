@@ -320,3 +320,94 @@ populated and correct.
 `has_sum`/`sum` remain unchanged (`False`/omitted) — this amendment only
 concerns `state`, not the sum-statistic question addressed in the original
 decision above.
+
+---
+
+## Amendment – 2026-07-07: read units from statistics metadata, not the live entity
+
+**Context:** investigating a report of BMS (battery) `effy_*` effective
+values reading consistently 0 despite non-zero raw input data.
+
+`_fetch_statistics` calls `statistics_during_period(..., units=None, ...)`.
+Per HA's own developer documentation, `units=None` means *no* conversion is
+applied — the returned `change`/`mean` values are in whatever unit is
+recorded in `statistics_meta` for that statistic_id. HA documents that "for
+certain device classes, the unit of the statistics is normalized" — i.e.
+`statistics_meta.unit_of_measurement` is **not guaranteed to equal** the
+live entity's current `unit_of_measurement` (`_get_unit`, which reads
+`hass.states.get(entity_id).attributes`). These are two independent
+sources of truth that can diverge (e.g. after a unit change in the source
+integration, or HA-side normalization for the entity's device class), and
+`async_recalculate_history` was using the live-entity unit to interpret
+values that actually came from — and are only guaranteed correct in — the
+statistics-metadata unit.
+
+If the two units differ, feeding `to_power_equivalent` the wrong one
+compounds with its own kWh→kW (or Wh→W) scaling, throwing off every
+downstream conversion by an extra, unintended factor on top of the correct
+one — this was the concrete mechanism suspected, and the closest match
+found, for a "divide by 1,000,000 instead of 1,000" style symptom.
+
+**Fix:** a new `_get_statistics_units` helper fetches each entity's unit
+directly from `get_metadata` (`homeassistant.components.recorder.statistics`)
+— the same source `statistics_during_period` itself draws from — and
+`async_recalculate_history` now prefers that unit over the live entity's,
+logging a `WARNING` (entity id, both units) whenever they differ so a
+mismatch is visible in the log rather than silently producing wrong
+numbers. Falls back to the live-entity unit if metadata is unavailable or
+the API shape has changed (defensive, matching the existing
+`StatisticMeanType` version-compat approach in this ADR).
+
+**Caveat:** this was derived from HA's documented behaviour and known
+issues around statistics unit normalization, not verified against a
+running HA instance with real BMS sensor data (no test harness for
+`history.py` exists in this repo — see ADR-000 §6 acknowledgment that some
+of this module is necessarily tested against real HA logs rather than pure
+unit tests). The new `WARNING` log is the way to confirm on a real
+installation whether this was actually the mechanism at play.
+
+---
+
+## Amendment – 2026-07-07: `effy_*` effective values for energy sensors were mislabeled, not mis-scaled
+
+**Context:** same investigation as the amendment above. A second, distinct
+issue was found by tracing the actual unit used to convert an *effective*
+(post-loss-distribution) value back out of `distribute_loss`'s internal
+Watts representation.
+
+For an energy-family (Wh/kWh) source, `to_power_equivalent` converts the
+raw energy delta to a W-equivalent power reading *before* it ever reaches
+`distribute_loss` (ADR-008) — `distribute_loss` and `effective_values_w`
+always deal in Watts, never in Wh/kWh, regardless of the source's own
+state class. Both the live path (`sensor.py`'s `EffySensor._on_distribution`)
+and the history write path (`per_sensor[...]["unit"]` in
+`async_recalculate_history`) were nonetheless labeling — and, for the live
+path, converting via `effective_in_original_unit` — the resulting value
+using the *source's own raw* Wh/kWh unit, not the W/kW unit it was actually
+computed in. `_from_w` (`calculation.py`) only strips a kilo- prefix
+(÷1000 for "kW"/"kWh", treated identically); it has no notion of "per
+hour", so it cannot turn a Watts figure into a genuine Wh/kWh one — this
+was a category error (power reported/labeled as energy), not a magnitude
+error: the *number* written for a kWh source was numerically identical
+either way (since `_from_w` treats "kWh" exactly like "kW"), only the unit
+label was wrong. For a Wh source it was fully invisible numerically ("Wh"
+and "W" both pass through `_from_w` unchanged).
+
+**Fix:** a new `effective_unit_for(unit)` helper in `sensor_utils.py`
+(`Wh`→`W`, `kWh`→`kW`, `W`/`kW` unchanged) — extracted from
+`to_power_equivalent`'s existing unit-remapping so both call sites can
+reuse the identical mapping. `sensor.py`'s live path now declares
+`native_unit_of_measurement` and calls `effective_in_original_unit` using
+`effective_unit_for(raw_unit)` instead of the raw unit. The history write
+path uses `effective_unit_for(units[eid])` for `per_sensor[...]["unit"]`
+instead of `units[eid]` directly.
+
+**Note:** confirmed as a real mislabeling bug via code tracing and new
+regression tests (`tests/test_sensor_utils.py`), but — being a label-only
+issue for the numbers already in the system — it does **not** by itself
+explain a value reading exactly 0. The two other candidates considered for
+that: the statistics-unit-mismatch amendment above (which *can* affect
+magnitude), and ADR-001's waterfall model legitimately assigning an
+effective value of 0 to an input smaller than total system loss for a
+given slot, which is expected behaviour, not a bug.
+
