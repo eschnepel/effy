@@ -3,6 +3,13 @@
 **Date:** 2026-07-07
 **Status:** Accepted — amends ADR-006 (Option C flow) and ADR-007 (`LiveReading.reset`)
 
+**See also:** the live path this ADR describes was disabled 2026-07-09
+(`disabled/README.md`). ADR-011 (2026-07-10) repurposes the slot-aligned
+timer introduced here to drive single-slot history recalculation instead
+of live recalculation, and changes it to fire *after* each boundary
+instead of *before* — the "Decision" section below (lead time, `Option C`
+live flow) reflects the pre-ADR-011 live design.
+
 ---
 
 ## Context

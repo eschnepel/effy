@@ -378,37 +378,28 @@ def _effy_entity_id(source_entity_id: str) -> str:
     return f"sensor.effy_{slug}"
 
 
-async def async_recalculate_history(
+async def _compute_effective_slots(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
-) -> int:
-    """
-    Recalculate and overwrite effy statistics for up to max_history_days.
+    start: datetime,
+    end: datetime,
+) -> dict[str, dict[str, Any]]:
+    """Core computation shared by async_recalculate_history and async_recalculate_slot.
 
-    Existing statistics for the same statistic_id + timestamp are
-    overwritten, not appended to — see ADR-004 for why this is intentional
-    (stale rows from a previous sensor configuration must not survive a
-    recalculation).
+    Resolves units (preferring statistics metadata over the live entity's
+    current unit — see _get_statistics_units), fetches statistics for
+    [start, end), optionally smooths low-resolution energy noise (ADR-009 —
+    naturally a no-op for a single-slot range: _smooth_energy_rows requires
+    at least 2 rows of neighbor context per entity to do anything), then
+    runs distribute_loss per slot exactly as the live path does per event
+    (ADR-008).
 
-    If ``CONF_SMOOTH_LOW_RES_KWH`` is enabled in ``entry_options``, each
-    energy-family sensor's raw per-slot ``change`` series is first passed
-    through ``smooth_zero_noise`` (ADR-009) to counteract quantisation noise
-    from low-resolution (2-decimal-digit) energy counters before any
-    Wh/kWh → W conversion happens.
-
-    Returns the number of 5-minute short-term rows written. See the module
-    WARNING docstring above for how (and why) this writes to internal
-    recorder tables instead of using the public statistics import API.
+    Returns ``per_sensor``: effy_entity_id → {"unit": ..., "slot_values":
+    [(slot_start, effective_value), ...]}, ready for
+    ``_write_recorder_statistics``. Does not write anything itself.
     """
     input_ids: list[str] = entry_options.get(CONF_INPUT_SENSORS, [])
     output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
-    max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
-
-    end = datetime.now(tz=timezone.utc)
-    start = end - timedelta(days=max_days)
-    short_term_retention_days = _get_short_term_retention_days(hass)
-    short_term_cutoff = end - timedelta(days=short_term_retention_days)
-
     all_ids: list[str] = input_ids + output_ids
 
     # Gather per-sensor metadata (event loop – states are in memory)
@@ -465,8 +456,7 @@ async def async_recalculate_history(
     slots: list[datetime] = sorted(slot_set)
 
     if not slots:
-        _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
-        return 0
+        return {}
 
     # Compute effective values per slot
     # results: entity_id → [(start, effective_value_in_original_unit)]
@@ -489,16 +479,6 @@ async def async_recalculate_history(
             eff = effective_in_original_unit(reading.entity_id, distribution, reading.original_unit)
             results[reading.entity_id].append((slot, eff))
 
-    # Write statistics back – mean and state (ADR-003 amendment).
-    # state is filled with the same per-slot effective value as mean;
-    # apexcharts-card and similar frontend cards read state directly and
-    # show gaps if it is null, even when mean is present.
-    #
-    # Writing happens via _write_recorder_statistics, which calls the
-    # recorder instance's own async_import_statistics() callback to
-    # populate BOTH statistics_short_term (5-min, ADR-003) and statistics
-    # (hourly, long-term) – see the module-level WARNING docstring above
-    # for why this is necessary and what the risks are.
     per_sensor: dict[str, dict[str, Any]] = {}
     for eid in input_ids:
         if not results[eid]:
@@ -514,11 +494,50 @@ async def async_recalculate_history(
             "unit": effective_unit_for(units[eid]),
             "slot_values": results[eid],
         }
+    return per_sensor
 
+
+async def async_recalculate_history(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+) -> int:
+    """
+    Recalculate and overwrite effy statistics for up to max_history_days.
+
+    Existing statistics for the same statistic_id + timestamp are
+    overwritten, not appended to — see ADR-004 for why this is intentional
+    (stale rows from a previous sensor configuration must not survive a
+    recalculation).
+
+    If ``CONF_SMOOTH_LOW_RES_KWH`` is enabled in ``entry_options``, each
+    energy-family sensor's raw per-slot ``change`` series is first passed
+    through ``smooth_zero_noise`` (ADR-009) to counteract quantisation noise
+    from low-resolution (2-decimal-digit) energy counters before any
+    Wh/kWh → W conversion happens.
+
+    Writes both short-term (5-minute) and long-term (hourly) statistics —
+    see ADR-011 for why the hourly aggregate specifically requires a full
+    multi-slot range like this one, and must not be written from a
+    single-slot call (async_recalculate_slot deliberately skips it).
+
+    Returns the number of 5-minute short-term rows written. See the module
+    WARNING docstring above for how (and why) this writes to internal
+    recorder tables instead of using the public statistics import API.
+    """
+    max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
+    end = datetime.now(tz=timezone.utc)
+    start = end - timedelta(days=max_days)
+    short_term_retention_days = _get_short_term_retention_days(hass)
+    short_term_cutoff = end - timedelta(days=short_term_retention_days)
+
+    per_sensor = await _compute_effective_slots(hass, entry_options, start, end)
     if not per_sensor:
+        _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
         return 0
 
-    short_term_written: int = await _write_recorder_statistics(hass, per_sensor, short_term_cutoff)
+    short_term_written: int = await _write_recorder_statistics(
+        hass, per_sensor, short_term_cutoff=short_term_cutoff, include_long_term=True
+    )
 
     _LOGGER.debug(
         "Effy: history recalculation wrote %d short-term slots across %d sensors",
@@ -526,6 +545,52 @@ async def async_recalculate_history(
         len(per_sensor),
     )
     return short_term_written
+
+
+async def async_recalculate_slot(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    slot_start: datetime,
+) -> int:
+    """
+    Recalculate and write effy statistics for exactly one 5-minute slot.
+
+    Intended to be called shortly after a slot closes (see
+    EffyCoordinator._on_slot_timer / ADR-011), using the same computation
+    as async_recalculate_history but scoped to ``[slot_start, slot_start +
+    SLOT_MINUTES)`` — reuses _compute_effective_slots so both entry points
+    stay in lock-step; only the write path differs.
+
+    Deliberately writes ONLY the short-term (5-minute) statistic, never the
+    long-term (hourly) one — see ADR-011. Writing the hourly aggregate from
+    a single slot would overwrite the correct multi-slot hourly ``mean``
+    (computed by async_recalculate_history from every slot in that hour)
+    with just this one slot's value, silently degrading long-term data
+    every time this runs. Long-term aggregation stays the responsibility of
+    the full history recalc.
+
+    Returns the number of short-term rows written (0 or 1 per input sensor,
+    typically 0 if the recorder hasn't compiled statistics for this slot
+    yet, or 1 once it has).
+    """
+    slot_end = slot_start + timedelta(minutes=SLOT_MINUTES)
+    per_sensor = await _compute_effective_slots(hass, entry_options, slot_start, slot_end)
+    if not per_sensor:
+        _LOGGER.debug(
+            "Effy slot recalc: no statistics available yet for slot %s (recorder may "
+            "not have compiled it yet)",
+            slot_start,
+        )
+        return 0
+
+    written: int = await _write_recorder_statistics(hass, per_sensor, include_long_term=False)
+    _LOGGER.debug(
+        "Effy: slot recalculation for %s wrote %d short-term rows across %d sensors",
+        slot_start,
+        written,
+        len(per_sensor),
+    )
+    return written
 
 
 def _fetch_statistics(
@@ -566,23 +631,40 @@ def _fetch_statistics(
 async def _write_recorder_statistics(
     hass: HomeAssistant,
     per_sensor: dict[str, dict[str, Any]],
-    short_term_cutoff: datetime,
+    short_term_cutoff: datetime | None = None,
+    include_long_term: bool = True,
 ) -> int:
-    """Write 5-min + hourly statistics into the recorder DB.
+    """Write 5-min (+ optionally hourly) statistics into the recorder DB.
 
     *** INTERNAL RECORDER API – see module docstring WARNING above ***
 
     Runs directly on the EVENT LOOP (not an executor thread). For each
     sensor in ``per_sensor``, calls the recorder instance's public
     ``async_import_statistics(metadata, stats, table)`` @callback once for
-    the short-term (5-minute) table and once for the long-term (hourly)
-    table. This schedules internal ``ImportStatisticsTask`` jobs on the
-    recorder's own task queue, which handles metadata resolution/creation
-    and per-timestamp update-or-insert itself (ADR-004 overwrite
-    semantics), exactly as it does for HA's built-in
-    `async_add_external_statistics` calls – we are simply passing a
-    different `table` argument (`StatisticsShortTerm`) than that public
+    the short-term (5-minute) table and — if ``include_long_term`` — once
+    for the long-term (hourly) table. This schedules internal
+    ``ImportStatisticsTask`` jobs on the recorder's own task queue, which
+    handles metadata resolution/creation and per-timestamp update-or-insert
+    itself (ADR-004 overwrite semantics), exactly as it does for HA's
+    built-in `async_add_external_statistics` calls – we are simply passing
+    a different `table` argument (`StatisticsShortTerm`) than that public
     wrapper allows.
+
+    ``short_term_cutoff``: if given, only slot values at or after this
+    timestamp are written short-term (matches the recorder's own purge
+    retention — see ``_get_short_term_retention_days``). If ``None``, all
+    given slot values are written unfiltered — the single-slot caller
+    (``async_recalculate_slot``) always operates on a slot recent enough
+    that a cutoff would never exclude it, so it doesn't bother computing one.
+
+    ``include_long_term``: the hourly aggregate's ``mean`` is the average of
+    *every* slot_value in that hour (see below) — this is only correct when
+    ``per_sensor`` actually contains every slot of the hour, i.e. for a
+    multi-slot range like ``async_recalculate_history``'s. A single-slot
+    call (``async_recalculate_slot``, ADR-011) must pass
+    ``include_long_term=False``: writing it from just one slot would
+    overwrite the correct multi-slot hourly mean with that one slot's value,
+    silently degrading long-term data every time it runs.
 
     Because ``async_import_statistics`` only schedules the work
     (fire-and-forget), this function awaits
@@ -605,7 +687,11 @@ async def _write_recorder_statistics(
         # state == mean here: there is exactly one effective reading per
         # 5-minute slot, so the "last/only value in the interval" that
         # `state` represents is the same number as the interval mean.
-        short_term_slots = [(ts, val) for ts, val in slot_values if ts >= short_term_cutoff]
+        short_term_slots = (
+            [(ts, val) for ts, val in slot_values if ts >= short_term_cutoff]
+            if short_term_cutoff is not None
+            else slot_values
+        )
         if short_term_slots:
             short_term_stats: list[StatisticData] = [
                 {"start": ts, "mean": val, "state": val} for ts, val in short_term_slots
@@ -619,6 +705,11 @@ async def _write_recorder_statistics(
         # distinct from `mean`, which averages all slots in that hour.
         # `slot_values` is iterated in ascending slot order (see `slots`
         # above), so the last-appended value per hour is the last one.
+        # See the include_long_term docstring above for why this branch
+        # must not run for a single-slot call.
+        if not include_long_term:
+            continue
+
         hourly: dict[datetime, list[float]] = {}
         for ts, val in slot_values:
             hour_ts = ts.replace(minute=0, second=0, microsecond=0)

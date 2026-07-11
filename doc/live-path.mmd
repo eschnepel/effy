@@ -1,0 +1,42 @@
+flowchart TD
+    subgraph Trigger["Trigger – zwei unabhängige Quellen (ADR-006, ADR-010)"]
+        EV(["state_change Event<br/>Input- oder Output-Sensor"])
+        DEBOUNCE(["Debounce-Timer<br/>DEBOUNCE_SECONDS = 0.3s<br/>nach letztem Event"])
+        SLOT(["Slot-Timer<br/>SLOT_TIMER_LEAD_SECONDS = 5s<br/>vor jeder SLOT_MINUTES-Grenze<br/>selbst-nachplanend"])
+    end
+
+    EV --> ACC{"update_power /<br/>update_energy"}
+    EV -.->|"plant, falls kein Refresh pending"| DEBOUNCE
+
+    subgraph Accumulate["Akkumulation – LiveReading (ADR-006, ADR-007)"]
+        ACC -->|"POWER-Familie<br/>MEASUREMENT / TOTAL-as-power"| AVGF["avg_neu = (avg_alt·Δt_alt + wert·Δt_neu) / (Δt_alt+Δt_neu)<br/>Δt_alt = updated_ts − reset_ts<br/>Δt_neu = event_ts − updated_ts"]
+        ACC -->|"ENERGY-Familie<br/>TOTAL_INCREASING / TOTAL-as-energy"| RAWF["raw_last = absoluter Zählerstand<br/>bei Zähler-Reset: raw_start = absolut (clamp)"]
+        AVGF --> TOUCH["_touched_since_reset = True"]
+        RAWF --> TOUCH
+    end
+
+    DEBOUNCE --> RECALC["_recalculate_and_reset<br/>ADR-006 Option C, ADR-010"]
+    SLOT --> RECALC
+
+    subgraph Convert["to_sensor_reading() pro Entity"]
+        RECALC --> FAM{"Familie?"}
+        FAM -->|POWER| PWROUT["raw_value = avg<br/>unit bleibt W bzw. kW"]
+        FAM -->|ENERGY| ENEQ["elapsed_h = (updated_ts − reset_ts) / 3600<br/>W_equiv = max(0, raw_last − raw_start) / elapsed_h<br/>unit: Wh→W, kWh→kW"]
+    end
+
+    PWROUT --> DIST
+    ENEQ --> DIST
+
+    subgraph Distribute["distribute_loss – Waterfall (ADR-001, ADR-002, ADR-005)"]
+        DIST["_to_w: W unverändert, kW ×1000<br/>Σ inputs, Σ outputs<br/>total_loss = max(0, Σ inputs − Σ outputs)<br/>Waterfall: kleinste Inputs zuerst vom Loss konsumiert"]
+        DIST --> EFFW["effective_values_w[eid]<br/>immer in W"]
+    end
+
+    EFFW --> BACK["effective_in_original_unit =<br/>_from_w(effective_values_w[eid], effective_unit_for(quell_unit))<br/>W / Wh unverändert, kW / kWh ÷1000<br/>ADR-008 · Fix 2026-07-07"]
+
+    BACK --> PUSH(["Push an EffySensor-Subscriber"])
+    PUSH --> SENSOR["native_value = round(eff, 3)<br/>native_unit = effective_unit_for(quell_unit)<br/>Wh→W, kWh→kW, sonst unverändert"]
+
+    RECALC --> RESET{"reset() pro Entity<br/>ADR-010"}
+    RESET -->|"POWER<br/>ODER ENERGY touched"| ROLL["reset_ts = updated_ts = alter updated_ts<br/>POWER: avg bleibt erhalten<br/>ENERGY: raw_start = raw_last"]
+    RESET -->|"ENERGY, idle seit letztem Reset<br/>_touched_since_reset = False"| IDLE["reset_ts bleibt unverändert<br/>updated_ts = echtes now<br/>raw_start / raw_last unverändert<br/>→ nächster Read: ehrliche 0"]

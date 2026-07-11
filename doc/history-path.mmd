@@ -1,0 +1,50 @@
+flowchart TD
+    START(["async_recalculate_history(start, end)<br/>Button / Service-Call · ADR-004: overwrite"])
+
+    START --> UNITS["pro Entity (Input + Output):<br/>live_unit = _get_unit (Live-State)<br/>stat_unit = _get_statistics_units (get_metadata)"]
+    UNITS --> UCHK{"stat_unit ≠ live_unit?"}
+    UCHK -->|ja| WARN["_LOGGER.warning(...)<br/>units[eid] = stat_unit bevorzugt"]
+    UCHK -->|nein| UOK["units[eid] = stat_unit oder live_unit"]
+    WARN --> SCLS
+    UOK --> SCLS["state_classes[eid] = _get_state_class<br/>ADR-003 Amendment 2026-07-07"]
+
+    SCLS --> FETCH["_fetch_statistics:<br/>statistics_during_period(units=None,<br/>types={mean, change}, period=5minute)"]
+
+    FETCH --> SMOOTHCHK{"smooth_low_res_kwh aktiviert<br/>UND Energy-Familie? (ADR-009)"}
+    SMOOTHCHK -->|ja| SMOOTHF["smooth_zero_noise(change-Werte)<br/>Runde 1: ±1 Nachbar, 25%<br/>Runde 2 (Runs ≥2): ±1 10%, ±2 5%<br/>energieerhaltend · über gesamten Zeitraum,<br/>nicht pro Slot einzeln"]
+    SMOOTHCHK -->|nein| SLOTLOOP
+    SMOOTHF --> SLOTLOOP["pro 5-Minuten-Slot × pro Entity"]
+
+    subgraph PerSlot["_readings_for_slot"]
+        SLOTLOOP --> FIELD{"_stat_field_for(state_class, unit)"}
+        FIELD -->|"TOTAL_INCREASING /<br/>TOTAL-as-energy (Wh/kWh)"| CHANGE["field = change<br/>raw_val = Δ Zählerstand im Slot"]
+        FIELD -->|"MEASUREMENT /<br/>TOTAL-as-power (W/kW)"| MEAN["field = mean<br/>raw_val = Ø Leistung im Slot"]
+    end
+
+    CHANGE --> TPECHANGE["to_power_equivalent(raw_val, unit, slot_minutes=5)<br/>value × (60 / slot_minutes)<br/>Wh→W, kWh→kW · ADR-008"]
+    MEAN --> TPEMEAN["to_power_equivalent(raw_val, unit)<br/>W / kW: unverändert (passthrough)"]
+
+    TPECHANGE --> READING["SensorReading(eid, wert, effective_unit)"]
+    TPEMEAN --> READING
+
+    READING --> DIST
+
+    subgraph Distribute["distribute_loss – Waterfall (identisch zum Live-Pfad · ADR-001, ADR-002, ADR-005)"]
+        DIST["_to_w, Σ inputs, Σ outputs<br/>total_loss = max(0, Σ inputs − Σ outputs)<br/>Waterfall-Verteilung"]
+        DIST --> EFFW["effective_values_w[eid]<br/>immer in W"]
+    end
+
+    EFFW --> BACK["eff = effective_in_original_unit(eid, distribution, effective_unit)<br/>= _from_w(effective_values_w[eid], effective_unit)"]
+
+    BACK --> RESULTS["results[eid].append((slot, eff))"]
+
+    RESULTS --> PERSENSOR["per_sensor[effy_eid] = {<br/>  unit: effective_unit_for(units[eid]),<br/>  slot_values: results[eid]<br/>}<br/>Fix 2026-07-07: vorher fälschlich units[eid] direkt<br/>→ Wh/kWh-Label auf W/kW-Werten"]
+
+    PERSENSOR --> META["_build_statistic_metadata(statistic_id, unit)<br/>unit_class = None (ADR-002: keine HA-Konvertierung)<br/>has_mean / mean_type je HA-Version (Kompat)"]
+
+    META --> WRITE["_write_recorder_statistics"]
+
+    subgraph Write["async_import_statistics (ADR-003)"]
+        WRITE --> SHORT["Kurzfristig (5-Min):<br/>state = mean<br/>1 Reading = 1 Slot<br/>ADR-003 Amendment: verhindert apexcharts-card Lücken"]
+        WRITE --> LONG["Langfristig (stündlich):<br/>mean = Ø aller 5-Min-Werte der Stunde<br/>state = letzter 5-Min-Wert der Stunde"]
+    end
