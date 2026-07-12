@@ -1,27 +1,38 @@
 """
 History recalculation for Effy.
 
-Uses the Home Assistant statistics API to:
-1. Fetch 5-minute statistics for all configured sensors.
+Uses a mix of the Home Assistant statistics API and raw state history to:
+1. Get a 5-minute-resolution reading for every configured sensor —
+   ``statistics_during_period``'s ``mean`` for MEASUREMENT/TOTAL-as-power
+   sensors (unchanged), or a trapezoidal-rule redistribution of raw state
+   history for TOTAL_INCREASING/TOTAL-as-energy sensors (ADR-012,
+   ``calculation.trapezoidal_slot_contributions`` — replaces ADR-009's
+   neighbor-steal smoothing).
 2. Apply the same loss-distribution algorithm as the live sensor
    (``distribute_loss`` from calculation.py — see ADR-001).
 3. Write back corrected statistics for all effy_* output sensors,
-   **overwriting** any existing rows for the same slots (ADR-004).
+   **overwriting** any existing rows for the same slots (ADR-004): the
+   post-waterfall "effective" value (input sensors only, as before), and,
+   new in ADR-012, the raw pre-waterfall "derived power" for every
+   energy-family sensor (inputs and outputs) as a separate `effy_*_power`
+   statistic.
 
 State-class handling (ADR-003)
 -------------------------------
-TOTAL_INCREASING  → request ``change`` from the statistics API (HA computes
-                    the per-interval delta and handles counter resets).
-TOTAL / MEASUREMENT → request ``mean``.
+TOTAL_INCREASING  → energy-family; per-slot value from the trapezoidal
+                    rule over raw state history (ADR-012), not the
+                    statistics API's ``change`` field anymore.
+TOTAL / MEASUREMENT → power-family; request ``mean`` from the statistics
+                    API, unchanged.
 
 All sources are written back with both ``mean`` and ``state`` — the
-latter is the same per-slot effective value (there is exactly one
-effective reading per 5-minute slot, so "last/only reading in the
-interval" and "mean of the interval" coincide at short-term resolution).
-Filling ``state`` is required for consumers that read the raw per-period
-value directly instead of ``mean`` — e.g. the ``apexcharts-card`` frontend
-card renders gaps for statistics rows where ``state`` is null, even when
-``mean`` is populated (see ADR-003 amendment below).
+latter is the same per-slot value (there is exactly one reading per
+5-minute slot, so "last/only reading in the interval" and "mean of the
+interval" coincide at short-term resolution). Filling ``state`` is
+required for consumers that read the raw per-period value directly
+instead of ``mean`` — e.g. the ``apexcharts-card`` frontend card renders
+gaps for statistics rows where ``state`` is null, even when ``mean`` is
+populated (see ADR-003 amendment below).
 
 Units (ADR-002): statistic values are read and written in the sensor's
 original unit (W, kW, Wh, kWh); normalization to W happens exactly once,
@@ -110,7 +121,6 @@ from typing import Any
 from homeassistant.components.recorder import get_instance as get_recorder
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
-from homeassistant.components.sensor import SensorStateClass
 from homeassistant.core import HomeAssistant
 from homeassistant.util import slugify
 
@@ -127,20 +137,19 @@ except ImportError:
     StatisticMeanType = None
     _HAS_STATISTIC_MEAN_TYPE = False
 
-from .sensor_utils import SLOT_MINUTES, effective_unit_for, to_power_equivalent
+from .sensor_utils import SLOT_MINUTES, effective_unit_for, is_energy_family, to_power_equivalent
 from .calculation import (
     SensorReading,
+    TRAPEZOID_MAX_MINUTES,
     distribute_loss,
     effective_in_original_unit,
-    smooth_zero_noise,
+    trapezoidal_slot_contributions,
 )
 from .const import (
     CONF_INPUT_SENSORS,
     CONF_MAX_HISTORY_DAYS,
     CONF_OUTPUT_SENSORS,
-    CONF_SMOOTH_LOW_RES_KWH,
     DEFAULT_MAX_HISTORY_DAYS,
-    DEFAULT_SMOOTH_LOW_RES_KWH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -151,6 +160,27 @@ StatRow = dict[str, Any]
 # Fallback only used if the recorder instance somehow has no usable
 # keep_days value (should not normally happen) – matches HA's own default.
 _FALLBACK_SHORT_TERM_RETENTION_DAYS = 10
+
+# Small, fixed extra lookback before any requested [start, end) range, so a
+# transition whose *end* falls right at the start of the range still has
+# its *start* (and any preceding offline gap immediately before it)
+# visible to trapezoidal_slot_contributions — without this, the first few
+# slots in any range could silently under-count. Deliberately much smaller
+# than, and independent of, how large a candidate window each caller below
+# chooses to recompute (max_history_days vs. a few hours) — it only exists
+# to avoid a boundary artifact, not to control how far back an offline gap
+# can be correctly detected (that's bounded by how far back raw history is
+# fetched overall, i.e. by `start` itself). Not verified against a real HA
+# instance — see the module WARNING docstring's general caveat on this
+# file's internal-API-adjacent code.
+_RAW_HISTORY_BOUNDARY_MARGIN = timedelta(minutes=TRAPEZOID_MAX_MINUTES + 5)
+
+# How far back the slot-timer-driven "recent" recalculation (ADR-011,
+# ADR-012) looks for candidate slots to rewrite, every time it runs
+# (~every 5 minutes). Bounds the query cost of that frequent call; a real
+# offline gap longer than this is still corrected eventually by the next
+# full history recalc, whose own window is much larger (max_history_days).
+RECENT_RECALC_WINDOW = timedelta(hours=4)
 
 
 def _get_short_term_retention_days(hass: HomeAssistant) -> int:
@@ -274,17 +304,12 @@ def _get_statistics_units(hass: HomeAssistant, entity_ids: list[str]) -> dict[st
 def _stat_field_for(state_class: str | None, unit: str) -> str:
     """Return the statistics field to read for a given state class (ADR-003).
 
-    TOTAL_INCREASING always → ``change`` (energy counter delta).
-    TOTAL → ``change`` when unit is Wh/kWh (same assumption as the live path;
-            if a TOTAL sensor turns out to carry instantaneous W values this
-            line is the only place that needs to change).
-    MEASUREMENT / None → ``mean`` (instantaneous power, already in W/kW).
+    Delegates the energy-vs-power classification to
+    ``sensor_utils.is_energy_family`` (ADR-012) so this can't silently
+    diverge from sensor.py's derived-power entity setup, which needs the
+    same classification.
     """
-    if state_class == SensorStateClass.TOTAL_INCREASING:
-        return "change"
-    if state_class == SensorStateClass.TOTAL and unit in ("Wh", "kWh"):
-        return "change"
-    return "mean"
+    return "change" if is_energy_family(state_class, unit) else "mean"
 
 
 def _readings_for_slot(
@@ -330,46 +355,45 @@ def _readings_for_slot(
     return readings
 
 
-def _smooth_energy_rows(
-    entity_ids: list[str],
-    indexed: dict[str, dict[datetime, StatRow]],
-    state_classes: dict[str, str | None],
-    units: dict[str, str],
-) -> None:
-    """Apply smooth_zero_noise (ADR-009) in-place to each entity's ``change`` series.
+def _fetch_raw_energy_states(
+    hass: HomeAssistant,
+    entity_id: str,
+    start: datetime,
+    end: datetime,
+) -> list[tuple[datetime, str]]:
+    """Fetch raw state history for one TOTAL_INCREASING/energy-family entity.
 
-    Only entities resolved to the ``change`` statistics field (ENERGY family:
-    TOTAL_INCREASING, or TOTAL with a Wh/kWh unit — see ``_stat_field_for``)
-    are candidates: this smoothing targets energy-counter quantisation noise,
-    not instantaneous power (MEASUREMENT) readings, which don't exhibit this
-    failure mode.
+    Uses ``state_changes_during_period`` — a public, stable recorder API
+    (unlike the internal-table statistics writes documented in the module
+    WARNING above); it's the same function HA's own History panel is built
+    on. Runs synchronously; callers must invoke this via
+    ``recorder.async_add_executor_job``, exactly like ``_fetch_statistics``.
 
-    Mutates each row's ``"change"`` value in ``indexed`` directly so that the
-    existing ``_readings_for_slot`` / ``to_power_equivalent`` pipeline picks
-    up the smoothed values with no further changes needed downstream. Must
-    run before ``to_power_equivalent`` is applied to any of these rows (see
-    ``smooth_zero_noise`` docstring for why it needs the raw energy unit).
+    ``significant_changes_only=False``: every single state write matters
+    for the trapezoidal algorithm (ADR-012) — a filtered/deduplicated
+    series would hide exactly the small, frequent ticks it needs.
+    ``no_attributes=True``: pure performance win here, only ``.state`` and
+    ``.last_changed`` are used below.
+
+    Returns (timestamp, raw_state_string) pairs in chronological order,
+    including "unavailable"/"unknown" entries —
+    ``trapezoidal_slot_contributions`` depends on seeing those to detect
+    offline gaps (see its docstring in calculation.py).
     """
-    for eid in entity_ids:
-        field = _stat_field_for(state_classes.get(eid), units[eid])
-        if field != "change":
-            continue
+    from homeassistant.components.recorder.history import (  # noqa: PLC0415
+        state_changes_during_period,
+    )
 
-        entity_rows = indexed.get(eid)
-        if not entity_rows:
-            continue
-
-        # Only rows that actually carry a "change" value participate — a
-        # missing value is left untouched (and stays missing; _readings_for_slot
-        # already skips rows where the resolved field is None).
-        sorted_starts = [s for s in sorted(entity_rows) if entity_rows[s].get("change") is not None]
-        if len(sorted_starts) < 2:
-            continue
-
-        raw_values = [entity_rows[s]["change"] for s in sorted_starts]
-        smoothed = smooth_zero_noise(raw_values)
-        for start, value in zip(sorted_starts, smoothed):
-            entity_rows[start]["change"] = value
+    history_by_entity = state_changes_during_period(
+        hass,
+        start,
+        end,
+        entity_id,
+        no_attributes=True,
+        significant_changes_only=False,
+    )
+    states = history_by_entity.get(entity_id, [])
+    return [(s.last_changed, s.state) for s in states]
 
 
 def _effy_entity_id(source_entity_id: str) -> str:
@@ -378,25 +402,53 @@ def _effy_entity_id(source_entity_id: str) -> str:
     return f"sensor.effy_{slug}"
 
 
+def _effy_power_entity_id(source_entity_id: str) -> str:
+    """Return the effy_*_power entity_id for an energy-family sensor (ADR-012).
+
+    Mirrors _effy_entity_id / sensor.py's slug derivation, with a "_power"
+    suffix — this is the raw, pre-loss-distribution trapezoidal power
+    derived from a TOTAL_INCREASING/energy source, distinct from the
+    "effective" (post-waterfall) sensor _effy_entity_id names.
+    """
+    slug = slugify(source_entity_id.split(".")[-1])
+    return f"sensor.effy_{slug}_power"
+
+
 async def _compute_effective_slots(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     start: datetime,
     end: datetime,
-) -> dict[str, dict[str, Any]]:
-    """Core computation shared by async_recalculate_history and async_recalculate_slot.
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Core computation shared by async_recalculate_history and async_recalculate_recent.
 
     Resolves units (preferring statistics metadata over the live entity's
-    current unit — see _get_statistics_units), fetches statistics for
-    [start, end), optionally smooths low-resolution energy noise (ADR-009 —
-    naturally a no-op for a single-slot range: _smooth_energy_rows requires
-    at least 2 rows of neighbor context per entity to do anything), then
-    runs distribute_loss per slot exactly as the live path does per event
-    (ADR-008).
+    current unit — see _get_statistics_units), builds each entity's
+    per-slot series for [start, end), and runs distribute_loss per slot
+    exactly as the live path does per event (ADR-008).
 
-    Returns ``per_sensor``: effy_entity_id → {"unit": ..., "slot_values":
-    [(slot_start, effective_value), ...]}, ready for
-    ``_write_recorder_statistics``. Does not write anything itself.
+    Energy-family (TOTAL_INCREASING / TOTAL-as-energy) sensors' per-slot
+    values come from trapezoidal_slot_contributions (ADR-012) applied to
+    raw state history — not statistics_during_period's ``change`` field
+    (that field is still fetched, unchanged, for MEASUREMENT/TOTAL-as-power
+    sensors' ``mean``). Raw history is fetched starting
+    _RAW_HISTORY_BOUNDARY_MARGIN before ``start`` so a jump whose
+    distribution window begins before ``start`` is still correctly
+    accounted for in the first slots of the requested range; any resulting
+    contribution for a slot before ``start`` is then discarded (it belongs
+    to a range some *other* call is responsible for).
+
+    Returns (per_sensor, per_sensor_power):
+      - per_sensor: effy_entity_id → {"unit", "slot_values"} — the
+        post-waterfall "effective" value, input sensors only (unchanged
+        concept from before ADR-012).
+      - per_sensor_power: effy_*_power entity_id → {"unit", "slot_values"}
+        — the raw, pre-waterfall trapezoidal power for every energy-family
+        sensor, inputs *and* outputs (new in ADR-012) — this is exactly
+        the value already computed for distribute_loss's input, so no
+        extra computation is needed, just capturing it before the
+        waterfall step consumes it.
+    Both are ready for _write_recorder_statistics. Nothing is written here.
     """
     input_ids: list[str] = entry_options.get(CONF_INPUT_SENSORS, [])
     output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
@@ -406,13 +458,14 @@ async def _compute_effective_slots(
     live_units: dict[str, str] = {eid: _get_unit(hass, eid) for eid in all_ids}
     state_classes: dict[str, str | None] = {eid: _get_state_class(hass, eid) for eid in all_ids}
 
+    recorder = get_recorder(hass)
+
     # The unit `change`/`mean` values from statistics_during_period are
     # actually expressed in can differ from the live entity's current unit
     # (see _get_statistics_units) — read it from statistics_meta instead of
     # assuming it matches the live state, to avoid interpreting e.g. an
     # already-Wh value as if it were kWh (or vice versa), which would throw
     # off every downstream Wh/kWh → W conversion by a further factor of 1000.
-    recorder = get_recorder(hass)
     stats_units: dict[str, str] = await recorder.async_add_executor_job(
         _get_statistics_units, hass, all_ids
     )
@@ -433,34 +486,47 @@ async def _compute_effective_slots(
             )
         units[eid] = stat_unit or live_unit
 
-    # Fetch statistics – single call requesting both "mean" and "change";
-    # each sensor only consumes the field matching its own state class
-    # (see _stat_field_for). One call instead of two is simpler (ADR-003).
-    raw_stats: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-        _fetch_statistics, hass, all_ids, start, end
-    )
+    energy_ids = [
+        eid for eid in all_ids if _stat_field_for(state_classes.get(eid), units[eid]) == "change"
+    ]
+    power_ids = [eid for eid in all_ids if eid not in energy_ids]
 
-    # Build time-indexed lookup: entity_id → {start_dt: row}
-    indexed: dict[str, dict[datetime, StatRow]] = {
-        eid: {row["start"]: row for row in rows} for eid, rows in raw_stats.items()
-    }
+    indexed: dict[str, dict[datetime, StatRow]] = {}
 
-    if entry_options.get(CONF_SMOOTH_LOW_RES_KWH, DEFAULT_SMOOTH_LOW_RES_KWH):
-        _smooth_energy_rows(all_ids, indexed, state_classes, units)
+    # ---- Power-family sensors: unchanged, statistics `mean` per slot ----
+    if power_ids:
+        raw_stats: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
+            _fetch_statistics, hass, power_ids, start, end
+        )
+        for eid, rows in raw_stats.items():
+            indexed[eid] = {row["start"]: row for row in rows}
 
-    # Union of all slot timestamps, sorted
+    # ---- Energy-family sensors: trapezoidal-redistributed raw history (ADR-012) ----
+    raw_history_start = start - _RAW_HISTORY_BOUNDARY_MARGIN
+    for eid in energy_ids:
+        raw_states = await recorder.async_add_executor_job(
+            _fetch_raw_energy_states, hass, eid, raw_history_start, end
+        )
+        contributions = trapezoidal_slot_contributions(raw_states, slot_minutes=SLOT_MINUTES)
+        indexed[eid] = {
+            slot: {"start": slot, "change": value}
+            for slot, value in contributions.items()
+            if start <= slot < end
+        }
+
+    # Union of all slot timestamps actually present, sorted
     slot_set: set[datetime] = set()
-    for stat_rows in raw_stats.values():
-        for stat_row in stat_rows:
-            slot_set.add(stat_row["start"])
+    for entity_rows in indexed.values():
+        slot_set.update(entity_rows.keys())
     slots: list[datetime] = sorted(slot_set)
 
     if not slots:
-        return {}
+        return {}, {}
 
-    # Compute effective values per slot
-    # results: entity_id → [(start, effective_value_in_original_unit)]
+    # results: effective (post-waterfall) values per slot, input sensors only
     results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in input_ids}
+    # power_results: raw (pre-waterfall) derived power per slot, energy-family only
+    power_results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in energy_ids}
 
     for slot in slots:
         input_readings = _readings_for_slot(
@@ -469,6 +535,10 @@ async def _compute_effective_slots(
         output_readings = _readings_for_slot(
             slot, SLOT_MINUTES, output_ids, indexed, state_classes, units
         )
+
+        for reading in input_readings + output_readings:
+            if reading.entity_id in power_results:
+                power_results[reading.entity_id].append((slot, reading.raw_value))
 
         if not input_readings:
             continue
@@ -494,13 +564,23 @@ async def _compute_effective_slots(
             "unit": effective_unit_for(units[eid]),
             "slot_values": results[eid],
         }
-    return per_sensor
+
+    per_sensor_power: dict[str, dict[str, Any]] = {}
+    for eid in energy_ids:
+        if not power_results[eid]:
+            continue
+        per_sensor_power[_effy_power_entity_id(eid)] = {
+            "unit": effective_unit_for(units[eid]),
+            "slot_values": power_results[eid],
+        }
+
+    return per_sensor, per_sensor_power
 
 
 async def async_recalculate_history(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
-) -> int:
+) -> tuple[int, datetime | None]:
     """
     Recalculate and overwrite effy statistics for up to max_history_days.
 
@@ -509,20 +589,27 @@ async def async_recalculate_history(
     (stale rows from a previous sensor configuration must not survive a
     recalculation).
 
-    If ``CONF_SMOOTH_LOW_RES_KWH`` is enabled in ``entry_options``, each
-    energy-family sensor's raw per-slot ``change`` series is first passed
-    through ``smooth_zero_noise`` (ADR-009) to counteract quantisation noise
-    from low-resolution (2-decimal-digit) energy counters before any
-    Wh/kWh → W conversion happens.
+    Energy-family sensors' per-slot values are computed via the
+    trapezoidal rule (ADR-012, calculation.trapezoidal_slot_contributions)
+    applied to raw state history, replacing ADR-009's neighbor-steal
+    smoothing. Also writes the raw, pre-loss-distribution derived-power
+    statistic (effy_*_power) for every energy-family sensor, input and
+    output alike (ADR-012) — new in addition to the existing "effective"
+    (post-waterfall, input-only) statistic.
 
-    Writes both short-term (5-minute) and long-term (hourly) statistics —
-    see ADR-011 for why the hourly aggregate specifically requires a full
-    multi-slot range like this one, and must not be written from a
-    single-slot call (async_recalculate_slot deliberately skips it).
+    Writes both short-term (5-minute) and long-term (hourly) statistics for
+    both series — see ADR-011 for why the hourly aggregate specifically
+    requires a full multi-slot range like this one, and must not be
+    written from the slot-timer-driven recent recalculation.
 
-    Returns the number of 5-minute short-term rows written. See the module
-    WARNING docstring above for how (and why) this writes to internal
-    recorder tables instead of using the public statistics import API.
+    Returns (short_term_rows_written, recalculated_from). A full recalc
+    unconditionally recomputes every slot in [start, end), so
+    recalculated_from is always exactly ``start`` — see
+    async_recalculate_recent for the dynamic-range case, and ADR-012 for
+    why this value matters (the "recalculated from" sensor). See the
+    module WARNING docstring above for how (and why) this writes to
+    internal recorder tables instead of using the public statistics import
+    API.
     """
     max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
     end = datetime.now(tz=timezone.utc)
@@ -530,67 +617,91 @@ async def async_recalculate_history(
     short_term_retention_days = _get_short_term_retention_days(hass)
     short_term_cutoff = end - timedelta(days=short_term_retention_days)
 
-    per_sensor = await _compute_effective_slots(hass, entry_options, start, end)
-    if not per_sensor:
+    per_sensor, per_sensor_power = await _compute_effective_slots(hass, entry_options, start, end)
+    if not per_sensor and not per_sensor_power:
         _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
-        return 0
+        return 0, None
 
-    short_term_written: int = await _write_recorder_statistics(
-        hass, per_sensor, short_term_cutoff=short_term_cutoff, include_long_term=True
-    )
+    short_term_written = 0
+    if per_sensor:
+        short_term_written += await _write_recorder_statistics(
+            hass, per_sensor, short_term_cutoff=short_term_cutoff, include_long_term=True
+        )
+    if per_sensor_power:
+        short_term_written += await _write_recorder_statistics(
+            hass, per_sensor_power, short_term_cutoff=short_term_cutoff, include_long_term=True
+        )
 
     _LOGGER.debug(
-        "Effy: history recalculation wrote %d short-term slots across %d sensors",
+        "Effy: history recalculation wrote %d short-term slots across %d effective + "
+        "%d derived-power sensors",
         short_term_written,
         len(per_sensor),
+        len(per_sensor_power),
     )
-    return short_term_written
+    return short_term_written, start
 
 
-async def async_recalculate_slot(
+async def async_recalculate_recent(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
-    slot_start: datetime,
-) -> int:
+    now: datetime,
+) -> tuple[int, datetime | None]:
     """
-    Recalculate and write effy statistics for exactly one 5-minute slot.
+    Recalculate and write effy statistics for whatever recent slots need it.
 
-    Intended to be called shortly after a slot closes (see
-    EffyCoordinator._on_slot_timer / ADR-011), using the same computation
-    as async_recalculate_history but scoped to ``[slot_start, slot_start +
-    SLOT_MINUTES)`` — reuses _compute_effective_slots so both entry points
-    stay in lock-step; only the write path differs.
+    Intended to be called shortly after a slot closes (EffyCoordinator's
+    slot timer, ADR-011). Unlike the original fixed single-slot design,
+    the exact range recomputed is now dynamic (ADR-012): a
+    trapezoidal-redistributed energy jump can touch more than one slot —
+    up to 3 for a normal (15-minute-capped) jump, or more for an offline
+    gap — so this always recomputes and rewrites every slot touched by
+    *any* sensor within RECENT_RECALC_WINDOW of ``now``, not just the
+    single slot that most recently closed. A real offline gap longer than
+    RECENT_RECALC_WINDOW is still corrected eventually by the next full
+    history recalc.
 
     Deliberately writes ONLY the short-term (5-minute) statistic, never the
-    long-term (hourly) one — see ADR-011. Writing the hourly aggregate from
-    a single slot would overwrite the correct multi-slot hourly ``mean``
-    (computed by async_recalculate_history from every slot in that hour)
-    with just this one slot's value, silently degrading long-term data
-    every time this runs. Long-term aggregation stays the responsibility of
-    the full history recalc.
+    long-term (hourly) one, for both the "effective" and "derived power"
+    series — see ADR-011 Decision 2 (unchanged by ADR-012).
 
-    Returns the number of short-term rows written (0 or 1 per input sensor,
-    typically 0 if the recorder hasn't compiled statistics for this slot
-    yet, or 1 once it has).
+    Returns (short_term_rows_written, recalculated_from), where
+    recalculated_from is the earliest slot timestamp touched by this run
+    across both series, or None if nothing was written this run (e.g. the
+    recorder hasn't compiled statistics for the relevant slots yet, or no
+    sensor changed) — see ADR-012 for how this feeds the "recalculated
+    from" sensor.
     """
-    slot_end = slot_start + timedelta(minutes=SLOT_MINUTES)
-    per_sensor = await _compute_effective_slots(hass, entry_options, slot_start, slot_end)
-    if not per_sensor:
+    start = now - RECENT_RECALC_WINDOW
+    per_sensor, per_sensor_power = await _compute_effective_slots(hass, entry_options, start, now)
+    if not per_sensor and not per_sensor_power:
         _LOGGER.debug(
-            "Effy slot recalc: no statistics available yet for slot %s (recorder may "
-            "not have compiled it yet)",
-            slot_start,
+            "Effy recent recalc: nothing to recompute in the %s before %s",
+            RECENT_RECALC_WINDOW,
+            now,
         )
-        return 0
+        return 0, None
 
-    written: int = await _write_recorder_statistics(hass, per_sensor, include_long_term=False)
+    written = 0
+    earliest: datetime | None = None
+    for series in (per_sensor, per_sensor_power):
+        if not series:
+            continue
+        written += await _write_recorder_statistics(hass, series, include_long_term=False)
+        for info in series.values():
+            for slot, _value in info["slot_values"]:
+                if earliest is None or slot < earliest:
+                    earliest = slot
+
     _LOGGER.debug(
-        "Effy: slot recalculation for %s wrote %d short-term rows across %d sensors",
-        slot_start,
+        "Effy: recent recalculation wrote %d short-term rows across %d effective + %d "
+        "derived-power sensors, earliest touched slot %s",
         written,
         len(per_sensor),
+        len(per_sensor_power),
+        earliest,
     )
-    return written
+    return written, earliest
 
 
 def _fetch_statistics(

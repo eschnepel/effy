@@ -63,6 +63,16 @@ _stub("homeassistant.config_entries", ConfigEntry=object)
 _stub("homeassistant.core", HomeAssistant=object, callback=lambda f: f)
 _stub("homeassistant.helpers")
 _stub("homeassistant.helpers.event", async_call_later=MagicMock())
+_stub("homeassistant.components")
+
+
+class _SensorStateClass:
+    TOTAL_INCREASING = "total_increasing"
+    TOTAL = "total"
+    MEASUREMENT = "measurement"
+
+
+_stub("homeassistant.components.sensor", SensorStateClass=_SensorStateClass)
 
 # ---------------------------------------------------------------------------
 # 2. Load effy modules by file path
@@ -89,19 +99,24 @@ def _load(reg_name: str, filename: str) -> ModuleType:
 
 
 # Stub effy.history BEFORE loading coordinator.py, which does
-# `from .history import async_recalculate_slot` — sys.modules is checked
+# `from .history import async_recalculate_recent` — sys.modules is checked
 # before the filesystem, so this fake is what coordinator.py gets. See
 # module docstring for why the real history.py isn't loaded here.
 _history_calls: list[tuple[Any, Any, datetime]] = []
+# Configurable by individual tests: what async_recalculate_recent should
+# return this call — (written, earliest_touched_slot | None).
+_history_return_value: list[tuple[int, datetime | None]] = [(0, None)]
 
 
-async def _fake_async_recalculate_slot(hass: Any, entry_options: Any, slot_start: datetime) -> int:
-    _history_calls.append((hass, entry_options, slot_start))
-    return 0
+async def _fake_async_recalculate_recent(
+    hass: Any, entry_options: Any, now: datetime
+) -> tuple[int, datetime | None]:
+    _history_calls.append((hass, entry_options, now))
+    return _history_return_value[0]
 
 
 _history_stub = ModuleType("effy.history")
-_history_stub.async_recalculate_slot = _fake_async_recalculate_slot  # type: ignore[attr-defined]
+_history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
 _history_stub.__package__ = "effy"
 sys.modules["effy.history"] = _history_stub
 _effy_pkg.history = _history_stub  # type: ignore[attr-defined]
@@ -211,6 +226,20 @@ class TestEffyCoordinatorShell:
         coord = self._coordinator()
         coord.force_refresh()  # must not raise
 
+    def test_subscribe_recalculated_from_and_unsubscribe(self) -> None:
+        coord = self._coordinator()
+        received: list[datetime] = []
+        unsub = coord.subscribe_recalculated_from(received.append)
+
+        coord.set_recalculated_from(_ts(11, 0, 0))
+        assert received == [_ts(11, 0, 0)]
+        assert coord.recalculated_from == _ts(11, 0, 0)
+
+        unsub()
+        coord.set_recalculated_from(_ts(12, 0, 0))
+        assert received == [_ts(11, 0, 0)]  # no new callback after unsub
+        assert coord.recalculated_from == _ts(12, 0, 0)  # state still updates
+
     @pytest.mark.asyncio
     async def test_on_slot_timer_reschedules(self) -> None:
         coord = self._coordinator()
@@ -222,13 +251,11 @@ class TestEffyCoordinatorShell:
         assert _coord_mod.async_call_later.call_count == call_count_before + 1
 
     @pytest.mark.asyncio
-    async def test_on_slot_timer_recalculates_the_just_finished_slot(self) -> None:
-        """The slot handed to async_recalculate_slot must be a real,
-        5-minute-aligned boundary strictly before 'now', and it must be
-        the slot immediately preceding the one 'now' currently falls into
-        -- not the in-progress slot itself (ADR-011: the timer fires
-        *after* a boundary specifically so the *previous* slot is safely
-        closed and, ideally, already compiled by the recorder)."""
+    async def test_on_slot_timer_calls_recalculate_recent_with_current_time(self) -> None:
+        """coordinator.py no longer computes slot boundaries itself
+        (ADR-012) -- it hands the raw current time to
+        async_recalculate_recent, which determines the affected range
+        dynamically."""
         _history_calls.clear()
         coord = self._coordinator()
         coord.async_setup()
@@ -236,18 +263,50 @@ class TestEffyCoordinatorShell:
         before = datetime.now(timezone.utc)
         coord._on_slot_timer(None)
         await asyncio.sleep(0)  # let the scheduled task actually run
+        after = datetime.now(timezone.utc)
 
         assert len(_history_calls) == 1
-        hass_arg, options_arg, slot_start = _history_calls[0]
+        hass_arg, options_arg, now_arg = _history_calls[0]
         assert hass_arg is coord._hass
         assert options_arg is coord._entry.options
+        assert before <= now_arg <= after
 
-        assert slot_start.tzinfo is not None
-        assert slot_start.second == 0
-        assert slot_start.microsecond == 0
-        assert slot_start.minute % SLOT_MINUTES == 0
-        # Must be the slot before the one 'now' falls into: strictly in the
-        # past, and no more than two slot-widths back (one for "now's" own
-        # slot not being finished yet, one for the target slot itself).
-        assert slot_start < before
-        assert (before - slot_start).total_seconds() < 2 * SLOT_MINUTES * 60
+    @pytest.mark.asyncio
+    async def test_on_slot_timer_reports_earliest_touched_slot(self) -> None:
+        """When async_recalculate_recent finds something to write, the
+        returned earliest-touched-slot must be pushed to
+        set_recalculated_from (ADR-012)."""
+        _history_calls.clear()
+        earliest = _ts(10, 0, 0)
+        _history_return_value[0] = (3, earliest)
+        try:
+            coord = self._coordinator()
+            coord.async_setup()
+            received: list[datetime] = []
+            coord.subscribe_recalculated_from(received.append)
+
+            coord._on_slot_timer(None)
+            await asyncio.sleep(0)
+
+            assert coord.recalculated_from == earliest
+            assert received == [earliest]
+        finally:
+            _history_return_value[0] = (0, None)
+
+    @pytest.mark.asyncio
+    async def test_on_slot_timer_does_not_touch_recalculated_from_when_nothing_written(
+        self,
+    ) -> None:
+        """If async_recalculate_recent returns None (nothing to write this
+        cycle), recalculated_from must stay whatever it was -- not get
+        reset to None."""
+        _history_calls.clear()
+        _history_return_value[0] = (0, None)
+        coord = self._coordinator()
+        coord.recalculated_from = _ts(9, 0, 0)  # pre-existing value
+        coord.async_setup()
+
+        coord._on_slot_timer(None)
+        await asyncio.sleep(0)
+
+        assert coord.recalculated_from == _ts(9, 0, 0)  # unchanged

@@ -3,6 +3,13 @@
 **Date:** 2026-06-30
 **Status:** Accepted
 
+**See also:** ADR-012 (2026-07-11) changes *where* the per-slot ``change``
+value for TOTAL_INCREASING/energy-family sensors comes from — no longer
+`statistics_during_period`'s ``change`` field (still used for
+MEASUREMENT/TOTAL-as-power sensors' ``mean``, unchanged), but a
+trapezoidal-rule redistribution over raw state history instead. The
+"which field" decision below is otherwise unaffected.
+
 ---
 
 ## Context

@@ -1,7 +1,14 @@
 # ADR-009 – Smoothing Low-Resolution kWh Sensor Noise
 
 **Date:** 2026-07-03
-**Status:** Accepted
+**Status:** Superseded 2026-07-11 by ADR-012 — `smooth_zero_noise` and the
+`smooth_low_res_kwh` config option have been removed entirely.
+`trapezoidal_slot_contributions` (ADR-012) redistributes energy over raw
+state-change gaps directly, using real elapsed time, and is strictly more
+precise than this neighbor-percentage heuristic on already-aggregated
+5-minute values — the low-resolution quantisation problem this ADR
+addresses is a special case ADR-012 also handles correctly. Kept below for
+historical context only; none of the code it describes still exists.
 
 ---
 

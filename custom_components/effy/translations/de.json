@@ -9,8 +9,7 @@
         "data": {
           "input_sensors": "Eingangs-Sensoren (PV, BMS-Import von Batterie/Netz)",
           "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
-          "max_history_days": "Maximale Historie (Tage)",
-          "smooth_low_res_kwh": "Niedrig aufgelöste kWh-Sensoren glätten"
+          "max_history_days": "Maximale Historie (Tage)"
         }
       }
     },
@@ -27,8 +26,7 @@
         "data": {
           "input_sensors": "Eingangs-Sensoren (PV, BMS-Import von Batterie/Netz)",
           "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
-          "max_history_days": "Maximale Historie (Tage)",
-          "smooth_low_res_kwh": "Niedrig aufgelöste kWh-Sensoren glätten"
+          "max_history_days": "Maximale Historie (Tage)"
         }
       }
     },
@@ -47,6 +45,12 @@
     "sensor": {
       "effective_sensor": {
         "name": "{source_name} (effektiv)"
+      },
+      "derived_power_sensor": {
+        "name": "{source_name} (abgeleitete Leistung)"
+      },
+      "recalculated_from": {
+        "name": "Neu berechnet ab"
       }
     }
   }

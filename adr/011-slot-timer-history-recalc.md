@@ -4,6 +4,13 @@
 **Status:** Accepted — extends ADR-010 (slot timer), ADR-006 (`EffyCoordinator`
 lifecycle), and the history path (`history.py`, ADR-003/004/008/009).
 
+**See also:** ADR-012 (2026-07-11) replaces the fixed single-slot design
+described here (`async_recalculate_slot`) with a dynamic-range
+`async_recalculate_recent`, since a trapezoidal-redistributed energy jump
+(ADR-012) can touch more than one slot. Decisions 2–4 below (no long-term
+write, timer timing, the live-push question) are otherwise unaffected —
+Decision 4's "recalculated from" idea is what ADR-012 actually implements.
+
 ---
 
 ## Context

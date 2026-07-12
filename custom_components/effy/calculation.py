@@ -19,6 +19,7 @@ Algorithm (full rationale in ADR-001):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 
 @dataclass
@@ -127,109 +128,131 @@ def distribute_loss(
     )
 
 
-def smooth_zero_noise(values: list[float]) -> list[float]:
-    """Smooth spurious zero-valued slots in a per-slot raw energy-delta series.
+# Maximum distribution window for a normal (non-offline) counter jump — see
+# trapezoidal_slot_contributions. Not user-configurable (ADR-012): unlike
+# ADR-009's smoothing, which this replaces, the window width here isn't a
+# tunable heuristic, it's a fixed rule.
+TRAPEZOID_MAX_MINUTES = 15
 
-    Some energy meters (observed with certain BMS sensors) only report their
-    cumulative kWh counter with 2 decimal digits of precision. Over a short
-    slot (e.g. 5 minutes) the true energy delta is often smaller than that
-    resolution, so the counter doesn't tick between two consecutive readings
-    and the computed delta comes out as exactly 0 — even though real, non-zero
-    power was flowing. Left alone, this quantisation noise shows up as
-    frequent 0 W readings for an otherwise steadily-producing/consuming
-    sensor, and can distort the loss distribution for that slot (ADR-009).
 
-    This performs two rounds of "neighbor steal" redistribution:
+def _parse_energy_state(state: str) -> float | None:
+    """Parse a raw recorder state string as a float, or None if invalid.
 
-    Round 1 — for every slot whose *original* raw value is exactly 0.0, it
-    takes 25% of each direct neighbor's value (previous and next slot in the
-    sequence) and adds it to itself; each donor neighbor's value is reduced
-    by the same amount. A slot that has only one neighbor (start/end of the
-    series) only steals from that one side. This alone fully flattens an
-    isolated zero — e.g. an alternating pattern like [10, 0, 10, 0, ...],
-    where no zero slot is adjacent to another zero slot — to a constant
-    [.., 5, 5, 5, ..] (except at the two ends of the series, which only
-    have one neighbor to draw from and end up slightly higher).
-
-    Round 2 — targets only slots that belong to a run of *two or more*
-    consecutive originally-zero slots ("larger gaps"). A single round only
-    pulls from immediate neighbors, so such a run isn't fully smoothed by
-    round 1 alone (a zero slot next to another zero slot steals 0 from that
-    side in round 1, since the neighbor was still 0 at that point). Round 2
-    steals 10% from each direct (±1) neighbor and 5% from each ±2 neighbor,
-    using the round-1-adjusted values as input, letting the redistribution
-    reach one step further without requiring an unbounded number of passes.
-    Isolated (run-length-1) zeros are deliberately excluded from round 2:
-    round 1 already gives them their ideal flat result, and re-running the
-    same kind of steal on an already-flat value would just reintroduce
-    boundary-driven unevenness for no benefit.
-
-    The total sum of the series is preserved exactly by both rounds (only
-    redistribution, never creation or destruction of energy).
-
-    This must run on the raw value in its original unit (Wh or kWh) —
-    *before* any Wh/kWh → W/kW conversion — so the redistribution operates
-    on genuine energy amounts. Converting to power first would make the
-    "steal" amounts a function of the (possibly varying) slot duration
-    instead of the raw meter reading.
+    None covers "unavailable", "unknown", and any other non-numeric
+    string — used by trapezoidal_slot_contributions to detect offline
+    gaps, which is why the caller must pass the *unfiltered* raw state
+    history (including non-numeric entries), not a numeric-only series.
     """
-    n = len(values)
-    if n < 2:
-        return list(values)
+    try:
+        return float(state)
+    except (TypeError, ValueError):
+        return None
 
-    zero_mask = [v == 0.0 for v in values]
-    if not any(zero_mask):
-        return list(values)
 
-    def _steal_round(
-        current: list[float],
-        mask: list[bool],
-        near_pct: float,
-        far_pct: float = 0.0,
-    ) -> list[float]:
-        gains = [0.0] * n
-        losses = [0.0] * n
-        for i in range(n):
-            if not mask[i]:
-                continue
-            for distance, pct in ((1, near_pct), (2, far_pct)):
-                if pct == 0.0:
-                    continue
-                if i - distance >= 0:
-                    amount = pct * current[i - distance]
-                    gains[i] += amount
-                    losses[i - distance] += amount
-                if i + distance < n:
-                    amount = pct * current[i + distance]
-                    gains[i] += amount
-                    losses[i + distance] += amount
-        return [current[i] + gains[i] - losses[i] for i in range(n)]
+def trapezoidal_slot_contributions(
+    raw_states: list[tuple[datetime, str]],
+    slot_minutes: int = 5,
+    max_minutes: int = TRAPEZOID_MAX_MINUTES,
+) -> dict[datetime, float]:
+    """Redistribute a TOTAL_INCREASING energy counter's raw jumps across
+    5-minute slots using the trapezoidal rule (ADR-012, replaces ADR-009's
+    neighbor-steal smoothing).
 
-    def _runs_of_two_or_more(mask: list[bool]) -> list[bool]:
-        """True for indices belonging to a run of >=2 consecutive True values."""
-        result = [False] * n
-        i = 0
-        while i < n:
-            if not mask[i]:
-                i += 1
-                continue
-            j = i
-            while j < n and mask[j]:
-                j += 1
-            if j - i >= 2:
-                for k in range(i, j):
-                    result[k] = True
-            i = j
-        return result
+    Some energy meters only report their cumulative counter every so often
+    — sometimes because the true delta is smaller than the counter's
+    display resolution and simply hasn't ticked yet, sometimes because the
+    sensor was genuinely offline. Reading the counter's raw ``change`` per
+    fixed 5-minute statistics slot (the previous approach) attributes the
+    *entire* jump to whichever slot happened to contain the next reading,
+    leaving every slot in between at a spurious 0 — even though real,
+    continuous power was very likely flowing throughout. This function
+    instead spreads each jump evenly across the time it actually took to
+    accumulate, using the trapezoidal rule.
 
-    round1 = _steal_round(values, zero_mask, near_pct=0.25)
+    ``raw_states`` is the entity's raw state history, chronologically
+    ordered, as (timestamp, state_string) pairs — including any
+    "unavailable"/"unknown"/other non-numeric entries. This is what makes
+    offline-gap detection possible; a pre-filtered, numeric-only series
+    can't distinguish "the counter genuinely didn't move for 20 minutes"
+    from "the sensor was offline for 20 minutes and only reported the
+    accumulated delta once it came back".
 
-    larger_gap_mask = _runs_of_two_or_more(zero_mask)
-    if not any(larger_gap_mask):
-        return round1
+    For each transition from one valid numeric reading (t1, v1) to the
+    next valid numeric reading (t2, v2):
+      - delta = max(0, v2 - v1) — a decrease is treated as a counter
+        reset, exactly like the live/history clamping elsewhere; no
+        negative contribution is ever distributed, and (t2, v2) simply
+        becomes the new baseline for the following transition.
+      - if the raw entry immediately preceding (t2, v2) was itself
+        invalid (unavailable/unknown/non-numeric): the sensor was offline
+        for this whole gap, so delta is spread evenly across the *entire*
+        [t1, t2) span, uncapped.
+      - otherwise (a normal, direct v1->v2 step with no gap in between):
+        delta is spread evenly across at most the last ``max_minutes``
+        minutes before t2, i.e. [max(t1, t2 - max_minutes), t2).
 
-    round2 = _steal_round(round1, larger_gap_mask, near_pct=0.10, far_pct=0.05)
-    return round2
+    Each 5-minute slot boundary that overlaps a transition's distribution
+    window receives a share proportional to the overlap duration. A slot
+    can receive contributions from more than one transition if two jumps
+    happen close together; contributions are summed, not overwritten.
+
+    Returns {slot_start: contribution}, in the same unit as the raw
+    values (Wh or kWh) — this only replaces *where* a per-slot energy
+    delta series comes from; the caller still runs the result through the
+    same Wh/kWh → W-equivalent conversion (to_power_equivalent) as before.
+
+    An input with fewer than 2 valid numeric readings produces no
+    contributions (nothing to form a transition from).
+    """
+    slot_width = timedelta(minutes=slot_minutes)
+    max_window = timedelta(minutes=max_minutes)
+
+    # Find valid-numeric-reading transitions, tracking whether the entry
+    # immediately preceding each one was invalid (offline gap detection).
+    transitions: list[tuple[datetime, float, datetime, float, bool]] = []
+    last_valid: tuple[datetime, float] | None = None
+    prev_was_invalid = False
+
+    for ts, state in raw_states:
+        value = _parse_energy_state(state)
+        if value is None:
+            prev_was_invalid = True
+            continue
+        if last_valid is not None:
+            t1, v1 = last_valid
+            transitions.append((t1, v1, ts, value, prev_was_invalid))
+        last_valid = (ts, value)
+        prev_was_invalid = False
+
+    contributions: dict[datetime, float] = {}
+
+    for t1, v1, t2, v2, was_offline in transitions:
+        delta = max(0.0, v2 - v1)
+        if delta == 0.0 or t2 <= t1:
+            continue
+
+        window_start = t1 if was_offline else max(t1, t2 - max_window)
+        window_seconds = (t2 - window_start).total_seconds()
+        if window_seconds <= 0:
+            continue
+        rate_per_second = delta / window_seconds
+
+        # Walk every 5-minute slot overlapping [window_start, t2).
+        slot_cursor = window_start - timedelta(
+            seconds=window_start.timestamp() % slot_width.total_seconds()
+        )
+        while slot_cursor < t2:
+            slot_end = slot_cursor + slot_width
+            overlap_start = max(window_start, slot_cursor)
+            overlap_end = min(t2, slot_end)
+            overlap_seconds = (overlap_end - overlap_start).total_seconds()
+            if overlap_seconds > 0:
+                contributions[slot_cursor] = (
+                    contributions.get(slot_cursor, 0.0) + rate_per_second * overlap_seconds
+                )
+            slot_cursor = slot_end
+
+    return contributions
 
 
 def effective_in_original_unit(

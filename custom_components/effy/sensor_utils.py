@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from homeassistant.components.sensor import SensorStateClass
 from homeassistant.core import HomeAssistant
 
 from .calculation import SensorReading
@@ -13,6 +14,20 @@ _LOGGER = logging.getLogger(__name__)
 
 # Width of one statistics slot in minutes — must match HA recorder and ADR-007.
 SLOT_MINUTES = 5
+
+
+def is_energy_family(state_class: str | None, unit: str) -> bool:
+    """True for TOTAL_INCREASING sensors, or TOTAL sensors with a Wh/kWh unit.
+
+    The single source of truth for this classification — history.py's
+    ``_stat_field_for`` and sensor.py's entity setup (ADR-012: derived-power
+    sensor) both call this instead of re-deriving the same rule, so they
+    can't silently diverge. Mirrors the disabled live coordinator's
+    ``_state_class_family`` (disabled/coordinator_live.py).
+    """
+    if state_class == SensorStateClass.TOTAL_INCREASING:
+        return True
+    return state_class == SensorStateClass.TOTAL and unit in ("Wh", "kWh")
 
 
 def effective_unit_for(unit: str) -> str:
