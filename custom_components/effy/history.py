@@ -390,7 +390,6 @@ def _fetch_raw_energy_states(
         end,
         entity_id,
         no_attributes=True,
-        significant_changes_only=False,
     )
     states = history_by_entity.get(entity_id, [])
     return [(s.last_changed, s.state) for s in states]
