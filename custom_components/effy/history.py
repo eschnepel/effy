@@ -4,18 +4,27 @@ History recalculation for Effy.
 Uses a mix of the Home Assistant statistics API and raw state history to:
 1. Get a 5-minute-resolution reading for every configured sensor —
    ``statistics_during_period``'s ``mean`` for MEASUREMENT/TOTAL-as-power
-   sensors (unchanged), or a trapezoidal-rule redistribution of raw state
-   history for TOTAL_INCREASING/TOTAL-as-energy sensors (ADR-012,
+   sensors (gap-interpolated for *input* sensors, see point 4 below), or a
+   trapezoidal-rule redistribution of raw state history for
+   TOTAL_INCREASING/TOTAL-as-energy sensors (ADR-012,
    ``calculation.trapezoidal_slot_contributions`` — replaces ADR-009's
    neighbor-steal smoothing).
 2. Apply the same loss-distribution algorithm as the live sensor
-   (``distribute_loss`` from calculation.py — see ADR-001).
+   (``distribute_loss`` from calculation.py — see ADR-001) — using the
+   gap-interpolated series from point 4 for power-family inputs, not the
+   raw gappy one.
 3. Write back corrected statistics for all effy_* output sensors,
    **overwriting** any existing rows for the same slots (ADR-004): the
    post-waterfall "effective" value (input sensors only, as before), and,
    new in ADR-012, the raw pre-waterfall "derived power" for every
    energy-family sensor (inputs and outputs) as a separate `effy_*_power`
    statistic.
+4. Bridge short (<= ``calculation.INTERPOLATION_MAX_GAP_SLOTS``) runs of
+   missing slots in a power-family *input* sensor's ``mean`` via linear
+   interpolation (``calculation.interpolate_slot_gaps``) before step 2
+   runs, and separately expose that same interpolated series as its own
+   `effy_*_smoothed` statistic — output sensors and energy-family sensors
+   are unaffected (out of scope for this feature).
 
 State-class handling (ADR-003)
 -------------------------------
@@ -23,7 +32,8 @@ TOTAL_INCREASING  → energy-family; per-slot value from the trapezoidal
                     rule over raw state history (ADR-012), not the
                     statistics API's ``change`` field anymore.
 TOTAL / MEASUREMENT → power-family; request ``mean`` from the statistics
-                    API, unchanged.
+                    API, gap-interpolated for input sensors (point 4
+                    above), otherwise unchanged.
 
 All sources are written back with both ``mean`` and ``state`` — the
 latter is the same per-slot value (there is exactly one reading per
@@ -143,6 +153,7 @@ from .calculation import (
     TRAPEZOID_MAX_MINUTES,
     distribute_loss,
     effective_in_original_unit,
+    interpolate_slot_gaps,
     trapezoidal_slot_contributions,
 )
 from .const import (
@@ -413,12 +424,23 @@ def _effy_power_entity_id(source_entity_id: str) -> str:
     return f"sensor.effy_{slug}_power"
 
 
+def _effy_smoothed_entity_id(source_entity_id: str) -> str:
+    """Return the effy_*_smoothed entity_id for a power-family INPUT sensor.
+
+    Mirrors _effy_entity_id / _effy_power_entity_id's slug derivation, with
+    a "_smoothed" suffix — the gap-interpolated (interpolate_slot_gaps)
+    series for a MEASUREMENT/TOTAL-as-power *input* sensor.
+    """
+    slug = slugify(source_entity_id.split(".")[-1])
+    return f"sensor.effy_{slug}_smoothed"
+
+
 async def _compute_effective_slots(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     start: datetime,
     end: datetime,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """Core computation shared by async_recalculate_history and async_recalculate_recent.
 
     Resolves units (preferring statistics metadata over the live entity's
@@ -437,17 +459,37 @@ async def _compute_effective_slots(
     contribution for a slot before ``start`` is then discarded (it belongs
     to a range some *other* call is responsible for).
 
-    Returns (per_sensor, per_sensor_power):
+    Power-family (MEASUREMENT / TOTAL-as-power) *input* sensors' compiled
+    ``mean`` occasionally has short gaps (a slot the recorder never
+    compiled a reading for). Gaps of up to interpolate_slot_gaps's
+    ``INTERPOLATION_MAX_GAP_SLOTS`` are bridged via linear interpolation
+    and merged straight into this same per-slot series *before*
+    distribute_loss runs — the waterfall sees the smoothed values, not the
+    gappy raw ones, so a short blip in one input no longer misattributes
+    loss for that slot. Output sensors and energy-family sensors are
+    untouched (out of scope for this feature; energy-family sensors don't
+    have this problem in the same way — see trapezoidal_slot_contributions
+    instead).
+
+    Returns (per_sensor, per_sensor_power, per_sensor_smoothed):
       - per_sensor: effy_entity_id → {"unit", "slot_values"} — the
         post-waterfall "effective" value, input sensors only (unchanged
-        concept from before ADR-012).
+        concept from before ADR-012). Already reflects the interpolated
+        input series described above, since that's merged in before this
+        is computed.
       - per_sensor_power: effy_*_power entity_id → {"unit", "slot_values"}
         — the raw, pre-waterfall trapezoidal power for every energy-family
         sensor, inputs *and* outputs (new in ADR-012) — this is exactly
         the value already computed for distribute_loss's input, so no
         extra computation is needed, just capturing it before the
         waterfall step consumes it.
-    Both are ready for _write_recorder_statistics. Nothing is written here.
+      - per_sensor_smoothed: effy_*_smoothed entity_id →
+        {"unit", "slot_values"} — the gap-interpolated series for every
+        power-family *input* sensor that had at least one reading in
+        range; a plain copy of what was merged into distribute_loss's own
+        input above, exposed as its own statistic so the smoothing is
+        visible, not just an invisible internal correction.
+    All three are ready for _write_recorder_statistics. Nothing is written here.
     """
     input_ids: list[str] = entry_options.get(CONF_INPUT_SENSORS, [])
     output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
@@ -513,6 +555,29 @@ async def _compute_effective_slots(
             if start <= slot < end
         }
 
+    # ---- Smoothed power-family INPUT sensors: gap interpolation ----
+    # Bridges short (<= INTERPOLATION_MAX_GAP_SLOTS) runs of missing slots
+    # in a power-family input sensor's `mean` and merges the interpolated
+    # values straight into `indexed[eid]` — using setdefault so an actual
+    # recorder row for a slot is never overwritten, only genuinely missing
+    # slots get a synthetic one. This runs *before* `slots`/distribute_loss
+    # below, so the waterfall calculation itself sees the smoothed series.
+    # Output sensors are deliberately left untouched (out of scope).
+    smoothed_series: dict[str, dict[datetime, float]] = {}
+    for eid in input_ids:
+        if eid not in power_ids:
+            continue
+        entity_rows = indexed.setdefault(eid, {})
+        raw_means = {
+            ts: row["mean"] for ts, row in entity_rows.items() if row.get("mean") is not None
+        }
+        if not raw_means:
+            continue
+        filled = interpolate_slot_gaps(raw_means, slot_minutes=SLOT_MINUTES)
+        smoothed_series[eid] = filled
+        for ts, value in filled.items():
+            entity_rows.setdefault(ts, {"start": ts, "mean": value})
+
     # Union of all slot timestamps actually present, sorted
     slot_set: set[datetime] = set()
     for entity_rows in indexed.values():
@@ -520,7 +585,7 @@ async def _compute_effective_slots(
     slots: list[datetime] = sorted(slot_set)
 
     if not slots:
-        return {}, {}
+        return {}, {}, {}
 
     # results: effective (post-waterfall) values per slot, input sensors only
     results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in input_ids}
@@ -573,7 +638,20 @@ async def _compute_effective_slots(
             "slot_values": power_results[eid],
         }
 
-    return per_sensor, per_sensor_power
+    per_sensor_smoothed: dict[str, dict[str, Any]] = {}
+    for eid, filled in smoothed_series.items():
+        slot_values = sorted((ts, val) for ts, val in filled.items() if start <= ts < end)
+        if not slot_values:
+            continue
+        per_sensor_smoothed[_effy_smoothed_entity_id(eid)] = {
+            # Power-family sensors are already in W/kW — no to_power_equivalent
+            # conversion applies here (that's Wh/kWh → W only), so the raw
+            # units[eid] is the correct unit to write, unlike per_sensor above.
+            "unit": units[eid],
+            "slot_values": slot_values,
+        }
+
+    return per_sensor, per_sensor_power, per_sensor_smoothed
 
 
 async def async_recalculate_history(
@@ -594,10 +672,13 @@ async def async_recalculate_history(
     smoothing. Also writes the raw, pre-loss-distribution derived-power
     statistic (effy_*_power) for every energy-family sensor, input and
     output alike (ADR-012) — new in addition to the existing "effective"
-    (post-waterfall, input-only) statistic.
+    (post-waterfall, input-only) statistic. Power-family *input* sensors
+    additionally get gap-interpolated values (calculation.interpolate_slot_gaps)
+    merged into distribute_loss's own input and written out as a third
+    effy_*_smoothed statistic.
 
     Writes both short-term (5-minute) and long-term (hourly) statistics for
-    both series — see ADR-011 for why the hourly aggregate specifically
+    all three series — see ADR-011 for why the hourly aggregate specifically
     requires a full multi-slot range like this one, and must not be
     written from the slot-timer-driven recent recalculation.
 
@@ -616,8 +697,10 @@ async def async_recalculate_history(
     short_term_retention_days = _get_short_term_retention_days(hass)
     short_term_cutoff = end - timedelta(days=short_term_retention_days)
 
-    per_sensor, per_sensor_power = await _compute_effective_slots(hass, entry_options, start, end)
-    if not per_sensor and not per_sensor_power:
+    per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
+        hass, entry_options, start, end
+    )
+    if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
         return 0, None
 
@@ -630,13 +713,18 @@ async def async_recalculate_history(
         short_term_written += await _write_recorder_statistics(
             hass, per_sensor_power, short_term_cutoff=short_term_cutoff, include_long_term=True
         )
+    if per_sensor_smoothed:
+        short_term_written += await _write_recorder_statistics(
+            hass, per_sensor_smoothed, short_term_cutoff=short_term_cutoff, include_long_term=True
+        )
 
     _LOGGER.debug(
         "Effy: history recalculation wrote %d short-term slots across %d effective + "
-        "%d derived-power sensors",
+        "%d derived-power + %d smoothed sensors",
         short_term_written,
         len(per_sensor),
         len(per_sensor_power),
+        len(per_sensor_smoothed),
     )
     return short_term_written, start
 
@@ -661,19 +749,22 @@ async def async_recalculate_recent(
     history recalc.
 
     Deliberately writes ONLY the short-term (5-minute) statistic, never the
-    long-term (hourly) one, for both the "effective" and "derived power"
-    series — see ADR-011 Decision 2 (unchanged by ADR-012).
+    long-term (hourly) one, for the "effective", "derived power", and
+    "smoothed" series alike — see ADR-011 Decision 2 (unchanged by
+    ADR-012 or the gap-interpolation feature).
 
     Returns (short_term_rows_written, recalculated_from), where
     recalculated_from is the earliest slot timestamp touched by this run
-    across both series, or None if nothing was written this run (e.g. the
-    recorder hasn't compiled statistics for the relevant slots yet, or no
-    sensor changed) — see ADR-012 for how this feeds the "recalculated
+    across all three series, or None if nothing was written this run (e.g.
+    the recorder hasn't compiled statistics for the relevant slots yet, or
+    no sensor changed) — see ADR-012 for how this feeds the "recalculated
     from" sensor.
     """
     start = now - RECENT_RECALC_WINDOW
-    per_sensor, per_sensor_power = await _compute_effective_slots(hass, entry_options, start, now)
-    if not per_sensor and not per_sensor_power:
+    per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
+        hass, entry_options, start, now
+    )
+    if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.debug(
             "Effy recent recalc: nothing to recompute in the %s before %s",
             RECENT_RECALC_WINDOW,
@@ -683,7 +774,7 @@ async def async_recalculate_recent(
 
     written = 0
     earliest: datetime | None = None
-    for series in (per_sensor, per_sensor_power):
+    for series in (per_sensor, per_sensor_power, per_sensor_smoothed):
         if not series:
             continue
         written += await _write_recorder_statistics(hass, series, include_long_term=False)
@@ -694,10 +785,11 @@ async def async_recalculate_recent(
 
     _LOGGER.debug(
         "Effy: recent recalculation wrote %d short-term rows across %d effective + %d "
-        "derived-power sensors, earliest touched slot %s",
+        "derived-power + %d smoothed sensors, earliest touched slot %s",
         written,
         len(per_sensor),
         len(per_sensor_power),
+        len(per_sensor_smoothed),
         earliest,
     )
     return written, earliest

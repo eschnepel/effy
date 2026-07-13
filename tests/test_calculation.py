@@ -38,6 +38,8 @@ distribute_loss = _calculation.distribute_loss
 effective_in_original_unit = _calculation.effective_in_original_unit
 trapezoidal_slot_contributions = _calculation.trapezoidal_slot_contributions
 TRAPEZOID_MAX_MINUTES = _calculation.TRAPEZOID_MAX_MINUTES
+interpolate_slot_gaps = _calculation.interpolate_slot_gaps
+INTERPOLATION_MAX_GAP_SLOTS = _calculation.INTERPOLATION_MAX_GAP_SLOTS
 
 
 def _r(eid: str, value: float, unit: str = "W") -> SensorReading:
@@ -263,3 +265,78 @@ class TestTrapezoidalSlotContributions:
         result = trapezoidal_slot_contributions(raw, slot_minutes=10, max_minutes=10)
         # capped to the last 10 minutes -> one 10-minute slot at 10:10
         assert result == pytest.approx({_ts(10, 10): 2.0})
+
+
+class TestInterpolateSlotGaps:
+    """Gap-interpolation for power-family INPUT sensors' `mean` series."""
+
+    def test_single_slot_gap_filled_with_midpoint(self) -> None:
+        values = {_ts(10, 0): 100.0, _ts(10, 10): 200.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx(
+            {_ts(10, 0): 100.0, _ts(10, 5): 150.0, _ts(10, 10): 200.0}
+        )
+
+    def test_two_slot_gap_filled_with_thirds(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 15): 300.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx(
+            {_ts(10, 0): 0.0, _ts(10, 5): 100.0, _ts(10, 10): 200.0, _ts(10, 15): 300.0}
+        )
+
+    def test_gap_longer_than_max_is_left_untouched(self) -> None:
+        """A 3-slot gap exceeds INTERPOLATION_MAX_GAP_SLOTS (2) -> nothing
+        in between gets filled, the two known points are untouched."""
+        values = {_ts(10, 0): 0.0, _ts(10, 20): 400.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx({_ts(10, 0): 0.0, _ts(10, 20): 400.0})
+        assert len(result) == 2
+
+    def test_adjacent_slots_are_unaffected(self) -> None:
+        """No gap at all -> nothing added, values pass through unchanged."""
+        values = {_ts(10, 0): 5.0, _ts(10, 5): 7.0, _ts(10, 10): 9.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx(values)
+
+    def test_leading_and_trailing_gaps_are_never_extrapolated(self) -> None:
+        """Only gaps *between* two known points are filled; there is no
+        second point to interpolate against before the first, or after
+        the last, known slot."""
+        values = {_ts(10, 10): 50.0}
+        result = interpolate_slot_gaps(values)
+        assert result == {_ts(10, 10): 50.0}
+
+    def test_fewer_than_two_known_slots_returns_copy(self) -> None:
+        assert interpolate_slot_gaps({}) == {}
+        single = {_ts(10, 0): 42.0}
+        result = interpolate_slot_gaps(single)
+        assert result == single
+        assert result is not single
+
+    def test_original_dict_is_not_mutated(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 10): 10.0}
+        original = dict(values)
+        interpolate_slot_gaps(values)
+        assert values == original
+
+    def test_multiple_gaps_in_one_series_each_handled_independently(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 10): 100.0, _ts(10, 15): 200.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx(
+            {
+                _ts(10, 0): 0.0,
+                _ts(10, 5): 50.0,  # interpolated: gap between 10:00 and 10:10
+                _ts(10, 10): 100.0,
+                _ts(10, 15): 200.0,  # adjacent to 10:10, no gap
+            }
+        )
+
+    def test_custom_slot_minutes_and_max_gap_slots(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 30): 3.0}
+        result = interpolate_slot_gaps(values, slot_minutes=10, max_gap_slots=2)
+        assert result == pytest.approx(
+            {_ts(10, 0): 0.0, _ts(10, 10): 1.0, _ts(10, 20): 2.0, _ts(10, 30): 3.0}
+        )
+
+    def test_default_matches_interpolation_max_gap_slots_constant(self) -> None:
+        assert INTERPOLATION_MAX_GAP_SLOTS == 2

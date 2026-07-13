@@ -255,6 +255,65 @@ def trapezoidal_slot_contributions(
     return contributions
 
 
+# Maximum number of consecutive missing slots that get bridged by linear
+# interpolation (EffySmoothedSensor / history.py's `effy_*_smoothed`
+# series, power-family INPUT sensors only). Not user-configurable — a
+# fixed rule, same spirit as TRAPEZOID_MAX_MINUTES above. Two slots (10
+# minutes at the default 5-minute slot width) is short enough that a
+# straight line between the surrounding readings is still a reasonable
+# estimate; a longer silence is left as a genuine gap rather than
+# extrapolated across.
+INTERPOLATION_MAX_GAP_SLOTS = 2
+
+
+def interpolate_slot_gaps(
+    slot_values: dict[datetime, float],
+    slot_minutes: int = 5,
+    max_gap_slots: int = INTERPOLATION_MAX_GAP_SLOTS,
+) -> dict[datetime, float]:
+    """Linearly interpolate short gaps in a sparse per-slot value series.
+
+    ``slot_values`` is a sparse ``{slot_start: value}`` mapping — e.g. a
+    MEASUREMENT/TOTAL-as-power sensor's compiled 5-minute ``mean`` values,
+    which occasionally has a missing slot where the recorder simply never
+    compiled a reading (a short connectivity blip, a slow-polling source,
+    etc.). A *missing* slot is represented by its key being entirely
+    absent, not by an explicit ``None``/NaN value — callers must drop
+    None entries before calling this, the same convention
+    trapezoidal_slot_contributions uses for offline detection above.
+
+    For every pair of consecutive *known* slots (t1, v1) -> (t2, v2), if
+    the number of missing slots strictly between them is between 1 and
+    ``max_gap_slots`` (inclusive), each missing slot in between is filled
+    with a linearly-interpolated value along the straight line from v1 to
+    v2. A gap longer than ``max_gap_slots`` is left untouched entirely —
+    bridging it would mean extrapolating a straight line across too long
+    a silence to still be a reasonable guess, so it's better reported as
+    genuinely missing than smoothed over.
+
+    Returns a new dict containing every original entry plus the
+    interpolated ones; ``slot_values`` itself is never mutated. Leading or
+    trailing gaps (before the first, or after the last, known slot) are
+    never filled — there is no second point to interpolate against.
+    """
+    if len(slot_values) < 2:
+        return dict(slot_values)
+
+    slot_width = timedelta(minutes=slot_minutes)
+    known = sorted(slot_values.items())
+    result: dict[datetime, float] = dict(slot_values)
+
+    for (t1, v1), (t2, v2) in zip(known, known[1:]):
+        steps = round((t2 - t1) / slot_width)
+        gap_slots = steps - 1
+        if gap_slots <= 0 or gap_slots > max_gap_slots:
+            continue
+        for i in range(1, steps):
+            result[t1 + slot_width * i] = v1 + (v2 - v1) * (i / steps)
+
+    return result
+
+
 def effective_in_original_unit(
     entity_id: str,
     distribution: LossDistribution,
