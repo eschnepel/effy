@@ -25,6 +25,16 @@ Uses a mix of the Home Assistant statistics API and raw state history to:
    runs, and separately expose that same interpolated series as its own
    `effy_*_smoothed` statistic — output sensors and energy-family sensors
    are unaffected (out of scope for this feature).
+5. Write an explicit 0, not nothing, for a genuinely idle energy-family
+   stretch — online-but-unchanging (e.g. an empty battery's 0 discharge,
+   several zero-import days) or offline-then-recovered with a net-zero
+   delta alike (ADR-013). RECENT_RECALC_WINDOW (the slot-timer-driven
+   "recent" recalc's own look-back) is deliberately small for this reason
+   — just enough to cover the trapezoidal cap, not sized to also contain
+   a whole multi-hour offline gap the way it originally was — and a
+   single targeted lookback (``_fetch_last_valid_state_before``) finds the
+   real pre-outage baseline on the rare occasions the window itself starts
+   mid-outage, regardless of how far back that baseline is.
 
 State-class handling (ADR-003)
 -------------------------------
@@ -151,6 +161,7 @@ from .sensor_utils import SLOT_MINUTES, effective_unit_for, is_energy_family, to
 from .calculation import (
     SensorReading,
     TRAPEZOID_MAX_MINUTES,
+    _parse_energy_state,
     distribute_loss,
     effective_in_original_unit,
     interpolate_slot_gaps,
@@ -174,24 +185,45 @@ _FALLBACK_SHORT_TERM_RETENTION_DAYS = 10
 
 # Small, fixed extra lookback before any requested [start, end) range, so a
 # transition whose *end* falls right at the start of the range still has
-# its *start* (and any preceding offline gap immediately before it)
-# visible to trapezoidal_slot_contributions — without this, the first few
-# slots in any range could silently under-count. Deliberately much smaller
-# than, and independent of, how large a candidate window each caller below
-# chooses to recompute (max_history_days vs. a few hours) — it only exists
-# to avoid a boundary artifact, not to control how far back an offline gap
-# can be correctly detected (that's bounded by how far back raw history is
-# fetched overall, i.e. by `start` itself). Not verified against a real HA
-# instance — see the module WARNING docstring's general caveat on this
-# file's internal-API-adjacent code.
+# its *start* visible to trapezoidal_slot_contributions — without this,
+# the first few slots in any range could silently under-count. This is
+# NOT what makes offline-gap detection work across an arbitrarily long
+# outage — that's _fetch_last_valid_state_before's job (ADR-013) — this
+# margin only exists to avoid an ordinary boundary artifact at the edge
+# of whatever range a caller below chooses to recompute. Not verified
+# against a real HA instance — see the module WARNING docstring's general
+# caveat on this file's internal-API-adjacent code.
 _RAW_HISTORY_BOUNDARY_MARGIN = timedelta(minutes=TRAPEZOID_MAX_MINUTES + 5)
 
 # How far back the slot-timer-driven "recent" recalculation (ADR-011,
 # ADR-012) looks for candidate slots to rewrite, every time it runs
-# (~every 5 minutes). Bounds the query cost of that frequent call; a real
-# offline gap longer than this is still corrected eventually by the next
-# full history recalc, whose own window is much larger (max_history_days).
-RECENT_RECALC_WINDOW = timedelta(hours=4)
+# (~every 5 minutes). Deliberately small (ADR-013) — just enough to
+# comfortably cover the trapezoidal cap (TRAPEZOID_MAX_MINUTES) plus a
+# missed timer tick or two, NOT sized to also cover a multi-hour offline
+# gap the way it originally was. That's no longer this window's job:
+# _fetch_last_valid_state_before performs a single targeted lookback
+# (only when the window's own oldest raw state turns out to be invalid,
+# i.e. the window happens to start mid-outage) to find the real
+# pre-outage baseline, however far back that is — so an offline gap of
+# any length is handled correctly without this window needing to be wide
+# enough to contain the whole thing. See ADR-013 for the full reasoning
+# (this replaces the original 4-hour value, which existed for that
+# now-obsolete reason and made every recalculation's own "touched" range
+# — and therefore the recalculated-from sensor — look like it always
+# spanned about 4 hours, regardless of how much had actually changed). A
+# genuinely long-neglected sensor (e.g. HA itself was down for days) is
+# still corrected eventually by the next full history recalc, whose own
+# window is much larger (max_history_days) — same fallback as before.
+RECENT_RECALC_WINDOW = timedelta(minutes=TRAPEZOID_MAX_MINUTES + 5)
+
+# How far back _fetch_last_valid_state_before is willing to search for a
+# pre-outage baseline reading, when RECENT_RECALC_WINDOW's own oldest raw
+# state turns out to already be invalid. Deliberately generous (matches
+# the full history recalc's own reach) since this lookback is a rare,
+# single targeted query — not a per-cycle cost — so there's little reason
+# to bound it any tighter than "as far back as a full recalc would look
+# anyway".
+_OFFLINE_ANCHOR_SEARCH_DAYS = DEFAULT_MAX_HISTORY_DAYS
 
 
 def _get_short_term_retention_days(hass: HomeAssistant) -> int:
@@ -406,6 +438,58 @@ def _fetch_raw_energy_states(
     return [(s.last_changed, s.state) for s in states]
 
 
+def _fetch_last_valid_state_before(
+    hass: HomeAssistant,
+    entity_id: str,
+    before: datetime,
+    search_days: int = _OFFLINE_ANCHOR_SEARCH_DAYS,
+) -> tuple[datetime, str] | None:
+    """Find the most recent *numeric* raw state for entity_id strictly
+    before ``before`` (ADR-013).
+
+    Only needed when RECENT_RECALC_WINDOW's own fetch (_fetch_raw_energy_states,
+    starting at raw_history_start) happens to *start* mid-outage — i.e. its
+    very first entry is already invalid (unavailable/unknown/non-numeric).
+    In that case there is no valid reading anywhere in the small window to
+    anchor a trapezoidal redistribution against once the sensor comes back
+    online, even though the real outage may have started long before the
+    window (RECENT_RECALC_WINDOW is now deliberately small, see its own
+    docstring — it no longer tries to be wide enough to contain a whole
+    offline gap itself). This is a single, targeted, descending query for
+    one entity — not a per-cycle cost, only run when that specific pattern
+    is detected — so it can afford to search much further back than the
+    window itself, all the way to search_days.
+
+    Runs synchronously; callers must invoke this via
+    ``recorder.async_add_executor_job``, exactly like ``_fetch_raw_energy_states``.
+
+    Returns (timestamp, raw_state_string) of the found reading, or None if
+    no numeric reading exists at all within the search range (a genuinely
+    brand-new entity, or one that's been offline longer than search_days —
+    in either case, there's nothing to anchor a redistribution to, so the
+    transition into the window is simply left without a computed
+    contribution, same as any other "fewer than 2 valid readings" case).
+    """
+    from homeassistant.components.recorder.history import (  # noqa: PLC0415
+        state_changes_during_period,
+    )
+
+    search_start = before - timedelta(days=search_days)
+    history_by_entity = state_changes_during_period(
+        hass,
+        search_start,
+        before,
+        entity_id,
+        no_attributes=True,
+        descending=True,
+        include_start_time_state=False,
+    )
+    for state in history_by_entity.get(entity_id, []):
+        if _parse_energy_state(state.state) is not None:
+            return (state.last_changed, state.state)
+    return None
+
+
 def _effy_entity_id(source_entity_id: str) -> str:
     """Return the effy_* entity_id for a given input sensor (mirrors sensor.py)."""
     slug = slugify(source_entity_id.split(".")[-1])
@@ -457,7 +541,13 @@ async def _compute_effective_slots(
     distribution window begins before ``start`` is still correctly
     accounted for in the first slots of the requested range; any resulting
     contribution for a slot before ``start`` is then discarded (it belongs
-    to a range some *other* call is responsible for).
+    to a range some *other* call is responsible for). ``now=end`` is
+    passed through to trapezoidal_slot_contributions so a sensor that
+    simply hasn't reported a new value yet still gets explicit 0 entries
+    for the slots since its last reading (ADR-013), and if the fetched raw
+    history itself starts mid-outage (its first entry is already invalid),
+    a single targeted lookback (_fetch_last_valid_state_before) finds the
+    real pre-outage baseline regardless of how far back it is.
 
     Power-family (MEASUREMENT / TOTAL-as-power) *input* sensors' compiled
     ``mean`` occasionally has short gaps (a slot the recorder never
@@ -542,13 +632,29 @@ async def _compute_effective_slots(
         for eid, rows in raw_stats.items():
             indexed[eid] = {row["start"]: row for row in rows}
 
-    # ---- Energy-family sensors: trapezoidal-redistributed raw history (ADR-012) ----
+    # ---- Energy-family sensors: trapezoidal-redistributed raw history (ADR-012, ADR-013) ----
     raw_history_start = start - _RAW_HISTORY_BOUNDARY_MARGIN
     for eid in energy_ids:
         raw_states = await recorder.async_add_executor_job(
             _fetch_raw_energy_states, hass, eid, raw_history_start, end
         )
-        contributions = trapezoidal_slot_contributions(raw_states, slot_minutes=SLOT_MINUTES)
+        # RECENT_RECALC_WINDOW is deliberately small (ADR-013) — if the
+        # sensor was already offline when this window's own fetch starts,
+        # the window contains no valid baseline to redistribute the
+        # eventual return-to-online jump against. Detected cheaply: the
+        # chronologically-first fetched entry is itself invalid. This is a
+        # single, targeted, one-off lookback — not run when the window
+        # already has a valid starting point (the overwhelmingly common
+        # case) — see _fetch_last_valid_state_before's docstring.
+        if raw_states and _parse_energy_state(raw_states[0][1]) is None:
+            anchor = await recorder.async_add_executor_job(
+                _fetch_last_valid_state_before, hass, eid, raw_history_start
+            )
+            if anchor is not None:
+                raw_states = [anchor, *raw_states]
+        contributions = trapezoidal_slot_contributions(
+            raw_states, slot_minutes=SLOT_MINUTES, now=end
+        )
         indexed[eid] = {
             slot: {"start": slot, "change": value}
             for slot, value in contributions.items()
@@ -657,7 +763,7 @@ async def _compute_effective_slots(
 async def async_recalculate_history(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
-) -> tuple[int, datetime | None]:
+) -> tuple[int, datetime | None, set[str]]:
     """
     Recalculate and overwrite effy statistics for up to max_history_days.
 
@@ -669,12 +775,18 @@ async def async_recalculate_history(
     Energy-family sensors' per-slot values are computed via the
     trapezoidal rule (ADR-012, calculation.trapezoidal_slot_contributions)
     applied to raw state history, replacing ADR-009's neighbor-steal
-    smoothing. Also writes the raw, pre-loss-distribution derived-power
-    statistic (effy_*_power) for every energy-family sensor, input and
-    output alike (ADR-012) — new in addition to the existing "effective"
-    (post-waterfall, input-only) statistic. Power-family *input* sensors
-    additionally get gap-interpolated values (calculation.interpolate_slot_gaps)
-    merged into distribute_loss's own input and written out as a third
+    smoothing. A genuinely idle stretch (the counter simply didn't move,
+    online or not) now gets explicit 0 entries rather than none at all
+    (ADR-013) — this is where that shows up most: a full recalc walks the
+    entire max_history_days window, so any long-idle period within it (an
+    empty battery's 0 discharge, several zero-import days, …) gets fully
+    zero-filled here, not just the last 15 minutes of it. Also writes the
+    raw, pre-loss-distribution derived-power statistic (effy_*_power) for
+    every energy-family sensor, input and output alike (ADR-012) — new in
+    addition to the existing "effective" (post-waterfall, input-only)
+    statistic. Power-family *input* sensors additionally get
+    gap-interpolated values (calculation.interpolate_slot_gaps) merged
+    into distribute_loss's own input and written out as a third
     effy_*_smoothed statistic.
 
     Writes both short-term (5-minute) and long-term (hourly) statistics for
@@ -682,14 +794,18 @@ async def async_recalculate_history(
     requires a full multi-slot range like this one, and must not be
     written from the slot-timer-driven recent recalculation.
 
-    Returns (short_term_rows_written, recalculated_from). A full recalc
-    unconditionally recomputes every slot in [start, end), so
+    Returns (short_term_rows_written, recalculated_from, touched_entity_ids).
+    A full recalc unconditionally recomputes every slot in [start, end), so
     recalculated_from is always exactly ``start`` — see
     async_recalculate_recent for the dynamic-range case, and ADR-012 for
-    why this value matters (the "recalculated from" sensor). See the
-    module WARNING docstring above for how (and why) this writes to
-    internal recorder tables instead of using the public statistics import
-    API.
+    why this value matters (the "recalculated from" sensor).
+    touched_entity_ids is every effy_* entity_id that got at least one
+    slot written this run, across all three series — callers (button.py)
+    push it through EffyCoordinator.notify_updated() so those entities'
+    dashboard cards see a state_changed event and refetch, since these
+    entities otherwise never get a live push (ADR-011). See the module
+    WARNING docstring above for how (and why) this writes to internal
+    recorder tables instead of using the public statistics import API.
     """
     max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
     end = datetime.now(tz=timezone.utc)
@@ -702,7 +818,7 @@ async def async_recalculate_history(
     )
     if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
-        return 0, None
+        return 0, None, set()
 
     short_term_written = 0
     if per_sensor:
@@ -718,6 +834,10 @@ async def async_recalculate_history(
             hass, per_sensor_smoothed, short_term_cutoff=short_term_cutoff, include_long_term=True
         )
 
+    touched_entity_ids: set[str] = (
+        set(per_sensor) | set(per_sensor_power) | set(per_sensor_smoothed)
+    )
+
     _LOGGER.debug(
         "Effy: history recalculation wrote %d short-term slots across %d effective + "
         "%d derived-power + %d smoothed sensors",
@@ -726,39 +846,54 @@ async def async_recalculate_history(
         len(per_sensor_power),
         len(per_sensor_smoothed),
     )
-    return short_term_written, start
+    return short_term_written, start, touched_entity_ids
 
 
 async def async_recalculate_recent(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     now: datetime,
-) -> tuple[int, datetime | None]:
+) -> tuple[int, datetime | None, set[str]]:
     """
     Recalculate and write effy statistics for whatever recent slots need it.
 
     Intended to be called shortly after a slot closes (EffyCoordinator's
     slot timer, ADR-011). Unlike the original fixed single-slot design,
-    the exact range recomputed is now dynamic (ADR-012): a
-    trapezoidal-redistributed energy jump can touch more than one slot —
-    up to 3 for a normal (15-minute-capped) jump, or more for an offline
-    gap — so this always recomputes and rewrites every slot touched by
-    *any* sensor within RECENT_RECALC_WINDOW of ``now``, not just the
-    single slot that most recently closed. A real offline gap longer than
-    RECENT_RECALC_WINDOW is still corrected eventually by the next full
-    history recalc.
+    the exact range recomputed is dynamic within RECENT_RECALC_WINDOW
+    (ADR-012): a trapezoidal-redistributed energy jump can touch more than
+    one slot — up to 3 for a normal (15-minute-capped) jump — so this
+    always recomputes and rewrites every slot touched by *any* sensor
+    within RECENT_RECALC_WINDOW of ``now``, not just the single slot that
+    most recently closed. RECENT_RECALC_WINDOW is deliberately small
+    (ADR-013 — just enough to cover the trapezoidal cap plus a missed
+    timer tick or two); a sensor that comes back online from a genuinely
+    long offline gap is still handled correctly regardless of the
+    window's size, via _compute_effective_slots' single targeted
+    _fetch_last_valid_state_before lookback — not by making this window
+    itself wide enough to contain the whole gap, the way it originally
+    was. A truly long-neglected sensor (further back than
+    _OFFLINE_ANCHOR_SEARCH_DAYS, or HA itself down for that long) is still
+    corrected eventually by the next full history recalc.
 
     Deliberately writes ONLY the short-term (5-minute) statistic, never the
     long-term (hourly) one, for the "effective", "derived power", and
     "smoothed" series alike — see ADR-011 Decision 2 (unchanged by
     ADR-012 or the gap-interpolation feature).
 
-    Returns (short_term_rows_written, recalculated_from), where
+    Returns (short_term_rows_written, recalculated_from, touched_entity_ids).
     recalculated_from is the earliest slot timestamp touched by this run
     across all three series, or None if nothing was written this run (e.g.
     the recorder hasn't compiled statistics for the relevant slots yet, or
     no sensor changed) — see ADR-012 for how this feeds the "recalculated
-    from" sensor.
+    from" sensor. Thanks to RECENT_RECALC_WINDOW now being small (ADR-013),
+    this is normally within a few minutes of ``now``, not always ~4 hours
+    back as it was when the window itself was 4 hours wide; it only
+    reaches further back than the window when the targeted offline lookback
+    above actually fires. touched_entity_ids is every effy_* entity_id
+    that got at least one slot written this run — the caller
+    (EffyCoordinator's slot timer) pushes it through notify_updated() so
+    those entities' dashboard cards see a state_changed event and refetch,
+    since these entities otherwise never get a live push (ADR-011).
     """
     start = now - RECENT_RECALC_WINDOW
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
@@ -770,7 +905,7 @@ async def async_recalculate_recent(
             RECENT_RECALC_WINDOW,
             now,
         )
-        return 0, None
+        return 0, None, set()
 
     written = 0
     earliest: datetime | None = None
@@ -783,6 +918,10 @@ async def async_recalculate_recent(
                 if earliest is None or slot < earliest:
                     earliest = slot
 
+    touched_entity_ids: set[str] = (
+        set(per_sensor) | set(per_sensor_power) | set(per_sensor_smoothed)
+    )
+
     _LOGGER.debug(
         "Effy: recent recalculation wrote %d short-term rows across %d effective + %d "
         "derived-power + %d smoothed sensors, earliest touched slot %s",
@@ -792,7 +931,7 @@ async def async_recalculate_recent(
         len(per_sensor_smoothed),
         earliest,
     )
-    return written, earliest
+    return written, earliest, touched_entity_ids
 
 
 def _fetch_statistics(

@@ -149,25 +149,58 @@ def _parse_energy_state(state: str) -> float | None:
         return None
 
 
+def _slot_aligned(ts: datetime, slot_width: timedelta) -> datetime:
+    """Round a timestamp down to its containing slot's start."""
+    return ts - timedelta(seconds=ts.timestamp() % slot_width.total_seconds())
+
+
+def _fill_zero_slots(
+    contributions: dict[datetime, float],
+    range_start: datetime,
+    range_end: datetime,
+    slot_width: timedelta,
+) -> None:
+    """Ensure every slot boundary in [range_start, range_end) has an
+    explicit entry in ``contributions``, defaulting to 0.0.
+
+    Uses ``setdefault`` — never overwrites a slot that already has a real
+    (possibly nonzero) contribution from some other transition. The caller
+    is responsible for choosing range_end so it doesn't include the slot
+    that a subsequent windowed distribution will itself write to (see
+    trapezoidal_slot_contributions below) — that slot must be left for the
+    real overlap computation, even though part of it falls in the zero
+    prefix.
+    """
+    cursor = _slot_aligned(range_start, slot_width)
+    end_aligned = _slot_aligned(range_end, slot_width)
+    while cursor < end_aligned:
+        contributions.setdefault(cursor, 0.0)
+        cursor += slot_width
+
+
 def trapezoidal_slot_contributions(
     raw_states: list[tuple[datetime, str]],
     slot_minutes: int = 5,
     max_minutes: int = TRAPEZOID_MAX_MINUTES,
+    now: datetime | None = None,
 ) -> dict[datetime, float]:
     """Redistribute a TOTAL_INCREASING energy counter's raw jumps across
     5-minute slots using the trapezoidal rule (ADR-012, replaces ADR-009's
-    neighbor-steal smoothing).
+    neighbor-steal smoothing; zero-fill behaviour added in ADR-013).
 
     Some energy meters only report their cumulative counter every so often
     — sometimes because the true delta is smaller than the counter's
     display resolution and simply hasn't ticked yet, sometimes because the
     sensor was genuinely offline. Reading the counter's raw ``change`` per
-    fixed 5-minute statistics slot (the previous approach) attributes the
-    *entire* jump to whichever slot happened to contain the next reading,
-    leaving every slot in between at a spurious 0 — even though real,
-    continuous power was very likely flowing throughout. This function
-    instead spreads each jump evenly across the time it actually took to
-    accumulate, using the trapezoidal rule.
+    fixed 5-minute statistics slot (the original approach, pre-ADR-012)
+    attributes the *entire* jump to whichever slot happened to contain the
+    next reading, leaving every slot in between at a spurious 0 — even
+    though real, continuous power was very likely flowing throughout. This
+    function instead spreads each jump evenly across the time it actually
+    took to accumulate, using the trapezoidal rule — and, per ADR-013,
+    explicitly writes 0 (rather than nothing at all) for a genuinely idle
+    stretch, so e.g. an empty battery's 0 discharge or several zero-import
+    days shows up as 0 in the statistic instead of "no data".
 
     ``raw_states`` is the entity's raw state history, chronologically
     ordered, as (timestamp, state_string) pairs — including any
@@ -184,12 +217,36 @@ def trapezoidal_slot_contributions(
         negative contribution is ever distributed, and (t2, v2) simply
         becomes the new baseline for the following transition.
       - if the raw entry immediately preceding (t2, v2) was itself
-        invalid (unavailable/unknown/non-numeric): the sensor was offline
-        for this whole gap, so delta is spread evenly across the *entire*
-        [t1, t2) span, uncapped.
-      - otherwise (a normal, direct v1->v2 step with no gap in between):
-        delta is spread evenly across at most the last ``max_minutes``
-        minutes before t2, i.e. [max(t1, t2 - max_minutes), t2).
+        invalid (unavailable/unknown/non-numeric), OR delta == 0 (the
+        counter genuinely didn't move at all, however long that took):
+        the distribution window is the *entire* uncapped [t1, t2) span.
+        For the offline case this is because it's genuinely unknown how
+        consumption/production was distributed while offline. For the
+        zero-delta case it doesn't actually matter how wide the window
+        is — the rate is 0 either way — but using the full span is what
+        produces an explicit 0 entry for every slot in the gap, however
+        long, instead of silently producing nothing.
+      - otherwise (a normal, direct v1->v2 step with a positive delta, no
+        gap in between): delta is spread evenly across at most the last
+        ``max_minutes`` minutes before t2, i.e.
+        [max(t1, t2 - max_minutes), t2) — same as before ADR-013. Unlike
+        before, the *prefix* this cap leaves uncovered (t1 up to the start
+        of that window, whenever the gap is longer than max_minutes) is no
+        longer left with no entry at all: the counter was still sitting at
+        v1 with no jump yet throughout that prefix, i.e. it genuinely
+        contributed 0, so it is filled with explicit 0.0 entries too.
+
+    If ``now`` is given and the sensor's last known reading is still valid
+    (not currently unavailable) but predates ``now``, a final synthetic
+    zero-delta transition from that last reading up to ``now`` is
+    considered as well — this is what lets a sensor that simply hasn't
+    reported anything new *yet* (as opposed to one whose latest jump was
+    already processed above) still get explicit 0 entries for the slots
+    since its last real reading, following the exact same zero-delta rule
+    as above. Without this, an idle sensor with fewer than 2 readings in
+    the queried range would produce no contributions at all, even though
+    "no new reading" and "reading changed by exactly 0" mean the same
+    thing physically.
 
     Each 5-minute slot boundary that overlaps a transition's distribution
     window receives a share proportional to the overlap duration. A slot
@@ -201,8 +258,10 @@ def trapezoidal_slot_contributions(
     delta series comes from; the caller still runs the result through the
     same Wh/kWh → W-equivalent conversion (to_power_equivalent) as before.
 
-    An input with fewer than 2 valid numeric readings produces no
-    contributions (nothing to form a transition from).
+    An input with fewer than 2 valid numeric readings, and no ``now``
+    (or a ``now`` that isn't after the single reading, or a currently-
+    invalid last reading), produces no contributions (nothing to form a
+    transition from).
     """
     slot_width = timedelta(minutes=slot_minutes)
     max_window = timedelta(minutes=max_minutes)
@@ -224,23 +283,33 @@ def trapezoidal_slot_contributions(
         last_valid = (ts, value)
         prev_was_invalid = False
 
+    # Synthetic zero-delta continuation up to `now` — see docstring above.
+    if now is not None and last_valid is not None and not prev_was_invalid:
+        last_ts, last_value = last_valid
+        if now > last_ts:
+            transitions.append((last_ts, last_value, now, last_value, False))
+
     contributions: dict[datetime, float] = {}
 
     for t1, v1, t2, v2, was_offline in transitions:
         delta = max(0.0, v2 - v1)
-        if delta == 0.0 or t2 <= t1:
+        if t2 <= t1:
             continue
 
-        window_start = t1 if was_offline else max(t1, t2 - max_window)
+        if was_offline or delta == 0.0:
+            window_start = t1
+        else:
+            window_start = max(t1, t2 - max_window)
+            if window_start > t1:
+                _fill_zero_slots(contributions, t1, window_start, slot_width)
+
         window_seconds = (t2 - window_start).total_seconds()
         if window_seconds <= 0:
             continue
         rate_per_second = delta / window_seconds
 
         # Walk every 5-minute slot overlapping [window_start, t2).
-        slot_cursor = window_start - timedelta(
-            seconds=window_start.timestamp() % slot_width.total_seconds()
-        )
+        slot_cursor = _slot_aligned(window_start, slot_width)
         while slot_cursor < t2:
             slot_end = slot_cursor + slot_width
             overlap_start = max(window_start, slot_cursor)

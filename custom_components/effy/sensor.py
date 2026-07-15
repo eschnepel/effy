@@ -2,12 +2,16 @@
 
 Sensors hold no listeners of their own; they subscribe to the shared
 EffyCoordinator and receive computed results via push (ADR-006 Option C).
-Live-path disabled (2026-07-09, disabled/README.md): no push currently
-happens for EffySensor/EffyDerivedPowerSensor — their statistics are
-populated directly by history.py instead (ADR-011, ADR-012).
-EffyRecalculatedFromSensor is the one live-updating exception (ADR-012):
-it subscribes to the coordinator's separate recalculated-from channel,
-which *is* active even with the live path off.
+Live-path disabled (2026-07-09, disabled/README.md): no *numeric* push
+currently happens for EffySensor/EffyDerivedPowerSensor/EffySmoothedSensor
+— their statistics are populated directly by history.py instead (ADR-011,
+ADR-012). They do each receive a lightweight "unknown" push right after
+every recalculation that touches them (EffyCoordinator.notify_updated),
+purely so a state_changed event fires for dashboard cards that only
+refresh on that event — see EffySensor._on_updated.
+EffyRecalculatedFromSensor is the one sensor with an actual live *value*
+update even with the live path off: it subscribes to the coordinator's
+separate recalculated-from channel, which carries a real timestamp.
 """
 
 from __future__ import annotations
@@ -77,7 +81,7 @@ async def async_setup_entry(
             pending_ids.append(entity_id)
             continue
         entities.extend(
-            _build_derived_entities(hass, entry, entity_id, entity_id in input_id_set)
+            _build_derived_entities(hass, entry, coordinator, entity_id, entity_id in input_id_set)
         )
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
@@ -85,7 +89,9 @@ async def async_setup_entry(
     async_add_entities(entities, update_before_add=False)
 
     if pending_ids:
-        _add_late_derived_entities(hass, entry, pending_ids, input_id_set, async_add_entities)
+        _add_late_derived_entities(
+            hass, entry, coordinator, pending_ids, input_id_set, async_add_entities
+        )
 
     # Trigger one immediate recalculation so sensors have values on first load
     coordinator.force_refresh()
@@ -94,6 +100,7 @@ async def async_setup_entry(
 def _build_derived_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
+    coordinator: EffyCoordinator,
     entity_id: str,
     is_input: bool,
 ) -> list[SensorEntity]:
@@ -112,15 +119,16 @@ def _build_derived_entities(
     state_class = meta.get("state_class")
     unit = meta.get("unit", "W")
     if is_energy_family(state_class, unit):
-        return [EffyDerivedPowerSensor(hass, entry, entity_id)]
+        return [EffyDerivedPowerSensor(hass, entry, coordinator, entity_id)]
     if is_input:
-        return [EffySmoothedSensor(hass, entry, entity_id)]
+        return [EffySmoothedSensor(hass, entry, coordinator, entity_id)]
     return []
 
 
 def _add_late_derived_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
+    coordinator: EffyCoordinator,
     pending_ids: list[str],
     input_id_set: set[str],
     async_add_entities: AddEntitiesCallback,
@@ -147,7 +155,9 @@ def _add_late_derived_entities(
             return
         remaining.discard(entity_id)
 
-        new_entities = _build_derived_entities(hass, entry, entity_id, entity_id in input_id_set)
+        new_entities = _build_derived_entities(
+            hass, entry, coordinator, entity_id, entity_id in input_id_set
+        )
         if new_entities:
             async_add_entities(new_entities)
 
@@ -184,6 +194,7 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         self._source_unit: str = "W"
 
         self._unsub_coordinator: Callable[[], None] | None = None
+        self._unsub_updates: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -208,9 +219,13 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         return _device_info(self._entry)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to coordinator updates (ADR-006 Option C)."""
+        """Subscribe to coordinator updates (ADR-006 Option C), plus the
+        "push unknown after recalculation" channel (see _on_updated)."""
         self._unsub_coordinator = self._coordinator.subscribe(
             self._source_entity_id, self._on_distribution
+        )
+        self._unsub_updates = self._coordinator.subscribe_updates(
+            self.entity_id, self._on_updated
         )
 
     async def async_will_remove_from_hass(self) -> None:
@@ -218,6 +233,23 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         if self._unsub_coordinator is not None:
             self._unsub_coordinator()
             self._unsub_coordinator = None
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self) -> None:
+        """Push a fresh "unknown" state (EffyCoordinator.notify_updated).
+
+        Fires after a recalculation has written new statistics for this
+        entity. There is no live numeric value to push here (ADR-011 — no
+        API to backdate a live state into an already-closed slot) — this
+        exists purely so a state_changed event fires at all, letting
+        dashboard cards that only refresh on that event (e.g.
+        history/statistics graph cards) know to refetch.
+        """
+        self._attr_native_value = None
+        self.async_write_ha_state()
 
     @callback  # type: ignore[untyped-decorator]
     def _on_distribution(self, distribution: LossDistribution) -> None:
@@ -270,9 +302,11 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
 
     Exists mainly so history.py's async_recalculate_history /
     async_recalculate_recent have a stable entity_id to attach statistics
-    to (sensor.effy_{slug}_power) — like EffySensor, it currently receives
-    no live push while the live path is disabled (see disabled/README.md);
-    its statistics are populated directly by history.py.
+    to (sensor.effy_{slug}_power) — like EffySensor, it receives no live
+    numeric push while the live path is disabled (see disabled/README.md);
+    its statistics are populated directly by history.py. It does, however,
+    push a state_changed("unknown") after each recalculation that touches
+    it — see _on_updated / EffyCoordinator.notify_updated.
     """
 
     _attr_should_poll = False
@@ -282,10 +316,12 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
+        coordinator: EffyCoordinator,
         source_entity_id: str,
     ) -> None:
         self._hass = hass
         self._entry = entry
+        self._coordinator = coordinator
         self._source_entity_id = source_entity_id
 
         self._slug = slugify(source_entity_id.split(".")[-1])
@@ -293,6 +329,7 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
         self._attr_native_value: float | None = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._unsub_updates: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -315,6 +352,28 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
     @property
     def device_info(self) -> DeviceInfo:
         return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to the "push unknown after recalculation" channel
+        (see _on_updated)."""
+        self._unsub_updates = self._coordinator.subscribe_updates(
+            self.entity_id, self._on_updated
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self) -> None:
+        """Push a fresh "unknown" state (EffyCoordinator.notify_updated).
+
+        See EffySensor._on_updated for why "unknown" and not the actual
+        computed value.
+        """
+        self._attr_native_value = None
+        self.async_write_ha_state()
 
 
 class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
@@ -339,11 +398,13 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
     as a genuine gap rather than extrapolated across.
 
     Exists mainly so history.py has a stable place to attach these
-    statistics to — like EffySensor/EffyDerivedPowerSensor, it currently
-    receives no live push while the live path is disabled (see
+    statistics to — like EffySensor/EffyDerivedPowerSensor, it receives no
+    live numeric push while the live path is disabled (see
     disabled/README.md); its statistics are populated directly by
-    history.py. Output sensors never get one of these (out of scope for
-    this feature).
+    history.py. It does, however, push a state_changed("unknown") after
+    each recalculation that touches it — see _on_updated /
+    EffyCoordinator.notify_updated. Output sensors never get one of these
+    (out of scope for this feature).
     """
 
     _attr_should_poll = False
@@ -353,10 +414,12 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
+        coordinator: EffyCoordinator,
         source_entity_id: str,
     ) -> None:
         self._hass = hass
         self._entry = entry
+        self._coordinator = coordinator
         self._source_entity_id = source_entity_id
 
         self._slug = slugify(source_entity_id.split(".")[-1])
@@ -364,6 +427,7 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
         self._attr_native_value: float | None = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._unsub_updates: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -386,6 +450,28 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
     @property
     def device_info(self) -> DeviceInfo:
         return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to the "push unknown after recalculation" channel
+        (see _on_updated)."""
+        self._unsub_updates = self._coordinator.subscribe_updates(
+            self.entity_id, self._on_updated
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self) -> None:
+        """Push a fresh "unknown" state (EffyCoordinator.notify_updated).
+
+        See EffySensor._on_updated for why "unknown" and not the actual
+        computed value.
+        """
+        self._attr_native_value = None
+        self.async_write_ha_state()
 
 
 class EffyRecalculatedFromSensor(SensorEntity):  # type: ignore[misc]

@@ -72,17 +72,23 @@ class EffyRecalculateButton(ButtonEntity):  # type: ignore[misc]
         "recalculated from" tracking (ADR-012) — a manual rewrite always
         recomputes every slot in the full configured window
         unconditionally, so that window's own start is, by definition,
-        the earliest touched slot.
+        the earliest touched slot. Additionally pushes a fresh "unknown"
+        state to every touched entity (EffyCoordinator.notify_updated)
+        so dashboard cards that only refresh on state_changed pick up the
+        rewritten statistics, since these entities otherwise never get a
+        live push while the live path is disabled (ADR-011).
         """
         _LOGGER.info("Effy: starting history recalculation (triggered by button)")
         try:
-            written, recalculated_from = await async_recalculate_history(
+            written, recalculated_from, touched = await async_recalculate_history(
                 self.hass, self._entry.options
             )
             _LOGGER.info("Effy: history recalculation complete – %d slots written", written)
+            coordinator: EffyCoordinator = self.hass.data[DOMAIN][self._entry.entry_id]
             if recalculated_from is not None:
-                coordinator: EffyCoordinator = self.hass.data[DOMAIN][self._entry.entry_id]
                 coordinator.set_recalculated_from(recalculated_from)
+            if touched:
+                coordinator.notify_updated(touched)
         except Exception:
             # Broad catch is intentional: this runs outside a request/response
             # cycle (button press has no caller to propagate to) — log and

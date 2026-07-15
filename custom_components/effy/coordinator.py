@@ -33,6 +33,14 @@ It owns:
     (ADR-012): both the slot timer below and a manual history rewrite
     (button.py) report the earliest slot they touched, via
     set_recalculated_from — used by EffyRecalculatedFromSensor.
+  - A third push registry, keyed by each derived entity's own entity_id
+    (subscribe_updates / notify_updated): after either recalculation path
+    writes new statistics for an entity, that entity gets a lightweight
+    "unknown" state push (never a real value, for the same ADR-011 reason
+    as above) purely so a state_changed event fires — used by
+    EffySensor/EffyDerivedPowerSensor/EffySmoothedSensor so dashboard
+    cards that only refresh on that event (e.g. history/statistics graph
+    cards) don't go stale.
   - A slot-aligned timer that fires SLOT_TIMER_LAG_SECONDS *after* every
     SLOT_MINUTES wall-clock boundary and calls
     history.async_recalculate_recent (ADR-011, ADR-012). Firing after
@@ -56,7 +64,7 @@ concurrent access is possible, so no locks are needed.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -83,6 +91,7 @@ SLOT_TIMER_LAG_SECONDS = 5
 # Type alias for a subscriber callback.
 SubscriberCallback = Callable[[LossDistribution], None]
 RecalculatedFromCallback = Callable[[datetime], None]
+EntityUpdateCallback = Callable[[], None]
 
 
 def _next_slot_trigger_delay(
@@ -140,6 +149,14 @@ class EffyCoordinator:
         # shape as _subscribers for consistency.
         self.recalculated_from: datetime | None = None
         self._recalculated_from_subscribers: list[RecalculatedFromCallback] = []
+
+        # "Push unknown after recalculation" registry: derived entity_id →
+        # callback. Keyed by the derived entity's OWN entity_id (e.g.
+        # sensor.effy_pv_roof / _power / _smoothed) — unlike _subscribers
+        # above, which is keyed by the *source* entity_id for the
+        # (currently dormant) live distribution channel. See
+        # subscribe_updates / notify_updated below.
+        self._update_subscribers: dict[str, EntityUpdateCallback] = {}
 
         # Slot-aligned timer state. Drives the history-driven slot
         # computation (ADR-011). Self-reschedules after every firing.
@@ -215,6 +232,57 @@ class EffyCoordinator:
         for cb in list(self._recalculated_from_subscribers):
             cb(ts)
 
+    def subscribe_updates(self, entity_id: str, cb: EntityUpdateCallback) -> Callable[[], None]:
+        """Register a derived entity's "push unknown after recalculation" callback.
+
+        Keyed by the derived entity's own entity_id (e.g.
+        sensor.effy_pv_roof, sensor.effy_pv_roof_power,
+        sensor.effy_pv_roof_smoothed) — not the source sensor. Used by
+        EffySensor / EffyDerivedPowerSensor / EffySmoothedSensor so they
+        know when to push a fresh "unknown" state after a recalculation
+        has written new statistics for them; see notify_updated() below
+        for why "unknown" and not the actual computed value.
+
+        Returns an unsubscribe callable (call it from async_will_remove_from_hass).
+        """
+        self._update_subscribers[entity_id] = cb
+
+        def _unsubscribe() -> None:
+            self._update_subscribers.pop(entity_id, None)
+
+        return _unsubscribe
+
+    def notify_updated(self, entity_ids: Iterable[str]) -> None:
+        """Push a fresh "unknown" state to every subscribed entity in entity_ids.
+
+        Called after a recalculation (this coordinator's own slot timer,
+        or a manual history rewrite via button.py) has written new
+        statistics — entity_ids is exactly the set of effy_* entity_ids
+        that got new data *this run*
+        (history.async_recalculate_recent / async_recalculate_history's
+        third return value), not every configured sensor, so an entity
+        untouched this cycle is left alone.
+
+        Pushes "unknown" specifically, not the newly-written value itself:
+        there is no live numeric value to push here (ADR-011 — no API to
+        backdate a live state into an already-closed slot; the real value
+        lives only in the statistics table, not as a state). This exists
+        purely so a state_changed event fires at all, for the benefit of
+        dashboard cards that only refresh on that event (e.g.
+        history/statistics graph cards) — without it, such a card could go
+        on showing stale data indefinitely, since these entities otherwise
+        never receive any live push while the live path is disabled.
+
+        Silently ignores any entity_id with no current subscriber (e.g. a
+        sensor.effy_*_power entity that hasn't finished async_added_to_hass
+        yet, or was never created because its source isn't energy-family) —
+        this is a best-effort UI nicety, not a correctness-critical path.
+        """
+        for entity_id in entity_ids:
+            cb = self._update_subscribers.get(entity_id)
+            if cb is not None:
+                cb()
+
     # ------------------------------------------------------------------
     # Slot-aligned timer — computes the just-finished slot via the
     # history-path logic (ADR-011)
@@ -240,16 +308,21 @@ class EffyCoordinator:
         self._schedule_next_slot_timer()
 
     async def _async_recalculate_recent_and_report(self) -> None:
-        """Run async_recalculate_recent and forward its result (ADR-012).
+        """Run async_recalculate_recent and forward its results (ADR-012,
+        gap-interpolation feature, and the "push unknown" UX fix).
 
         Split out from _on_slot_timer so the recalculation can be awaited
         (needed to get its return value) while _on_slot_timer itself stays
         a synchronous @callback, per HA's contract.
         """
         now = datetime.now(tz=timezone.utc)
-        _written, earliest = await async_recalculate_recent(self._hass, self._entry.options, now)
+        _written, earliest, touched = await async_recalculate_recent(
+            self._hass, self._entry.options, now
+        )
         if earliest is not None:
             self.set_recalculated_from(earliest)
+        if touched:
+            self.notify_updated(touched)
 
     def _schedule_next_slot_timer(self) -> None:
         """(Re)schedule the slot-aligned timer for its next trigger point."""

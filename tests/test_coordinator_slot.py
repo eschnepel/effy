@@ -104,13 +104,13 @@ def _load(reg_name: str, filename: str) -> ModuleType:
 # module docstring for why the real history.py isn't loaded here.
 _history_calls: list[tuple[Any, Any, datetime]] = []
 # Configurable by individual tests: what async_recalculate_recent should
-# return this call — (written, earliest_touched_slot | None).
-_history_return_value: list[tuple[int, datetime | None]] = [(0, None)]
+# return this call — (written, earliest_touched_slot | None, touched_entity_ids).
+_history_return_value: list[tuple[int, datetime | None, set[str]]] = [(0, None, set())]
 
 
 async def _fake_async_recalculate_recent(
     hass: Any, entry_options: Any, now: datetime
-) -> tuple[int, datetime | None]:
+) -> tuple[int, datetime | None, set[str]]:
     _history_calls.append((hass, entry_options, now))
     return _history_return_value[0]
 
@@ -278,7 +278,7 @@ class TestEffyCoordinatorShell:
         set_recalculated_from (ADR-012)."""
         _history_calls.clear()
         earliest = _ts(10, 0, 0)
-        _history_return_value[0] = (3, earliest)
+        _history_return_value[0] = (3, earliest, {"sensor.effy_pv_roof"})
         try:
             coord = self._coordinator()
             coord.async_setup()
@@ -291,7 +291,32 @@ class TestEffyCoordinatorShell:
             assert coord.recalculated_from == earliest
             assert received == [earliest]
         finally:
-            _history_return_value[0] = (0, None)
+            _history_return_value[0] = (0, None, set())
+
+    @pytest.mark.asyncio
+    async def test_on_slot_timer_pushes_unknown_to_touched_entities_only(self) -> None:
+        """After a recalculation, only entities in touched_entity_ids get
+        a notify_updated push -- an untouched subscriber is left alone
+        (the "push unknown so dashboards refresh" UX fix)."""
+        _history_calls.clear()
+        _history_return_value[0] = (3, _ts(10, 0, 0), {"sensor.effy_pv_roof"})
+        try:
+            coord = self._coordinator()
+            coord.async_setup()
+            touched_pushes: list[None] = []
+            untouched_pushes: list[None] = []
+            coord.subscribe_updates("sensor.effy_pv_roof", lambda: touched_pushes.append(None))
+            coord.subscribe_updates(
+                "sensor.effy_pv_roof_power", lambda: untouched_pushes.append(None)
+            )
+
+            coord._on_slot_timer(None)
+            await asyncio.sleep(0)
+
+            assert touched_pushes == [None]
+            assert untouched_pushes == []
+        finally:
+            _history_return_value[0] = (0, None, set())
 
     @pytest.mark.asyncio
     async def test_on_slot_timer_does_not_touch_recalculated_from_when_nothing_written(
@@ -301,7 +326,7 @@ class TestEffyCoordinatorShell:
         cycle), recalculated_from must stay whatever it was -- not get
         reset to None."""
         _history_calls.clear()
-        _history_return_value[0] = (0, None)
+        _history_return_value[0] = (0, None, set())
         coord = self._coordinator()
         coord.recalculated_from = _ts(9, 0, 0)  # pre-existing value
         coord.async_setup()

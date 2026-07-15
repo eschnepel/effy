@@ -5,6 +5,15 @@
 sourcing), ADR-011 (slot-timer recalculation range), and `history.py`'s
 write path.
 
+**See also:** ADR-013 (2026-07-13) amends this ADR in two ways: (1)
+`trapezoidal_slot_contributions` now writes an explicit 0 for a genuinely
+idle stretch instead of producing no contribution at all — see Decision 1
+below, now extended; (2) `RECENT_RECALC_WINDOW` (Decision 3 below) shrinks
+from 4 hours to ~20 minutes, with a single targeted lookback replacing the
+wide window's role in handling offline gaps — this also fixes
+`recalculated_from` effectively always reading "~4 hours ago" regardless
+of what actually changed.
+
 ---
 
 ## Context
