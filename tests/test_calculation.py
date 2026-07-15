@@ -354,9 +354,7 @@ class TestTrapezoidalSlotContributions:
         simply hasn't ticked yet)."""
         raw = [(_ts(10, 0), "42.0")]
         result = trapezoidal_slot_contributions(raw, now=_ts(10, 15))
-        assert result == pytest.approx(
-            {_ts(10, 0): 0.0, _ts(10, 5): 0.0, _ts(10, 10): 0.0}
-        )
+        assert result == pytest.approx({_ts(10, 0): 0.0, _ts(10, 5): 0.0, _ts(10, 10): 0.0})
 
     def test_now_param_ignored_when_last_reading_is_currently_invalid(self) -> None:
         """A sensor that is currently unavailable/unknown must NOT get a
@@ -381,9 +379,7 @@ class TestTrapezoidalSlotContributions:
         the slots since that jump up to `now`."""
         raw = [(_ts(10, 0), "0.0"), (_ts(10, 5), "1.0")]
         result = trapezoidal_slot_contributions(raw, now=_ts(10, 15))
-        assert result == pytest.approx(
-            {_ts(10, 0): 1.0, _ts(10, 5): 0.0, _ts(10, 10): 0.0}
-        )
+        assert result == pytest.approx({_ts(10, 0): 1.0, _ts(10, 5): 0.0, _ts(10, 10): 0.0})
 
 
 class TestInterpolateSlotGaps:
@@ -392,9 +388,7 @@ class TestInterpolateSlotGaps:
     def test_single_slot_gap_filled_with_midpoint(self) -> None:
         values = {_ts(10, 0): 100.0, _ts(10, 10): 200.0}
         result = interpolate_slot_gaps(values)
-        assert result == pytest.approx(
-            {_ts(10, 0): 100.0, _ts(10, 5): 150.0, _ts(10, 10): 200.0}
-        )
+        assert result == pytest.approx({_ts(10, 0): 100.0, _ts(10, 5): 150.0, _ts(10, 10): 200.0})
 
     def test_two_slot_gap_filled_with_thirds(self) -> None:
         values = {_ts(10, 0): 0.0, _ts(10, 15): 300.0}

@@ -224,9 +224,7 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         self._unsub_coordinator = self._coordinator.subscribe(
             self._source_entity_id, self._on_distribution
         )
-        self._unsub_updates = self._coordinator.subscribe_updates(
-            self.entity_id, self._on_updated
-        )
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
 
     async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe from coordinator."""
@@ -356,9 +354,7 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
     async def async_added_to_hass(self) -> None:
         """Subscribe to the "push unknown after recalculation" channel
         (see _on_updated)."""
-        self._unsub_updates = self._coordinator.subscribe_updates(
-            self.entity_id, self._on_updated
-        )
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
@@ -454,9 +450,7 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
     async def async_added_to_hass(self) -> None:
         """Subscribe to the "push unknown after recalculation" channel
         (see _on_updated)."""
-        self._unsub_updates = self._coordinator.subscribe_updates(
-            self.entity_id, self._on_updated
-        )
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:

@@ -193,7 +193,7 @@ class _FakeHass:
 class TestEffyCoordinatorShell:
     def _coordinator(self) -> EffyCoordinator:
         entry = _FakeEntry(["sensor.pv"], ["sensor.grid_export"])
-        return EffyCoordinator(_FakeHass(), entry)  # type: ignore[arg-type]
+        return EffyCoordinator(_FakeHass(), entry)
 
     def test_stores_input_and_output_ids(self) -> None:
         coord = self._coordinator()
