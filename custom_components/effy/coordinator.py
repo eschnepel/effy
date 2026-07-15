@@ -50,9 +50,14 @@ It owns:
     not a fixed single slot — see async_recalculate_recent's docstring
     (a trapezoidal-redistributed energy jump, ADR-012, can touch more
     than one slot).
+  - A small, volatile, in-memory cache of each energy-family entity's
+    last known valid reading (last_valid_energy_readings, ADR-015) — not
+    the disabled live path's LiveReading cache below, a much lighter
+    weight one used purely to let history.py skip a recorder query when
+    it already knows the answer from an earlier cycle this session.
 
-No state-change listeners are registered and no LiveReading cache
-exists while the live path is disabled — see disabled/coordinator_live.py
+No state-change listeners are registered and no *live-path* LiveReading
+cache exists while the live path is disabled — see disabled/coordinator_live.py
 for that implementation, including the full accumulator formulas.
 
 Thread safety
@@ -157,6 +162,21 @@ class EffyCoordinator:
         # (currently dormant) live distribution channel. See
         # subscribe_updates / notify_updated below.
         self._update_subscribers: dict[str, EntityUpdateCallback] = {}
+
+        # Volatile (in-memory only, never persisted, lost on restart)
+        # cache of the last known *valid* raw reading per energy-family
+        # entity_id — (timestamp, raw_state_string), same shape as a
+        # _fetch_raw_energy_states row (ADR-015). NOT the disabled live
+        # path's LiveReading cache (module banner above) — this exists
+        # purely to let history._compute_effective_slots skip
+        # _fetch_last_valid_state_before's recorder query when it already
+        # knows the answer from having processed a valid reading for this
+        # entity in some earlier cycle this session. Read and written
+        # exclusively by history.py's recalculation functions, passed
+        # through by reference — this coordinator does not interpret its
+        # contents itself, just owns and hands it out so it survives
+        # across calls within the same HA session.
+        self.last_valid_energy_readings: dict[str, tuple[datetime, str]] = {}
 
         # Slot-aligned timer state. Drives the history-driven slot
         # computation (ADR-011). Self-reschedules after every firing.
@@ -317,7 +337,10 @@ class EffyCoordinator:
         """
         now = datetime.now(tz=timezone.utc)
         _written, earliest, touched = await async_recalculate_recent(
-            self._hass, self._entry.options, now
+            self._hass,
+            self._entry.options,
+            now,
+            energy_reading_cache=self.last_valid_energy_readings,
         )
         if earliest is not None:
             self.set_recalculated_from(earliest)

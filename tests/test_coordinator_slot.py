@@ -102,16 +102,19 @@ def _load(reg_name: str, filename: str) -> ModuleType:
 # `from .history import async_recalculate_recent` — sys.modules is checked
 # before the filesystem, so this fake is what coordinator.py gets. See
 # module docstring for why the real history.py isn't loaded here.
-_history_calls: list[tuple[Any, Any, datetime]] = []
+_history_calls: list[tuple[Any, Any, datetime, Any]] = []
 # Configurable by individual tests: what async_recalculate_recent should
 # return this call — (written, earliest_touched_slot | None, touched_entity_ids).
 _history_return_value: list[tuple[int, datetime | None, set[str]]] = [(0, None, set())]
 
 
 async def _fake_async_recalculate_recent(
-    hass: Any, entry_options: Any, now: datetime
+    hass: Any,
+    entry_options: Any,
+    now: datetime,
+    energy_reading_cache: Any = None,
 ) -> tuple[int, datetime | None, set[str]]:
-    _history_calls.append((hass, entry_options, now))
+    _history_calls.append((hass, entry_options, now, energy_reading_cache))
     return _history_return_value[0]
 
 
@@ -266,10 +269,26 @@ class TestEffyCoordinatorShell:
         after = datetime.now(timezone.utc)
 
         assert len(_history_calls) == 1
-        hass_arg, options_arg, now_arg = _history_calls[0]
+        hass_arg, options_arg, now_arg, cache_arg = _history_calls[0]
         assert hass_arg is coord._hass
         assert options_arg is coord._entry.options
         assert before <= now_arg <= after
+
+    @pytest.mark.asyncio
+    async def test_on_slot_timer_passes_its_own_energy_reading_cache(self) -> None:
+        """The coordinator's volatile last-known-valid-reading cache
+        (ADR-015) must be passed through to async_recalculate_recent by
+        reference, so history.py's updates to it persist across cycles."""
+        _history_calls.clear()
+        coord = self._coordinator()
+        coord.async_setup()
+
+        coord._on_slot_timer(None)
+        await asyncio.sleep(0)
+
+        assert len(_history_calls) == 1
+        _hass_arg, _options_arg, _now_arg, cache_arg = _history_calls[0]
+        assert cache_arg is coord.last_valid_energy_readings
 
     @pytest.mark.asyncio
     async def test_on_slot_timer_reports_earliest_touched_slot(self) -> None:

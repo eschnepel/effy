@@ -129,10 +129,19 @@ def distribute_loss(
 
 
 # Maximum distribution window for a normal (non-offline) counter jump — see
-# trapezoidal_slot_contributions. Not user-configurable (ADR-012): unlike
-# ADR-009's smoothing, which this replaces, the window width here isn't a
-# tunable heuristic, it's a fixed rule.
-TRAPEZOID_MAX_MINUTES = 15
+# trapezoidal_slot_contributions. Not user-configurable: unlike ADR-009's
+# smoothing, which this replaces, the window width here isn't a tunable
+# heuristic, it's a fixed rule. Raised from 15 to 120 minutes (ADR-014):
+# 15 minutes was too tight for real low-resolution energy meters that only
+# tick every 20-90 minutes — every such tick got compressed into the last
+# 15 minutes, producing a visibly oscillating "0, then a spike, then 0
+# again" derived-power curve instead of a smooth one, even though the
+# meter's actual behaviour was almost certainly closer to a steady rate
+# the whole time. 120 minutes comfortably covers realistic low-resolution
+# reporting intervals while still being a firm cap, not "however long it
+# takes" — see the offline branch just below for genuinely unknown-shape
+# gaps, which remain uncapped regardless of this value.
+TRAPEZOID_MAX_MINUTES = 120
 
 
 def _parse_energy_state(state: str) -> float | None:

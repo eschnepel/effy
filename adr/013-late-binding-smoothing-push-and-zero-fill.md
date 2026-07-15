@@ -6,6 +6,14 @@ ADR-011 (`RECENT_RECALC_WINDOW`), ADR-012 (`trapezoidal_slot_contributions`,
 derived-power sensor, recalculated-from tracking), and `sensor.py`'s /
 `history.py`'s entity-creation and recalculation paths.
 
+**See also:** ADR-014 (same day) amends Decision 4/5 below further: the
+trapezoidal cap grows from 15 to 120 minutes (fixing visible oscillation
+in low-resolution meters' derived data), `RECENT_RECALC_WINDOW` is
+explicitly decoupled from that cap rather than growing with it, and
+`_fetch_last_valid_state_before`'s lookback becomes staged (30 min → 1
+day → full history) instead of a single unbounded search — the latter
+having caused a real Home Assistant bootstrap timeout.
+
 ---
 
 ## Context

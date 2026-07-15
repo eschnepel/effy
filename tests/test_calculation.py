@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -188,15 +188,17 @@ class TestTrapezoidalSlotContributions:
         result = trapezoidal_slot_contributions(raw)
         assert result == pytest.approx({_ts(10, 0): 0.2, _ts(10, 5): 0.2})
 
-    def test_normal_gap_over_15_minutes_is_capped_with_zero_filled_prefix(self) -> None:
-        """A valid-to-valid gap of 30 minutes (no offline in between) must
-        NOT spread the real delta across the full 30 minutes -- only the
-        last 15, anchored at t2. Per ADR-013, the three slots before that
-        window are no longer left with no entry at all: the counter was
-        genuinely sitting at v1 with no jump yet, so they get an explicit
-        0.0 rather than nothing."""
+    def test_normal_gap_over_the_cap_is_capped_with_zero_filled_prefix(self) -> None:
+        """A valid-to-valid gap longer than max_minutes (no offline in
+        between) must NOT spread the real delta across the full gap --
+        only the last max_minutes, anchored at t2. Per ADR-013, the slots
+        before that window are no longer left with no entry at all: the
+        counter was genuinely sitting at v1 with no jump yet, so they get
+        an explicit 0.0 rather than nothing. Uses an explicit max_minutes
+        so this test exercises the capping *mechanism* regardless of
+        whatever TRAPEZOID_MAX_MINUTES' actual default happens to be."""
         raw = [(_ts(10, 0), "100.0"), (_ts(10, 30), "101.0")]
-        result = trapezoidal_slot_contributions(raw)
+        result = trapezoidal_slot_contributions(raw, max_minutes=15)
         assert result == pytest.approx(
             {
                 _ts(10, 0): 0.0,
@@ -207,6 +209,43 @@ class TestTrapezoidalSlotContributions:
                 _ts(10, 25): 1 / 3,
             }
         )
+        assert sum(result.values()) == pytest.approx(1.0)
+
+    def test_default_cap_is_120_minutes(self) -> None:
+        """ADR-014: raised from 15 to 120 minutes -- 15 minutes was too
+        tight for real low-resolution energy meters (20-90 minute tick
+        intervals), compressing every tick into a visibly oscillating
+        "0, then a spike" derived-power curve."""
+        assert TRAPEZOID_MAX_MINUTES == 120
+
+    def test_gap_within_the_default_120_minute_cap_is_not_capped(self) -> None:
+        """A 30-minute gap -- capped under the old 15-minute rule -- must
+        now spread smoothly across the *entire* gap with the default cap,
+        not just the last 15 minutes, since 30 < 120."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(10, 30), "101.0")]
+        result = trapezoidal_slot_contributions(raw)
+        expected_slots = [_ts(10, m) for m in (0, 5, 10, 15, 20, 25)]
+        assert set(result.keys()) == set(expected_slots)
+        for slot in expected_slots:
+            assert result[slot] == pytest.approx(1 / 6)
+        assert sum(result.values()) == pytest.approx(1.0)
+
+    def test_gap_over_the_default_120_minute_cap_is_capped_with_zero_filled_prefix(
+        self,
+    ) -> None:
+        """A gap of 150 minutes (2.5h) exceeds the default 120-minute cap
+        -- the last 120 minutes get the real, smooth spread, and the
+        30-minute prefix before that gets explicit 0.0 (ADR-013/014)."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(12, 30), "101.0")]
+        result = trapezoidal_slot_contributions(raw)
+        prefix_slots = [_ts(10, m) for m in (0, 5, 10, 15, 20, 25)]
+        window_start = _ts(10, 30)
+        window_slots = [window_start + timedelta(minutes=5 * i) for i in range(24)]
+        for slot in prefix_slots:
+            assert result[slot] == pytest.approx(0.0)
+        for slot in window_slots:
+            assert result[slot] == pytest.approx(1 / 24)
+        assert set(result.keys()) == set(prefix_slots) | set(window_slots)
         assert sum(result.values()) == pytest.approx(1.0)
 
     def test_offline_gap_spreads_over_the_full_span_uncapped(self) -> None:

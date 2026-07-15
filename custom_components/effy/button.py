@@ -80,11 +80,13 @@ class EffyRecalculateButton(ButtonEntity):  # type: ignore[misc]
         """
         _LOGGER.info("Effy: starting history recalculation (triggered by button)")
         try:
+            coordinator: EffyCoordinator = self.hass.data[DOMAIN][self._entry.entry_id]
             written, recalculated_from, touched = await async_recalculate_history(
-                self.hass, self._entry.options
+                self.hass,
+                self._entry.options,
+                energy_reading_cache=coordinator.last_valid_energy_readings,
             )
             _LOGGER.info("Effy: history recalculation complete – %d slots written", written)
-            coordinator: EffyCoordinator = self.hass.data[DOMAIN][self._entry.entry_id]
             if recalculated_from is not None:
                 coordinator.set_recalculated_from(recalculated_from)
             if touched:
