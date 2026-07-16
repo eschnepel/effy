@@ -880,11 +880,44 @@ async def _compute_effective_slots(
     return per_sensor, per_sensor_power, per_sensor_smoothed
 
 
+def _last_slot_values(
+    *series: dict[str, dict[str, Any]],
+) -> dict[str, tuple[float, str]]:
+    """Extract each entity's most-recent-slot ``(value, unit)`` across one
+    or more per-sensor series (ADR-016).
+
+    Each series maps a statistic_id to ``{"unit", "slot_values"}``, with
+    ``slot_values`` a ``(timestamp, value)`` list in ascending slot order
+    (guaranteed by ``_compute_effective_slots`` — see the comment on
+    ``_write_recorder_statistics``'s hourly-aggregation loop for the same
+    assumption already relied on elsewhere). The last entry is therefore
+    the latest slot written *this run* for that entity — not necessarily
+    "now" itself (a sensor that came back online mid-window may have its
+    latest write short of ``now``), but the most recent one this
+    recalculation actually produced, which is the best available stand-in
+    for "the current value" (ADR-016).
+
+    Statistic ids across per_sensor/per_sensor_power/per_sensor_smoothed
+    never collide (they carry different suffixes — ``_effy_entity_id`` vs
+    ``_effy_power_entity_id`` vs ``_effy_smoothed_entity_id``), so merging
+    all given series into one dict is safe.
+    """
+    last_values: dict[str, tuple[float, str]] = {}
+    for one_series in series:
+        for statistic_id, info in one_series.items():
+            slot_values: list[tuple[datetime, float]] = info["slot_values"]
+            if not slot_values:
+                continue
+            _last_slot, last_value = slot_values[-1]
+            last_values[statistic_id] = (last_value, info["unit"])
+    return last_values
+
+
 async def async_recalculate_history(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
-) -> tuple[int, datetime | None, set[str]]:
+) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     """
     Recalculate and overwrite effy statistics for up to max_history_days.
 
@@ -915,18 +948,26 @@ async def async_recalculate_history(
     requires a full multi-slot range like this one, and must not be
     written from the slot-timer-driven recent recalculation.
 
-    Returns (short_term_rows_written, recalculated_from, touched_entity_ids).
+    Returns (short_term_rows_written, recalculated_from, touched_entity_ids,
+    last_values).
     A full recalc unconditionally recomputes every slot in [start, end), so
     recalculated_from is always exactly ``start`` — see
     async_recalculate_recent for the dynamic-range case, and ADR-012 for
     why this value matters (the "recalculated from" sensor).
     touched_entity_ids is every effy_* entity_id that got at least one
     slot written this run, across all three series — callers (button.py)
-    push it through EffyCoordinator.notify_updated() so those entities'
-    dashboard cards see a state_changed event and refetch, since these
-    entities otherwise never get a live push (ADR-011). See the module
-    WARNING docstring above for how (and why) this writes to internal
-    recorder tables instead of using the public statistics import API.
+    push it, together with last_values, through
+    EffyCoordinator.notify_updated() so those entities' dashboard cards
+    see a state_changed event and refetch. last_values maps each touched
+    entity_id to the ``(value, unit)`` of the *last* (most recent) slot
+    written for it this run (``_last_slot_values``, ADR-016) — pushed as
+    that entity's live state so a dashboard shows a real number instead
+    of "unknown" between recalculations, even though the live path itself
+    stays disabled; see ADR-016 for why this is safe (it's attributed to
+    the wrong, currently-open slot, but gets corrected the next time that
+    slot is itself recalculated). See the module WARNING docstring above
+    for how (and why) this writes to internal recorder tables instead of
+    using the public statistics import API.
 
     ``energy_reading_cache``, if given, is EffyCoordinator's volatile
     last-known-valid-reading cache (ADR-015) — passed straight through to
@@ -947,7 +988,7 @@ async def async_recalculate_history(
     )
     if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
-        return 0, None, set()
+        return 0, None, set(), {}
 
     short_term_written = 0
     if per_sensor:
@@ -966,6 +1007,7 @@ async def async_recalculate_history(
     touched_entity_ids: set[str] = (
         set(per_sensor) | set(per_sensor_power) | set(per_sensor_smoothed)
     )
+    last_values = _last_slot_values(per_sensor, per_sensor_power, per_sensor_smoothed)
 
     _LOGGER.debug(
         "Effy: history recalculation wrote %d short-term slots across %d effective + "
@@ -975,7 +1017,7 @@ async def async_recalculate_history(
         len(per_sensor_power),
         len(per_sensor_smoothed),
     )
-    return short_term_written, start, touched_entity_ids
+    return short_term_written, start, touched_entity_ids, last_values
 
 
 async def async_recalculate_recent(
@@ -983,7 +1025,7 @@ async def async_recalculate_recent(
     entry_options: dict[str, Any],
     now: datetime,
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
-) -> tuple[int, datetime | None, set[str]]:
+) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     """
     Recalculate and write effy statistics for whatever recent slots need it.
 
@@ -1013,7 +1055,8 @@ async def async_recalculate_recent(
     "smoothed" series alike — see ADR-011 Decision 2 (unchanged by
     ADR-012 or the gap-interpolation feature).
 
-    Returns (short_term_rows_written, recalculated_from, touched_entity_ids).
+    Returns (short_term_rows_written, recalculated_from, touched_entity_ids,
+    last_values).
     recalculated_from is the earliest slot timestamp touched by this run
     across all three series, or None if nothing was written this run (e.g.
     the recorder hasn't compiled statistics for the relevant slots yet, or
@@ -1024,9 +1067,15 @@ async def async_recalculate_recent(
     reaches further back than the window when the targeted offline lookback
     above actually fires. touched_entity_ids is every effy_* entity_id
     that got at least one slot written this run — the caller
-    (EffyCoordinator's slot timer) pushes it through notify_updated() so
-    those entities' dashboard cards see a state_changed event and refetch,
-    since these entities otherwise never get a live push (ADR-011).
+    (EffyCoordinator's slot timer) pushes it, together with last_values,
+    through notify_updated() so those entities' dashboard cards see a
+    state_changed event and refetch. last_values maps each touched
+    entity_id to the ``(value, unit)`` of the last (most recent) slot
+    written for it this run (``_last_slot_values``) — pushed as that
+    entity's live state instead of "unknown" (ADR-016, revisiting ADR-011
+    Decision 4: still no backdating into the closed slot itself, just an
+    ordinary *live* state update timestamped "now", additive to the
+    statistics write, exactly as ADR-011 anticipated).
 
     ``energy_reading_cache``, if given, is EffyCoordinator's volatile
     last-known-valid-reading cache (ADR-015) — passed straight through to
@@ -1047,7 +1096,7 @@ async def async_recalculate_recent(
             RECENT_RECALC_WINDOW,
             now,
         )
-        return 0, None, set()
+        return 0, None, set(), {}
 
     written = 0
     earliest: datetime | None = None
@@ -1063,6 +1112,7 @@ async def async_recalculate_recent(
     touched_entity_ids: set[str] = (
         set(per_sensor) | set(per_sensor_power) | set(per_sensor_smoothed)
     )
+    last_values = _last_slot_values(per_sensor, per_sensor_power, per_sensor_smoothed)
 
     _LOGGER.debug(
         "Effy: recent recalculation wrote %d short-term rows across %d effective + %d "
@@ -1073,7 +1123,7 @@ async def async_recalculate_recent(
         len(per_sensor_smoothed),
         earliest,
     )
-    return written, earliest, touched_entity_ids
+    return written, earliest, touched_entity_ids, last_values
 
 
 def _fetch_statistics(

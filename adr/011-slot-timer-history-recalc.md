@@ -11,6 +11,14 @@ described here (`async_recalculate_slot`) with a dynamic-range
 write, timer timing, the live-push question) are otherwise unaffected —
 Decision 4's "recalculated from" idea is what ADR-012 actually implements.
 
+ADR-016 (2026-07-16) implements the additive live push Decision 4 below
+concludes is possible — pushing each recalculation's last-written value
+as a live state, superseding the "unknown"-only push described there and
+in the Consequences section below. The core finding of Decision 4 is
+unchanged: no public API can backdate a live state into an already-closed
+slot, so the statistics write remains the only thing that corrects that
+slot; ADR-016 only changes what the *additive* live push carries.
+
 ---
 
 ## Context

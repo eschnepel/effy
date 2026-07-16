@@ -35,12 +35,15 @@ It owns:
     set_recalculated_from — used by EffyRecalculatedFromSensor.
   - A third push registry, keyed by each derived entity's own entity_id
     (subscribe_updates / notify_updated): after either recalculation path
-    writes new statistics for an entity, that entity gets a lightweight
-    "unknown" state push (never a real value, for the same ADR-011 reason
-    as above) purely so a state_changed event fires — used by
+    writes new statistics for an entity, that entity gets its live state
+    pushed as the ``(value, unit)`` of the last (most recent) slot just
+    written for it (ADR-016 — revisits the "unknown"-only push this used
+    to do; see notify_updated's own docstring for the "right value,
+    provisionally wrong slot" tradeoff this accepts) — used by
     EffySensor/EffyDerivedPowerSensor/EffySmoothedSensor so dashboard
-    cards that only refresh on that event (e.g. history/statistics graph
-    cards) don't go stale.
+    cards show something other than "unknown" between recalculations,
+    and so a state_changed event fires either way for cards that only
+    refresh on that event (e.g. history/statistics graph cards).
   - A slot-aligned timer that fires SLOT_TIMER_LAG_SECONDS *after* every
     SLOT_MINUTES wall-clock boundary and calls
     history.async_recalculate_recent (ADR-011, ADR-012). Firing after
@@ -96,7 +99,9 @@ SLOT_TIMER_LAG_SECONDS = 5
 # Type alias for a subscriber callback.
 SubscriberCallback = Callable[[LossDistribution], None]
 RecalculatedFromCallback = Callable[[datetime], None]
-EntityUpdateCallback = Callable[[], None]
+# (value, unit) of the entity's last-written slot this run, or (None, None)
+# if no value is known for it (ADR-016) — see notify_updated/subscribe_updates.
+EntityUpdateCallback = Callable[[float | None, str | None], None]
 
 
 def _next_slot_trigger_delay(
@@ -253,15 +258,16 @@ class EffyCoordinator:
             cb(ts)
 
     def subscribe_updates(self, entity_id: str, cb: EntityUpdateCallback) -> Callable[[], None]:
-        """Register a derived entity's "push unknown after recalculation" callback.
+        """Register a derived entity's "push latest value after recalculation" callback.
 
         Keyed by the derived entity's own entity_id (e.g.
         sensor.effy_pv_roof, sensor.effy_pv_roof_power,
         sensor.effy_pv_roof_smoothed) — not the source sensor. Used by
         EffySensor / EffyDerivedPowerSensor / EffySmoothedSensor so they
-        know when to push a fresh "unknown" state after a recalculation
-        has written new statistics for them; see notify_updated() below
-        for why "unknown" and not the actual computed value.
+        know when a recalculation has written new statistics for them and
+        what to push as their new live state; see notify_updated() below
+        for the ``(value, unit)`` shape and ADR-016 for why a real value
+        is pushed here rather than "unknown".
 
         Returns an unsubscribe callable (call it from async_will_remove_from_hass).
         """
@@ -272,8 +278,12 @@ class EffyCoordinator:
 
         return _unsubscribe
 
-    def notify_updated(self, entity_ids: Iterable[str]) -> None:
-        """Push a fresh "unknown" state to every subscribed entity in entity_ids.
+    def notify_updated(
+        self,
+        entity_ids: Iterable[str],
+        last_values: dict[str, tuple[float, str]] | None = None,
+    ) -> None:
+        """Push each subscribed entity's latest recalculated value as its live state.
 
         Called after a recalculation (this coordinator's own slot timer,
         or a manual history rewrite via button.py) has written new
@@ -283,25 +293,38 @@ class EffyCoordinator:
         third return value), not every configured sensor, so an entity
         untouched this cycle is left alone.
 
-        Pushes "unknown" specifically, not the newly-written value itself:
-        there is no live numeric value to push here (ADR-011 — no API to
-        backdate a live state into an already-closed slot; the real value
-        lives only in the statistics table, not as a state). This exists
-        purely so a state_changed event fires at all, for the benefit of
-        dashboard cards that only refresh on that event (e.g.
-        history/statistics graph cards) — without it, such a card could go
-        on showing stale data indefinitely, since these entities otherwise
-        never receive any live push while the live path is disabled.
+        ``last_values`` (the fourth return value of those same history.py
+        functions) maps a touched entity_id to the ``(value, unit)`` of
+        the *last* (most recent) slot written for it this run
+        (ADR-016). For every entity_id in entity_ids, the corresponding
+        subscriber callback is called with that ``(value, unit)`` pair —
+        or ``(None, None)`` if entity_ids contains an id ``last_values``
+        doesn't (shouldn't normally happen, since both come from the same
+        recalculation call, but kept defensive rather than a KeyError).
+
+        This is a genuine, immediately-visible live state update, not a
+        backdated one: it's timestamped "now" like any ordinary state
+        change, landing in whatever 5-minute slot is currently open — the
+        *statistics* write above is what actually corrects the
+        already-closed slot the value truly belongs to (ADR-011 still
+        applies there: no public API backdates a live state into a closed
+        slot). ADR-016 covers why this "right value, provisionally wrong
+        slot" tradeoff is preferable to showing "unknown" until the next
+        cycle corrects it. It also, as before, guarantees a state_changed
+        event fires for the benefit of dashboard cards that only refresh
+        on that event (e.g. history/statistics graph cards).
 
         Silently ignores any entity_id with no current subscriber (e.g. a
         sensor.effy_*_power entity that hasn't finished async_added_to_hass
         yet, or was never created because its source isn't energy-family) —
         this is a best-effort UI nicety, not a correctness-critical path.
         """
+        last_values = last_values or {}
         for entity_id in entity_ids:
             cb = self._update_subscribers.get(entity_id)
             if cb is not None:
-                cb()
+                value, unit = last_values.get(entity_id, (None, None))
+                cb(value, unit)
 
     # ------------------------------------------------------------------
     # Slot-aligned timer — computes the just-finished slot via the
@@ -336,7 +359,7 @@ class EffyCoordinator:
         a synchronous @callback, per HA's contract.
         """
         now = datetime.now(tz=timezone.utc)
-        _written, earliest, touched = await async_recalculate_recent(
+        _written, earliest, touched, last_values = await async_recalculate_recent(
             self._hass,
             self._entry.options,
             now,
@@ -345,7 +368,7 @@ class EffyCoordinator:
         if earliest is not None:
             self.set_recalculated_from(earliest)
         if touched:
-            self.notify_updated(touched)
+            self.notify_updated(touched, last_values)
 
     def _schedule_next_slot_timer(self) -> None:
         """(Re)schedule the slot-aligned timer for its next trigger point."""

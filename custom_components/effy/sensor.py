@@ -2,16 +2,21 @@
 
 Sensors hold no listeners of their own; they subscribe to the shared
 EffyCoordinator and receive computed results via push (ADR-006 Option C).
-Live-path disabled (2026-07-09, disabled/README.md): no *numeric* push
-currently happens for EffySensor/EffyDerivedPowerSensor/EffySmoothedSensor
-— their statistics are populated directly by history.py instead (ADR-011,
-ADR-012). They do each receive a lightweight "unknown" push right after
-every recalculation that touches them (EffyCoordinator.notify_updated),
-purely so a state_changed event fires for dashboard cards that only
-refresh on that event — see EffySensor._on_updated.
-EffyRecalculatedFromSensor is the one sensor with an actual live *value*
-update even with the live path off: it subscribes to the coordinator's
-separate recalculated-from channel, which carries a real timestamp.
+Live-path disabled (2026-07-09, disabled/README.md): their statistics are
+still populated directly by history.py (ADR-011, ADR-012), not by live
+event accumulation. But EffySensor/EffyDerivedPowerSensor/EffySmoothedSensor
+each do receive a live state push right after every recalculation that
+touches them (EffyCoordinator.notify_updated): the ``(value, unit)`` of
+the last (most recent) slot just written for that entity (ADR-016) — so a
+dashboard shows a real number instead of "unknown" between
+recalculations, and a state_changed event fires either way for dashboard
+cards that only refresh on that event — see EffySensor._on_updated.
+This value is provisionally attributed to whichever slot is open *now*,
+not the slot it was actually computed for — see ADR-016 for why that's
+an acceptable tradeoff (the next recalculation of that slot corrects it).
+EffyRecalculatedFromSensor is the one sensor whose live value has always
+reflected a real timestamp even with the live path off: it subscribes to
+the coordinator's separate recalculated-from channel.
 """
 
 from __future__ import annotations
@@ -236,17 +241,32 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
             self._unsub_updates = None
 
     @callback  # type: ignore[untyped-decorator]
-    def _on_updated(self) -> None:
-        """Push a fresh "unknown" state (EffyCoordinator.notify_updated).
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as this entity's live state (ADR-016).
 
         Fires after a recalculation has written new statistics for this
-        entity. There is no live numeric value to push here (ADR-011 — no
-        API to backdate a live state into an already-closed slot) — this
-        exists purely so a state_changed event fires at all, letting
-        dashboard cards that only refresh on that event (e.g.
-        history/statistics graph cards) know to refetch.
+        entity, with the ``(value, unit)`` of the last (most recent) slot
+        just written (EffyCoordinator.notify_updated). This state change
+        is timestamped "now" like any other, so it lands in whatever
+        5-minute slot is currently open — the *statistics* write is what
+        actually corrects the already-closed slot the value truly
+        belongs to (ADR-011 — no API to backdate a live state into a
+        closed slot). ADR-016 accepts that "right value, provisionally
+        wrong slot" tradeoff so the dashboard shows a real number instead
+        of "unknown" between recalculations; the next recalculation of
+        the now-open slot corrects it in turn. Also guarantees a
+        state_changed event fires, for dashboard cards that only refresh
+        on that event (e.g. history/statistics graph cards).
+
+        ``value`` may still be None (notify_updated's defensive fallback
+        for an entity_id missing from last_values, which shouldn't
+        normally happen) — falls back to "unknown" in that case rather
+        than writing a bogus number.
         """
-        self._attr_native_value = None
+        self._attr_native_value = round(value, 3) if value is not None else None
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+            self._source_unit = unit
         self.async_write_ha_state()
 
     @callback  # type: ignore[untyped-decorator]
@@ -300,11 +320,11 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
 
     Exists mainly so history.py's async_recalculate_history /
     async_recalculate_recent have a stable entity_id to attach statistics
-    to (sensor.effy_{slug}_power) — like EffySensor, it receives no live
-    numeric push while the live path is disabled (see disabled/README.md);
-    its statistics are populated directly by history.py. It does, however,
-    push a state_changed("unknown") after each recalculation that touches
-    it — see _on_updated / EffyCoordinator.notify_updated.
+    to (sensor.effy_{slug}_power) — like EffySensor, its statistics are
+    populated directly by history.py rather than live event accumulation
+    (see disabled/README.md). It does, however, receive a live state push
+    (the last-written slot's value, ADR-016) after each recalculation
+    that touches it — see _on_updated / EffyCoordinator.notify_updated.
     """
 
     _attr_should_poll = False
@@ -362,13 +382,15 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
             self._unsub_updates = None
 
     @callback  # type: ignore[untyped-decorator]
-    def _on_updated(self) -> None:
-        """Push a fresh "unknown" state (EffyCoordinator.notify_updated).
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as this entity's live state (ADR-016).
 
-        See EffySensor._on_updated for why "unknown" and not the actual
-        computed value.
+        See EffySensor._on_updated for the full rationale and the
+        "right value, provisionally wrong slot" tradeoff this accepts.
         """
-        self._attr_native_value = None
+        self._attr_native_value = round(value, 3) if value is not None else None
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
         self.async_write_ha_state()
 
 
@@ -394,11 +416,11 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
     as a genuine gap rather than extrapolated across.
 
     Exists mainly so history.py has a stable place to attach these
-    statistics to — like EffySensor/EffyDerivedPowerSensor, it receives no
-    live numeric push while the live path is disabled (see
-    disabled/README.md); its statistics are populated directly by
-    history.py. It does, however, push a state_changed("unknown") after
-    each recalculation that touches it — see _on_updated /
+    statistics to — like EffySensor/EffyDerivedPowerSensor, its statistics
+    are populated directly by history.py rather than live event
+    accumulation (see disabled/README.md). It does, however, receive a
+    live state push (the last-written slot's value, ADR-016) after each
+    recalculation that touches it — see _on_updated /
     EffyCoordinator.notify_updated. Output sensors never get one of these
     (out of scope for this feature).
     """
@@ -458,13 +480,15 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
             self._unsub_updates = None
 
     @callback  # type: ignore[untyped-decorator]
-    def _on_updated(self) -> None:
-        """Push a fresh "unknown" state (EffyCoordinator.notify_updated).
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as this entity's live state (ADR-016).
 
-        See EffySensor._on_updated for why "unknown" and not the actual
-        computed value.
+        See EffySensor._on_updated for the full rationale and the
+        "right value, provisionally wrong slot" tradeoff this accepts.
         """
-        self._attr_native_value = None
+        self._attr_native_value = round(value, 3) if value is not None else None
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
         self.async_write_ha_state()
 
 
