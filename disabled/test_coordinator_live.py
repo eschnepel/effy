@@ -105,7 +105,7 @@ _coord_mod = _load("effy.coordinator_live", _disabled_base, "coordinator_live.py
 
 if not TYPE_CHECKING:
     LiveReading = _coord_mod.LiveReading
-    SensorReading = _calc_mod.SensorReading
+    _unused_sensor_reading = _calc_mod.SensorReading
 _state_class_family = _coord_mod._state_class_family
 _FAMILY_POWER = _coord_mod._FAMILY_POWER
 _FAMILY_ENERGY = _coord_mod._FAMILY_ENERGY
