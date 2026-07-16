@@ -2,24 +2,51 @@
 
 Sensors hold no listeners of their own; they subscribe to the shared
 EffyCoordinator and receive computed results via push (ADR-006 Option C).
+Live-path disabled (2026-07-09, disabled/README.md): their statistics are
+still populated directly by history.py (ADR-011, ADR-012), not by live
+event accumulation. But EffySensor/EffyDerivedPowerSensor/EffySmoothedSensor
+each do receive a live state push right after every recalculation that
+touches them (EffyCoordinator.notify_updated): the ``(value, unit)`` of
+the last (most recent) slot just written for that entity (ADR-016) — so a
+dashboard shows a real number instead of "unknown" between
+recalculations, and a state_changed event fires either way for dashboard
+cards that only refresh on that event — see EffySensor._on_updated.
+This value is provisionally attributed to whichever slot is open *now*,
+not the slot it was actually computed for — see ADR-016 for why that's
+an acceptable tradeoff (the next recalculation of that slot corrects it).
+EffyRecalculatedFromSensor is the one sensor whose live value has always
+reflected a real timestamp even with the live path off: it subscribes to
+the coordinator's separate recalculated-from channel.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import slugify
 
 from .calculation import LossDistribution, effective_in_original_unit
-from .const import CONF_INPUT_SENSORS, DOMAIN
+from .const import CONF_INPUT_SENSORS, CONF_OUTPUT_SENSORS, DOMAIN
 from .coordinator import EffyCoordinator
-from .sensor_utils import effective_unit_for
+from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
+
+
+def _device_info(entry: ConfigEntry) -> DeviceInfo:
+    """Shared device grouping for every Effy entity."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="Effy",
+        manufacturer="Effy",
+        model="PV Loss Distributor",
+    )
 
 
 async def async_setup_entry(
@@ -30,12 +57,120 @@ async def async_setup_entry(
     """Set up Effy sensor entities."""
     coordinator: EffyCoordinator = hass.data[DOMAIN][entry.entry_id]
     input_ids: list[str] = entry.options.get(CONF_INPUT_SENSORS, [])
+    output_ids: list[str] = entry.options.get(CONF_OUTPUT_SENSORS, [])
 
-    entities = [EffySensor(hass, entry, coordinator, entity_id) for entity_id in input_ids]
+    entities: list[SensorEntity] = [
+        EffySensor(hass, entry, coordinator, entity_id) for entity_id in input_ids
+    ]
+
+    # Derived-power sensors (ADR-012, energy-family, inputs AND outputs)
+    # and smoothed sensors (gap-interpolation feature, power-family INPUT
+    # only) both need the source entity's live state_class/unit to decide
+    # which one (if any) applies — see _build_derived_entities below.
+    # That state only exists once the *source's own* integration has
+    # finished loading and reported a first state. Effy cannot declare a
+    # static after_dependencies on that integration (manifest.json only
+    # knows about `recorder` — the actual source is an arbitrary,
+    # user-chosen entity picked at config time), so at HA startup this
+    # platform's own setup frequently runs before that state exists.
+    # Entities with no state yet are deferred to _add_late_derived_entities
+    # below instead of being silently skipped — otherwise the derived
+    # entity for a perfectly valid source sensor simply never gets created
+    # for the rest of that HA session (the bug this fixes: the entity is
+    # entirely missing from the integration page, not just lacking data).
+    input_id_set = set(input_ids)
+    pending_ids: list[str] = []
+    for entity_id in input_ids + output_ids:
+        state = hass.states.get(entity_id)
+        if state is None:
+            pending_ids.append(entity_id)
+            continue
+        entities.extend(
+            _build_derived_entities(hass, entry, coordinator, entity_id, entity_id in input_id_set)
+        )
+
+    entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
+
     async_add_entities(entities, update_before_add=False)
+
+    if pending_ids:
+        _add_late_derived_entities(
+            hass, entry, coordinator, pending_ids, input_id_set, async_add_entities
+        )
 
     # Trigger one immediate recalculation so sensors have values on first load
     coordinator.force_refresh()
+
+
+def _build_derived_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator: EffyCoordinator,
+    entity_id: str,
+    is_input: bool,
+) -> list[SensorEntity]:
+    """Return whichever derived entity applies to one source sensor, given
+    its now-known state_class/unit.
+
+    Energy-family (TOTAL_INCREASING / TOTAL-as-energy) sensors get an
+    EffyDerivedPowerSensor, input or output alike (ADR-012). Power-family
+    (MEASUREMENT / TOTAL-as-power) *input* sensors get an
+    EffySmoothedSensor instead (gap-interpolation feature) — output
+    sensors and non-input power-family sensors get neither. Shared by the
+    initial setup pass and the late-binding listener below so the two
+    paths can't silently diverge.
+    """
+    meta = get_sensor_meta(hass, entity_id)
+    state_class = meta.get("state_class")
+    unit = meta.get("unit", "W")
+    if is_energy_family(state_class, unit):
+        return [EffyDerivedPowerSensor(hass, entry, coordinator, entity_id)]
+    if is_input:
+        return [EffySmoothedSensor(hass, entry, coordinator, entity_id)]
+    return []
+
+
+def _add_late_derived_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator: EffyCoordinator,
+    pending_ids: list[str],
+    input_id_set: set[str],
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Create derived entities whose classification couldn't be resolved
+    at initial setup because the source entity had no state yet (see
+    async_setup_entry above for why this race is unavoidable via
+    manifest.json alone).
+
+    Listens for each pending entity's first state report and calls
+    _build_derived_entities() at that point instead — one-shot per
+    entity_id; once every pending id has been resolved, the listener
+    removes itself.
+    """
+    remaining: set[str] = set(pending_ids)
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_state_changed(event: Any) -> None:
+        entity_id: str = event.data["entity_id"]
+        new_state = event.data.get("new_state")
+        if new_state is None or entity_id not in remaining:
+            # Still no state (e.g. entity_id went unavailable->unavailable)
+            # or already resolved — nothing to do yet.
+            return
+        remaining.discard(entity_id)
+
+        new_entities = _build_derived_entities(
+            hass, entry, coordinator, entity_id, entity_id in input_id_set
+        )
+        if new_entities:
+            async_add_entities(new_entities)
+
+        if not remaining:
+            unsub()
+
+    unsub = async_track_state_change_event(hass, pending_ids, _on_state_changed)
+    entry.async_on_unload(unsub)
 
 
 class EffySensor(SensorEntity):  # type: ignore[misc]
@@ -64,6 +199,7 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         self._source_unit: str = "W"
 
         self._unsub_coordinator: Callable[[], None] | None = None
+        self._unsub_updates: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -85,24 +221,53 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry.entry_id)},
-            name="Effy",
-            manufacturer="Effy",
-            model="PV Loss Distributor",
-        )
+        return _device_info(self._entry)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to coordinator updates (ADR-006 Option C)."""
+        """Subscribe to coordinator updates (ADR-006 Option C), plus the
+        "push unknown after recalculation" channel (see _on_updated)."""
         self._unsub_coordinator = self._coordinator.subscribe(
             self._source_entity_id, self._on_distribution
         )
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
 
     async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe from coordinator."""
         if self._unsub_coordinator is not None:
             self._unsub_coordinator()
             self._unsub_coordinator = None
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as this entity's live state (ADR-016).
+
+        Fires after a recalculation has written new statistics for this
+        entity, with the ``(value, unit)`` of the last (most recent) slot
+        just written (EffyCoordinator.notify_updated). This state change
+        is timestamped "now" like any other, so it lands in whatever
+        5-minute slot is currently open — the *statistics* write is what
+        actually corrects the already-closed slot the value truly
+        belongs to (ADR-011 — no API to backdate a live state into a
+        closed slot). ADR-016 accepts that "right value, provisionally
+        wrong slot" tradeoff so the dashboard shows a real number instead
+        of "unknown" between recalculations; the next recalculation of
+        the now-open slot corrects it in turn. Also guarantees a
+        state_changed event fires, for dashboard cards that only refresh
+        on that event (e.g. history/statistics graph cards).
+
+        ``value`` may still be None (notify_updated's defensive fallback
+        for an entity_id missing from last_values, which shouldn't
+        normally happen) — falls back to "unknown" in that case rather
+        than writing a bogus number.
+        """
+        self._attr_native_value = round(value, 3) if value is not None else None
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+            self._source_unit = unit
+        self.async_write_ha_state()
 
     @callback  # type: ignore[untyped-decorator]
     def _on_distribution(self, distribution: LossDistribution) -> None:
@@ -141,4 +306,258 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
             "loss_share_w": round(distribution.shares.get(self._source_entity_id, 0.0), 3),
         }
 
+        self.async_write_ha_state()
+
+
+class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
+    """Raw, pre-loss-distribution derived-power sensor (ADR-012).
+
+    One per energy-family (TOTAL_INCREASING / TOTAL-as-energy) sensor,
+    input or output — the trapezoidal-redistributed power
+    (calculation.trapezoidal_slot_contributions) is a per-sensor quantity
+    independent of the input/output role that only matters for
+    distribute_loss, unlike EffySensor's "effective" value.
+
+    Exists mainly so history.py's async_recalculate_history /
+    async_recalculate_recent have a stable entity_id to attach statistics
+    to (sensor.effy_{slug}_power) — like EffySensor, its statistics are
+    populated directly by history.py rather than live event accumulation
+    (see disabled/README.md). It does, however, receive a live state push
+    (the last-written slot's value, ADR-016) after each recalculation
+    that touches it — see _on_updated / EffyCoordinator.notify_updated.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+        source_entity_id: str,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._source_entity_id = source_entity_id
+
+        self._slug = slugify(source_entity_id.split(".")[-1])
+        self._attr_unique_id = f"{entry.entry_id}_{self._slug}_power"
+        self._attr_native_value: float | None = None
+        self._attr_native_unit_of_measurement: str | None = None
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._unsub_updates: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return self._attr_unique_id or ""
+
+    @property
+    def name(self) -> str:
+        state = self._hass.states.get(self._source_entity_id)
+        friendly = state.attributes.get("friendly_name", self._slug) if state else self._slug
+        return f"{friendly} (derived power)"
+
+    @property
+    def entity_id(self) -> str:
+        return f"sensor.effy_{self._slug}_power"
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to the "push unknown after recalculation" channel
+        (see _on_updated)."""
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as this entity's live state (ADR-016).
+
+        See EffySensor._on_updated for the full rationale and the
+        "right value, provisionally wrong slot" tradeoff this accepts.
+        """
+        self._attr_native_value = round(value, 3) if value is not None else None
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+        self.async_write_ha_state()
+
+
+class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
+    """Gap-interpolated power-family INPUT sensor.
+
+    Home Assistant's compiled 5-minute statistics for a MEASUREMENT/
+    TOTAL-as-power *input* sensor occasionally have short gaps — a slot
+    the recorder simply never compiled a ``mean`` for (a transient
+    connectivity blip, a slow-polling source, etc.). TOTAL_INCREASING/
+    energy-family sensors don't have this problem in the same way — their
+    raw counter history is instead redistributed via the trapezoidal rule
+    (ADR-012, EffyDerivedPowerSensor above).
+
+    history.py's ``_compute_effective_slots`` bridges gaps of up to
+    ``calculation.INTERPOLATION_MAX_GAP_SLOTS`` (2) consecutive missing
+    slots via linear interpolation between the nearest valid readings on
+    either side, merges that smoothed series into distribute_loss's own
+    input (so the waterfall calculation sees it too, not just this
+    sensor), and also writes it out here as its own statistic
+    (``sensor.effy_{slug}_smoothed``) so the smoothing is visible, not
+    just an invisible internal correction. A gap longer than that is left
+    as a genuine gap rather than extrapolated across.
+
+    Exists mainly so history.py has a stable place to attach these
+    statistics to — like EffySensor/EffyDerivedPowerSensor, its statistics
+    are populated directly by history.py rather than live event
+    accumulation (see disabled/README.md). It does, however, receive a
+    live state push (the last-written slot's value, ADR-016) after each
+    recalculation that touches it — see _on_updated /
+    EffyCoordinator.notify_updated. Output sensors never get one of these
+    (out of scope for this feature).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+        source_entity_id: str,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._source_entity_id = source_entity_id
+
+        self._slug = slugify(source_entity_id.split(".")[-1])
+        self._attr_unique_id = f"{entry.entry_id}_{self._slug}_smoothed"
+        self._attr_native_value: float | None = None
+        self._attr_native_unit_of_measurement: str | None = None
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._unsub_updates: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return self._attr_unique_id or ""
+
+    @property
+    def name(self) -> str:
+        state = self._hass.states.get(self._source_entity_id)
+        friendly = state.attributes.get("friendly_name", self._slug) if state else self._slug
+        return f"{friendly} (smoothed)"
+
+    @property
+    def entity_id(self) -> str:
+        return f"sensor.effy_{self._slug}_smoothed"
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to the "push unknown after recalculation" channel
+        (see _on_updated)."""
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as this entity's live state (ADR-016).
+
+        See EffySensor._on_updated for the full rationale and the
+        "right value, provisionally wrong slot" tradeoff this accepts.
+        """
+        self._attr_native_value = round(value, 3) if value is not None else None
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+        self.async_write_ha_state()
+
+
+class EffyRecalculatedFromSensor(SensorEntity):  # type: ignore[misc]
+    """Global timestamp of the earliest slot touched by the most recent
+    recalculation (ADR-012).
+
+    Unlike EffySensor/EffyDerivedPowerSensor, this one *is* live-updated
+    even with the live path disabled: it subscribes to the coordinator's
+    ``subscribe_recalculated_from`` channel, which both the slot timer
+    (EffyCoordinator._on_slot_timer) and a manual history rewrite
+    (button.py, via ``coordinator.set_recalculated_from``) push to. One
+    per config entry — not tied to any single source sensor.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_name = "Recalculated from"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{entry.entry_id}_recalculated_from"
+        self._attr_native_value: datetime | None = None
+        self._unsub_coordinator: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return self._attr_unique_id or ""
+
+    @property
+    def entity_id(self) -> str:
+        return "sensor.effy_recalculated_from"
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to the coordinator's recalculated-from channel.
+
+        Seeds from whatever the coordinator already knows in case a
+        recalculation happened before this entity finished being added
+        (e.g. shortly after an HA restart, while platform setup is still
+        in progress).
+        """
+        self._unsub_coordinator = self._coordinator.subscribe_recalculated_from(
+            self._on_recalculated_from
+        )
+        if self._coordinator.recalculated_from is not None:
+            self._attr_native_value = self._coordinator.recalculated_from
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_coordinator is not None:
+            self._unsub_coordinator()
+            self._unsub_coordinator = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_recalculated_from(self, ts: datetime) -> None:
+        self._attr_native_value = ts
         self.async_write_ha_state()

@@ -11,6 +11,7 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
+from .coordinator import EffyCoordinator
 from .history import async_recalculate_history
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,11 +66,31 @@ class EffyRecalculateButton(ButtonEntity):  # type: ignore[misc]
         )
 
     async def async_press(self) -> None:
-        """Trigger history recalculation."""
+        """Trigger history recalculation.
+
+        Also reports the recalculated range's start to the coordinator's
+        "recalculated from" tracking (ADR-012) — a manual rewrite always
+        recomputes every slot in the full configured window
+        unconditionally, so that window's own start is, by definition,
+        the earliest touched slot. Additionally pushes each touched
+        entity's last-written slot value as its live state
+        (EffyCoordinator.notify_updated, ADR-016) so dashboard cards that
+        only refresh on state_changed pick up the rewritten statistics
+        and show a real number rather than "unknown".
+        """
         _LOGGER.info("Effy: starting history recalculation (triggered by button)")
         try:
-            written = await async_recalculate_history(self.hass, self._entry.options)
+            coordinator: EffyCoordinator = self.hass.data[DOMAIN][self._entry.entry_id]
+            written, recalculated_from, touched, last_values = await async_recalculate_history(
+                self.hass,
+                self._entry.options,
+                energy_reading_cache=coordinator.last_valid_energy_readings,
+            )
             _LOGGER.info("Effy: history recalculation complete – %d slots written", written)
+            if recalculated_from is not None:
+                coordinator.set_recalculated_from(recalculated_from)
+            if touched:
+                coordinator.notify_updated(touched, last_values)
         except Exception:
             # Broad catch is intentional: this runs outside a request/response
             # cycle (button press has no caller to propagate to) — log and

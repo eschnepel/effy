@@ -13,9 +13,7 @@ from .const import (
     CONF_INPUT_SENSORS,
     CONF_MAX_HISTORY_DAYS,
     CONF_OUTPUT_SENSORS,
-    CONF_SMOOTH_LOW_RES_KWH,
     DEFAULT_MAX_HISTORY_DAYS,
-    DEFAULT_SMOOTH_LOW_RES_KWH,
     DOMAIN,
 )
 
@@ -24,7 +22,6 @@ def _build_schema(
     input_sensors: list[str] | None = None,
     output_sensors: list[str] | None = None,
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
-    smooth_low_res_kwh: bool = DEFAULT_SMOOTH_LOW_RES_KWH,
 ) -> vol.Schema:
     return vol.Schema(
         {
@@ -68,10 +65,6 @@ def _build_schema(
                     }
                 }
             ),
-            vol.Optional(
-                CONF_SMOOTH_LOW_RES_KWH,
-                default=smooth_low_res_kwh,
-            ): selector.selector({"boolean": {}}),
         }
     )
 
@@ -171,7 +164,6 @@ class EffyOptionsFlow(config_entries.OptionsFlow):  # type: ignore[misc]
                 input_sensors=current.get(CONF_INPUT_SENSORS, []),
                 output_sensors=current.get(CONF_OUTPUT_SENSORS, []),
                 max_history_days=current.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS),
-                smooth_low_res_kwh=current.get(CONF_SMOOTH_LOW_RES_KWH, DEFAULT_SMOOTH_LOW_RES_KWH),
             ),
             errors=errors,
         )

@@ -42,6 +42,9 @@ if TYPE_CHECKING:
         effective_unit_for as effective_unit_for,
     )
     from effy.sensor_utils import (
+        is_energy_family as is_energy_family,
+    )
+    from effy.sensor_utils import (
         to_power_equivalent as to_power_equivalent,
     )
 
@@ -60,6 +63,16 @@ def _stub(name: str, **attrs: Any) -> ModuleType:
 
 _stub("homeassistant")
 _stub("homeassistant.core", HomeAssistant=object)
+_stub("homeassistant.components")
+
+
+class _SensorStateClass:
+    TOTAL_INCREASING = "total_increasing"
+    TOTAL = "total"
+    MEASUREMENT = "measurement"
+
+
+_stub("homeassistant.components.sensor", SensorStateClass=_SensorStateClass)
 
 # ---------------------------------------------------------------------------
 # 2. Load effy modules by file path
@@ -90,6 +103,7 @@ _su_mod = _load("effy.sensor_utils", "sensor_utils.py")
 
 if not TYPE_CHECKING:
     effective_unit_for = _su_mod.effective_unit_for
+    is_energy_family = _su_mod.is_energy_family
     to_power_equivalent = _su_mod.to_power_equivalent
 
 _from_w = _calc_mod._from_w
@@ -99,6 +113,33 @@ _to_w = _calc_mod._to_w
 # ---------------------------------------------------------------------------
 # effective_unit_for
 # ---------------------------------------------------------------------------
+
+
+SC = _SensorStateClass
+
+
+class TestIsEnergyFamily:
+    """The single source of truth also used by history.py's _stat_field_for
+    and sensor.py's derived-power entity setup (ADR-012)."""
+
+    def test_total_increasing_is_always_energy(self) -> None:
+        assert is_energy_family(SC.TOTAL_INCREASING, "Wh") is True
+        assert is_energy_family(SC.TOTAL_INCREASING, "kWh") is True
+        assert is_energy_family(SC.TOTAL_INCREASING, "W") is True
+
+    def test_total_with_energy_unit_is_energy(self) -> None:
+        assert is_energy_family(SC.TOTAL, "Wh") is True
+        assert is_energy_family(SC.TOTAL, "kWh") is True
+
+    def test_total_with_power_unit_is_not_energy(self) -> None:
+        assert is_energy_family(SC.TOTAL, "W") is False
+        assert is_energy_family(SC.TOTAL, "kW") is False
+
+    def test_measurement_is_not_energy(self) -> None:
+        assert is_energy_family(SC.MEASUREMENT, "W") is False
+
+    def test_none_state_class_is_not_energy(self) -> None:
+        assert is_energy_family(None, "W") is False
 
 
 class TestEffectiveUnitFor:

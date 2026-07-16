@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,7 +36,10 @@ if not TYPE_CHECKING:
     SensorReading = _calculation.SensorReading
 distribute_loss = _calculation.distribute_loss
 effective_in_original_unit = _calculation.effective_in_original_unit
-smooth_zero_noise = _calculation.smooth_zero_noise
+trapezoidal_slot_contributions = _calculation.trapezoidal_slot_contributions
+TRAPEZOID_MAX_MINUTES = _calculation.TRAPEZOID_MAX_MINUTES
+interpolate_slot_gaps = _calculation.interpolate_slot_gaps
+INTERPOLATION_MAX_GAP_SLOTS = _calculation.INTERPOLATION_MAX_GAP_SLOTS
 
 
 def _r(eid: str, value: float, unit: str = "W") -> SensorReading:
@@ -162,91 +166,290 @@ class TestSingleSensor:
         assert sum(dist.effective_values_w.values()) == pytest.approx(900.0)
 
 
-class TestSmoothZeroNoise:
-    """ADR-009: 25%-neighbor-steal smoothing for low-resolution kWh sensors."""
+def _ts(h: int, m: int, s: int = 0) -> datetime:
+    return datetime(2024, 1, 1, h, m, s, tzinfo=timezone.utc)
 
-    def test_alternating_single_zeros_becomes_constant(self) -> None:
-        """[10, 0, 10, 0, 10, 0, 10, 0] -> constant 5 for all interior slots.
 
-        The two series ends only have one neighbor to draw from / donate to,
-        so they land slightly off from the interior value - this is the
-        expected, documented boundary behaviour, not a bug.
-        """
-        values = [10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0]
-        result = smooth_zero_noise(values)
-        # Interior slots (indices 1..6) all converge to exactly 5.0
-        for v in result[1:-1]:
-            assert v == pytest.approx(5.0)
+class TestTrapezoidalSlotContributions:
+    """ADR-012: trapezoidal-rule energy redistribution, replaces ADR-009's
+    neighbor-steal smoothing."""
 
-    def test_sum_is_conserved(self) -> None:
-        """Smoothing only redistributes energy, never creates or destroys it."""
-        values = [10.0, 0.0, 10.0, 0.0, 0.0, 10.0, 0.0, 3.0]
-        result = smooth_zero_noise(values)
-        assert sum(result) == pytest.approx(sum(values))
+    def test_transition_fully_within_one_slot(self) -> None:
+        """A 0.3 delta over 3 minutes, entirely inside [10:00, 10:05), goes
+        entirely to that one slot."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(10, 3), "100.3")]
+        result = trapezoidal_slot_contributions(raw)
+        assert result == pytest.approx({_ts(10, 0): 0.3})
 
-    def test_no_zeros_is_a_no_op(self) -> None:
-        values = [4.0, 5.0, 6.0, 7.0]
-        assert smooth_zero_noise(values) == values
+    def test_transition_spanning_two_slots_splits_by_overlap(self) -> None:
+        """A 0.4 delta over 4 minutes crossing the 10:05 boundary (2 min in
+        each slot) splits evenly, proportional to the time overlap."""
+        raw = [(_ts(10, 3), "100.0"), (_ts(10, 7), "100.4")]
+        result = trapezoidal_slot_contributions(raw)
+        assert result == pytest.approx({_ts(10, 0): 0.2, _ts(10, 5): 0.2})
 
-    def test_all_zeros_stays_all_zero(self) -> None:
-        """Nothing to steal from when every slot is 0 - no NaN, no crash."""
-        values = [0.0, 0.0, 0.0, 0.0]
-        result = smooth_zero_noise(values)
-        assert result == [0.0, 0.0, 0.0, 0.0]
+    def test_normal_gap_over_the_cap_is_capped_with_zero_filled_prefix(self) -> None:
+        """A valid-to-valid gap longer than max_minutes (no offline in
+        between) must NOT spread the real delta across the full gap --
+        only the last max_minutes, anchored at t2. Per ADR-013, the slots
+        before that window are no longer left with no entry at all: the
+        counter was genuinely sitting at v1 with no jump yet, so they get
+        an explicit 0.0 rather than nothing. Uses an explicit max_minutes
+        so this test exercises the capping *mechanism* regardless of
+        whatever TRAPEZOID_MAX_MINUTES' actual default happens to be."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(10, 30), "101.0")]
+        result = trapezoidal_slot_contributions(raw, max_minutes=15)
+        assert result == pytest.approx(
+            {
+                _ts(10, 0): 0.0,
+                _ts(10, 5): 0.0,
+                _ts(10, 10): 0.0,
+                _ts(10, 15): 1 / 3,
+                _ts(10, 20): 1 / 3,
+                _ts(10, 25): 1 / 3,
+            }
+        )
+        assert sum(result.values()) == pytest.approx(1.0)
 
-    def test_short_series_returned_unchanged(self) -> None:
-        assert smooth_zero_noise([]) == []
-        assert smooth_zero_noise([5.0]) == [5.0]
+    def test_default_cap_is_120_minutes(self) -> None:
+        """ADR-014: raised from 15 to 120 minutes -- 15 minutes was too
+        tight for real low-resolution energy meters (20-90 minute tick
+        intervals), compressing every tick into a visibly oscillating
+        "0, then a spike" derived-power curve."""
+        assert TRAPEZOID_MAX_MINUTES == 120
 
-    def test_isolated_single_zero_is_untouched_by_round_two(self) -> None:
-        """A single isolated zero (surrounded by non-zero values on both
-        sides, i.e. not part of a run of 2+) is entirely handled by round 1.
-        Round 2 must not touch it, or it would reintroduce the exact
-        boundary-driven unevenness round 1 already fixed.
-        """
-        values = [0.0, 20.0, 20.0]
-        result = smooth_zero_noise(values)
-        # Round 1 only: v0 has no left neighbor, gains 0.25*20=5 -> 5.0;
-        # v1 loses 5 (to v0's steal) -> 15.0. v0's run length is 1 (only
-        # index 0 is zero), so round 2 skips it entirely.
-        assert result[0] == pytest.approx(5.0)
-        assert result[1] == pytest.approx(15.0)
-        assert result[2] == pytest.approx(20.0)  # never a neighbor of any zero slot
-        assert sum(result) == pytest.approx(sum(values))
+    def test_gap_within_the_default_120_minute_cap_is_not_capped(self) -> None:
+        """A 30-minute gap -- capped under the old 15-minute rule -- must
+        now spread smoothly across the *entire* gap with the default cap,
+        not just the last 15 minutes, since 30 < 120."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(10, 30), "101.0")]
+        result = trapezoidal_slot_contributions(raw)
+        expected_slots = [_ts(10, m) for m in (0, 5, 10, 15, 20, 25)]
+        assert set(result.keys()) == set(expected_slots)
+        for slot in expected_slots:
+            assert result[slot] == pytest.approx(1 / 6)
+        assert sum(result.values()) == pytest.approx(1.0)
 
-    def test_double_zero_gap_uses_wider_round_two_neighborhood(self) -> None:
-        """A run of two consecutive zeros ([10, 0, 0, 10]) is only partially
-        smoothed by round 1 alone ([7.5, 2.5, 2.5, 7.5]) since each zero's
-        same-run neighbor was still 0 during round 1. Round 2 (10% from +-1,
-        5% from +-2) pulls the two middle values up further, while still
-        preserving the total sum.
-        """
-        values = [10.0, 0.0, 0.0, 10.0]
-        result = smooth_zero_noise(values)
-        assert result == pytest.approx([6.375, 3.625, 3.625, 6.375])
-        assert sum(result) == pytest.approx(sum(values))
+    def test_gap_over_the_default_120_minute_cap_is_capped_with_zero_filled_prefix(
+        self,
+    ) -> None:
+        """A gap of 150 minutes (2.5h) exceeds the default 120-minute cap
+        -- the last 120 minutes get the real, smooth spread, and the
+        30-minute prefix before that gets explicit 0.0 (ADR-013/014)."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(12, 30), "101.0")]
+        result = trapezoidal_slot_contributions(raw)
+        prefix_slots = [_ts(10, m) for m in (0, 5, 10, 15, 20, 25)]
+        window_start = _ts(10, 30)
+        window_slots = [window_start + timedelta(minutes=5 * i) for i in range(24)]
+        for slot in prefix_slots:
+            assert result[slot] == pytest.approx(0.0)
+        for slot in window_slots:
+            assert result[slot] == pytest.approx(1 / 24)
+        assert set(result.keys()) == set(prefix_slots) | set(window_slots)
+        assert sum(result.values()) == pytest.approx(1.0)
 
-    def test_larger_gap_mask_uses_run_length_not_recomputed_zero_check(self) -> None:
-        """Round 2 must target slots based on the *original* zero-run
-        length, not on whether the value is still exactly 0.0 after round 1
-        (round 1 already moves every zero away from 0.0, so a naive 'is this
-        currently 0.0' check would find nothing to do for any gap size and
-        silently become a no-op for exactly the case round 2 exists for).
-        """
-        values = [10.0, 0.0, 0.0, 10.0]
-        result = smooth_zero_noise(values)
-        round1_only = [7.5, 2.5, 2.5, 7.5]
-        assert result != pytest.approx(round1_only)
+    def test_offline_gap_spreads_over_the_full_span_uncapped(self) -> None:
+        """If the sensor was unavailable before the new reading, the delta
+        spreads across the *entire* gap (here 35 min = 7 slots), not just
+        the last 15 minutes -- this is the key difference from the
+        no-offline case above."""
+        raw = [
+            (_ts(10, 0), "100.0"),
+            (_ts(10, 5), "unavailable"),
+            (_ts(10, 35), "101.0"),
+        ]
+        result = trapezoidal_slot_contributions(raw)
+        expected_slots = [_ts(10, m) for m in (0, 5, 10, 15, 20, 25, 30)]
+        assert set(result.keys()) == set(expected_slots)
+        for slot in expected_slots:
+            assert result[slot] == pytest.approx(1.0 / 7)
+        assert sum(result.values()) == pytest.approx(1.0)
 
-    def test_round_two_reaches_two_slots_away(self) -> None:
-        """A three-zero run pulls from its +-2 neighbors in round 2, not
-        just its immediate +-1 neighbors - i.e. a non-adjacent value can
-        still be affected by a gap two slots away.
-        """
-        values = [10.0, 0.0, 0.0, 0.0, 10.0]
-        result = smooth_zero_noise(values)
-        # The two outer 10s are each a +-2 neighbor of the far end of the
-        # 3-zero run, so both must move from their original 10.0.
-        assert result[0] != pytest.approx(10.0)
-        assert result[4] != pytest.approx(10.0)
-        assert sum(result) == pytest.approx(sum(values))
+    def test_unknown_state_also_triggers_offline_handling(self) -> None:
+        """ "unknown" must be treated the same as "unavailable" for offline detection."""
+        raw = [(_ts(10, 0), "50.0"), (_ts(10, 10), "unknown"), (_ts(10, 40), "51.0")]
+        result = trapezoidal_slot_contributions(raw)
+        # Full 40-minute span (8 slots), uncapped, not the 15-minute cap.
+        assert sum(result.values()) == pytest.approx(1.0)
+        assert len(result) == 8
+
+    def test_offline_gap_with_zero_delta_fills_every_slot_with_zero(self) -> None:
+        """Offline AND zero delta (came back to the exact same value) --
+        both conditions independently call for the uncapped full-span
+        window, so every slot in the gap gets an explicit 0.0, same as a
+        plain (online) zero-delta gap would."""
+        raw = [
+            (_ts(10, 0), "100.0"),
+            (_ts(10, 5), "unavailable"),
+            (_ts(10, 20), "100.0"),
+        ]
+        result = trapezoidal_slot_contributions(raw)
+        expected_slots = [_ts(10, m) for m in (0, 5, 10, 15)]
+        assert set(result.keys()) == set(expected_slots)
+        for slot in expected_slots:
+            assert result[slot] == pytest.approx(0.0)
+
+    def test_counter_reset_produces_zero_not_negative_contribution(self) -> None:
+        """A decrease is treated as a counter reset: delta clamps to 0
+        (explicit 0.0 entries, per ADR-013, not skipped), and the lower
+        value becomes the new baseline for whatever comes after it."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(10, 5), "50.0"), (_ts(10, 10), "55.0")]
+        result = trapezoidal_slot_contributions(raw)
+        # First transition (100 -> 50) clamps to delta=0 -> explicit 0.0.
+        # Second transition (50 -> 55, delta=5) contributes normally.
+        assert result == pytest.approx({_ts(10, 0): 0.0, _ts(10, 5): 5.0})
+
+    def test_multiple_transitions_in_the_same_slot_are_summed(self) -> None:
+        raw = [(_ts(10, 0), "0.0"), (_ts(10, 1), "0.1"), (_ts(10, 2), "0.3")]
+        result = trapezoidal_slot_contributions(raw)
+        assert result == pytest.approx({_ts(10, 0): 0.3})
+
+    def test_transition_ending_exactly_on_a_slot_boundary(self) -> None:
+        """A transition ending exactly at 10:00 must not leak into the
+        [10:00, 10:05) slot -- the delta accumulated strictly before the
+        boundary."""
+        raw = [(_ts(9, 58), "0.0"), (_ts(10, 0), "1.0")]
+        result = trapezoidal_slot_contributions(raw)
+        assert result == pytest.approx({_ts(9, 55): 1.0})
+        assert _ts(10, 0) not in result
+
+    def test_fewer_than_two_valid_readings_yields_no_contributions(self) -> None:
+        assert trapezoidal_slot_contributions([]) == {}
+        assert trapezoidal_slot_contributions([(_ts(10, 0), "100.0")]) == {}
+        assert (
+            trapezoidal_slot_contributions([(_ts(10, 0), "unavailable"), (_ts(10, 5), "unknown")])
+            == {}
+        )
+
+    def test_zero_delta_produces_explicit_zero_contribution(self) -> None:
+        """A genuinely idle reading (same value, still online) now writes
+        an explicit 0.0 -- e.g. an empty battery's 0 discharge, or several
+        zero-import days -- instead of no entry at all (ADR-013)."""
+        raw = [(_ts(10, 0), "100.0"), (_ts(10, 5), "100.0")]
+        assert trapezoidal_slot_contributions(raw) == {_ts(10, 0): 0.0}
+
+    def test_zero_delta_over_a_long_gap_fills_every_slot(self) -> None:
+        """The zero-fill is uncapped -- a multi-hour flat stretch (e.g.
+        several days of 0 grid import) gets an explicit 0.0 for every
+        slot, not just the last max_minutes."""
+        raw = [(_ts(10, 0), "5.0"), (_ts(11, 0), "5.0")]  # flat for 1 hour
+        result = trapezoidal_slot_contributions(raw)
+        assert len(result) == 12  # 12 five-minute slots in one hour
+        assert all(v == pytest.approx(0.0) for v in result.values())
+
+    def test_custom_slot_and_cap_minutes(self) -> None:
+        raw = [(_ts(10, 0), "0.0"), (_ts(10, 20), "2.0")]
+        result = trapezoidal_slot_contributions(raw, slot_minutes=10, max_minutes=10)
+        # capped to the last 10 minutes -> one 10-minute slot at 10:10,
+        # zero-filled prefix at 10:00 (ADR-013)
+        assert result == pytest.approx({_ts(10, 0): 0.0, _ts(10, 10): 2.0})
+
+    def test_now_param_fills_slots_since_last_reading_when_no_new_value_arrived(
+        self,
+    ) -> None:
+        """No new reading since the last valid one -- with `now` given,
+        this is treated as a zero-delta continuation up to `now`, filling
+        the slots in between with explicit 0.0 (this is what lets the
+        slot-timer-driven recalc show 0, not "no data", for a sensor that
+        simply hasn't ticked yet)."""
+        raw = [(_ts(10, 0), "42.0")]
+        result = trapezoidal_slot_contributions(raw, now=_ts(10, 15))
+        assert result == pytest.approx({_ts(10, 0): 0.0, _ts(10, 5): 0.0, _ts(10, 10): 0.0})
+
+    def test_now_param_ignored_when_last_reading_is_currently_invalid(self) -> None:
+        """A sensor that is currently unavailable/unknown must NOT get a
+        synthetic zero-delta continuation -- we genuinely don't know its
+        value, so it's better left with no contribution than assumed 0."""
+        raw = [(_ts(10, 0), "42.0"), (_ts(10, 5), "unavailable")]
+        assert trapezoidal_slot_contributions(raw, now=_ts(10, 20)) == {}
+
+    def test_now_param_no_effect_when_a_real_transition_already_reaches_now(self) -> None:
+        """`now` only synthesizes a continuation when the last reading
+        predates it -- if the last reading already *is* `now` (or later),
+        nothing extra is added."""
+        raw = [(_ts(10, 0), "0.0"), (_ts(10, 5), "1.0")]
+        with_now = trapezoidal_slot_contributions(raw, now=_ts(10, 5))
+        without_now = trapezoidal_slot_contributions(raw)
+        assert with_now == pytest.approx(without_now)
+
+    def test_now_param_combines_with_a_real_transition_before_it(self) -> None:
+        """A real jump followed by a still-idle stretch up to `now`: the
+        real transition contributes its own (possibly capped) window as
+        before, and the synthetic zero-delta continuation separately fills
+        the slots since that jump up to `now`."""
+        raw = [(_ts(10, 0), "0.0"), (_ts(10, 5), "1.0")]
+        result = trapezoidal_slot_contributions(raw, now=_ts(10, 15))
+        assert result == pytest.approx({_ts(10, 0): 1.0, _ts(10, 5): 0.0, _ts(10, 10): 0.0})
+
+
+class TestInterpolateSlotGaps:
+    """Gap-interpolation for power-family INPUT sensors' `mean` series."""
+
+    def test_single_slot_gap_filled_with_midpoint(self) -> None:
+        values = {_ts(10, 0): 100.0, _ts(10, 10): 200.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx({_ts(10, 0): 100.0, _ts(10, 5): 150.0, _ts(10, 10): 200.0})
+
+    def test_two_slot_gap_filled_with_thirds(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 15): 300.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx(
+            {_ts(10, 0): 0.0, _ts(10, 5): 100.0, _ts(10, 10): 200.0, _ts(10, 15): 300.0}
+        )
+
+    def test_gap_longer_than_max_is_left_untouched(self) -> None:
+        """A 3-slot gap exceeds INTERPOLATION_MAX_GAP_SLOTS (2) -> nothing
+        in between gets filled, the two known points are untouched."""
+        values = {_ts(10, 0): 0.0, _ts(10, 20): 400.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx({_ts(10, 0): 0.0, _ts(10, 20): 400.0})
+        assert len(result) == 2
+
+    def test_adjacent_slots_are_unaffected(self) -> None:
+        """No gap at all -> nothing added, values pass through unchanged."""
+        values = {_ts(10, 0): 5.0, _ts(10, 5): 7.0, _ts(10, 10): 9.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx(values)
+
+    def test_leading_and_trailing_gaps_are_never_extrapolated(self) -> None:
+        """Only gaps *between* two known points are filled; there is no
+        second point to interpolate against before the first, or after
+        the last, known slot."""
+        values = {_ts(10, 10): 50.0}
+        result = interpolate_slot_gaps(values)
+        assert result == {_ts(10, 10): 50.0}
+
+    def test_fewer_than_two_known_slots_returns_copy(self) -> None:
+        assert interpolate_slot_gaps({}) == {}
+        single = {_ts(10, 0): 42.0}
+        result = interpolate_slot_gaps(single)
+        assert result == single
+        assert result is not single
+
+    def test_original_dict_is_not_mutated(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 10): 10.0}
+        original = dict(values)
+        interpolate_slot_gaps(values)
+        assert values == original
+
+    def test_multiple_gaps_in_one_series_each_handled_independently(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 10): 100.0, _ts(10, 15): 200.0}
+        result = interpolate_slot_gaps(values)
+        assert result == pytest.approx(
+            {
+                _ts(10, 0): 0.0,
+                _ts(10, 5): 50.0,  # interpolated: gap between 10:00 and 10:10
+                _ts(10, 10): 100.0,
+                _ts(10, 15): 200.0,  # adjacent to 10:10, no gap
+            }
+        )
+
+    def test_custom_slot_minutes_and_max_gap_slots(self) -> None:
+        values = {_ts(10, 0): 0.0, _ts(10, 30): 3.0}
+        result = interpolate_slot_gaps(values, slot_minutes=10, max_gap_slots=2)
+        assert result == pytest.approx(
+            {_ts(10, 0): 0.0, _ts(10, 10): 1.0, _ts(10, 20): 2.0, _ts(10, 30): 3.0}
+        )
+
+    def test_default_matches_interpolation_max_gap_slots_constant(self) -> None:
+        assert INTERPOLATION_MAX_GAP_SLOTS == 2
