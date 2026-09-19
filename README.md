@@ -23,6 +23,33 @@ evenly** across all active input sources using a waterfall model.
 
 ---
 
+## Required: exclude Effy's own entities from the recorder
+
+Add this to `configuration.yaml` and restart Home Assistant:
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.effy_*
+```
+
+Effy writes 5-minute statistics for its own `sensor.effy_*` entities
+directly into the recorder database (see ADR-003/ADR-017 — there is no
+public HA API for this). If these entities are *not* also excluded from
+the recorder's own state/statistics tracking, Home Assistant's built-in
+recorder independently tries to compile statistics for them too, from
+their normal state history — racing Effy's own writes for the same
+5-minute slot and occasionally raising a database error
+(`UNIQUE constraint failed: statistics_short_term...`) from HA core
+itself. Excluding the glob only stops that redundant native tracking;
+Effy's own statistics writes are unaffected, and history/energy-dashboard
+graphs for `effy_*` entities continue to populate normally. If you forget
+this step, Effy raises a Repair issue in **Settings → System → Repairs**
+telling you to add it.
+
+---
+
 ## Configuration
 
 All parameters are set via the UI (Config Flow + Options Flow).
