@@ -36,6 +36,12 @@
       "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren."
     }
   },
+  "issues": {
+    "recorder_not_excluded": {
+      "title": "Effy-Entitäten sind nicht vom Recorder ausgeschlossen",
+      "description": "Effy schreibt 5-Minuten-Statistiken für seine `sensor.effy_*`-Entitäten direkt in die Recorder-Datenbank. Der eingebaute Recorder von Home Assistant versucht ebenfalls, Statistiken für diese Entitäten automatisch zu erstellen, da sie weiterhin wie gewöhnliche Sensoren erfasst werden — beide können gleichzeitig in denselben Zeitslot schreiben und gelegentlich mit einem Datenbankfehler fehlschlagen (`UNIQUE constraint failed: statistics_short_term...`).\n\nUm das zu beheben, folgendes zur `configuration.yaml` hinzufügen und Home Assistant neu starten:\n\n```yaml\nrecorder:\n  exclude:\n    entity_globs:\n      - sensor.effy_*\n```\n\nDadurch wird nur verhindert, dass der eingebaute Recorder diese Entitäten separat erfasst — Effys eigene Statistik-Schreibvorgänge sind davon nicht betroffen und füllen Verlaufs-/Energie-Dashboard-Diagramme weiterhin normal."
+    }
+  },
   "entity": {
     "button": {
       "recalculate_history": {
