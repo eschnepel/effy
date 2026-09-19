@@ -174,10 +174,19 @@ def _add_late_derived_entities(
 
 
 class EffySensor(SensorEntity):  # type: ignore[misc]
-    """Effective-power sensor for one input source."""
+    """Effective-power sensor for one input source.
+
+    Always device_class POWER: ``_on_distribution`` labels its value via
+    ``effective_unit_for``, whose own docstring guarantees the result is
+    "always a power reading, never an energy one" regardless of whether
+    the source is W/kW or Wh/kWh (ADR-008) — so unlike the source entity,
+    this sensor's unit is never ambiguous between the two families and a
+    static device_class is safe and correct, not just a convenient guess.
+    """
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
 
     def __init__(
         self,
@@ -325,10 +334,16 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
     (see disabled/README.md). It does, however, receive a live state push
     (the last-written slot's value, ADR-016) after each recalculation
     that touches it — see _on_updated / EffyCoordinator.notify_updated.
+
+    Always device_class POWER: trapezoidal_slot_contributions redistributes
+    an energy-family source's Wh/kWh counter into a W-equivalent series
+    (ADR-012) — the "power" in this class's own name is not just a label,
+    the value is never itself an energy quantity.
     """
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
 
     def __init__(
         self,
@@ -423,10 +438,16 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
     recalculation that touches it — see _on_updated /
     EffyCoordinator.notify_updated. Output sensors never get one of these
     (out of scope for this feature).
+
+    Always device_class POWER: per _build_derived_entities, this class is
+    only ever constructed for a power-family (MEASUREMENT/TOTAL-as-power)
+    *input* sensor in the first place — an energy-family source gets an
+    EffyDerivedPowerSensor instead, never one of these.
     """
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
 
     def __init__(
         self,
