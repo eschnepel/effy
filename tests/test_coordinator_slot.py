@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -112,18 +112,38 @@ _history_return_value: list[tuple[int, datetime | None, set[str], dict[str, tupl
 ]
 
 
+# trigger_since each call was made with (ADR-014 Amendment 2026-10-06), kept
+# beside _history_calls so that tuple's shape stays what older tests unpack.
+_history_trigger_since: list[Any] = []
+# (previous_run, now) each recent_trigger_since() call received.
+_trigger_since_args: list[tuple[datetime | None, datetime]] = []
+# Set by a test to make the next async_recalculate_recent call raise.
+_history_raise_next: list[bool] = [False]
+
+
 async def _fake_async_recalculate_recent(
     hass: Any,
     entry_options: Any,
     now: datetime,
     energy_reading_cache: Any = None,
+    trigger_since: Any = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     _history_calls.append((hass, entry_options, now, energy_reading_cache))
+    _history_trigger_since.append(trigger_since)
+    if _history_raise_next[0]:
+        _history_raise_next[0] = False
+        raise RuntimeError("recorder exploded")
     return _history_return_value[0]
+
+
+def _fake_recent_trigger_since(previous_run: datetime | None, now: datetime) -> datetime:
+    _trigger_since_args.append((previous_run, now))
+    return _trigger_sentinel()
 
 
 _history_stub = ModuleType("effy.history")
 _history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
+_history_stub.recent_trigger_since = _fake_recent_trigger_since  # type: ignore[attr-defined]
 _history_stub.__package__ = "effy"
 sys.modules["effy.history"] = _history_stub
 _effy_pkg.history = _history_stub  # type: ignore[attr-defined]
@@ -141,6 +161,14 @@ SLOT_TIMER_LAG_SECONDS = _coord_mod.SLOT_TIMER_LAG_SECONDS
 
 def _ts(h: int, m: int, s: int = 0) -> datetime:
     return datetime(2024, 1, 1, h, m, s, tzinfo=timezone.utc)
+
+
+def _trigger_sentinel() -> datetime:
+    """What the fake recent_trigger_since returns: a fixed, recognisable value,
+    so the tests prove the coordinator forwards *its* result instead of
+    re-deriving it (the real policy is tested in
+    test_history_recent_equivalence.py)."""
+    return _ts(0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -391,3 +419,57 @@ class TestEffyCoordinatorShell:
         await asyncio.sleep(0)
 
         assert coord.recalculated_from == _ts(9, 0, 0)  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_trigger_since_follows_the_last_completed_cycle(self) -> None:
+        """ADR-014 Amendment 2026-10-06: the coordinator remembers the end
+        time of the last *completed* cycle and asks history.py for the
+        matching trigger_since; the first cycle of a session has none."""
+        _history_calls.clear()
+        _history_trigger_since.clear()
+        _trigger_since_args.clear()
+        _history_raise_next[0] = False
+        coord = self._coordinator()
+        assert coord._last_recent_run is None
+
+        await coord._async_recalculate_recent_and_report()
+        await coord._async_recalculate_recent_and_report()
+
+        (_, now1), (previous2, now2) = _trigger_since_args[0], _trigger_since_args[1]
+        assert _trigger_since_args[0][0] is None  # first cycle: nothing known
+        assert previous2 == now1  # second cycle: the first one's end time
+        assert coord._last_recent_run == now2
+        assert _history_trigger_since == [_trigger_sentinel(), _trigger_sentinel()]
+
+    @pytest.mark.asyncio
+    async def test_failed_cycle_does_not_advance_the_marker(self) -> None:
+        """A cycle that raised never applied anything, so the next one must
+        still reach back over it."""
+        _history_calls.clear()
+        _trigger_since_args.clear()
+        _history_raise_next[0] = False
+        coord = self._coordinator()
+
+        await coord._async_recalculate_recent_and_report()
+        good = coord._last_recent_run
+        assert good is not None
+
+        _history_raise_next[0] = True
+        with pytest.raises(RuntimeError):
+            await coord._async_recalculate_recent_and_report()
+        assert coord._last_recent_run == good  # unchanged by the failed cycle
+
+        await coord._async_recalculate_recent_and_report()
+        assert _trigger_since_args[2][0] == good  # still reaches back over the failure
+
+    @pytest.mark.asyncio
+    async def test_marker_never_moves_backwards_when_cycles_overlap(self) -> None:
+        coord = self._coordinator()
+        later = _ts(23, 59) + timedelta(days=365 * 100)  # far in the future
+        coord._last_recent_run = later  # as if a newer cycle had already finished
+        await coord._async_recalculate_recent_and_report()  # an older one finishes now
+        assert coord._last_recent_run == later
+
+    def test_marker_is_in_memory_only(self) -> None:
+        """A new coordinator (= a Home Assistant start) knows nothing."""
+        assert self._coordinator()._last_recent_run is None

@@ -187,6 +187,69 @@ def _fill_zero_slots(
         cursor += slot_width
 
 
+# One valid-reading -> next-valid-reading step of an energy counter:
+# (t1, v1, t2, v2, was_offline). ``was_offline`` is True when the raw entry
+# immediately preceding (t2, v2) was invalid (unavailable/unknown/non-numeric).
+_Transition = tuple[datetime, float, datetime, float, bool]
+
+
+def _find_transitions(
+    raw_states: list[tuple[datetime, str]],
+    now: datetime | None = None,
+) -> list[_Transition]:
+    """Find valid-numeric-reading transitions in a raw state history,
+    tracking whether the entry immediately preceding each one was invalid
+    (offline gap detection). Shared by ``trapezoidal_slot_contributions``
+    and ``trapezoidal_jump_windows`` so both always agree on what a
+    "transition" is (ADR-014 Amendment 2026-10-05, item 5).
+
+    If ``now`` is given and the last known reading is still valid (not
+    currently unavailable) but predates ``now``, a final synthetic
+    zero-delta transition from that last reading up to ``now`` is appended
+    (ADR-013).
+    """
+    transitions: list[_Transition] = []
+    last_valid: tuple[datetime, float] | None = None
+    prev_was_invalid = False
+
+    for ts, state in raw_states:
+        value = _parse_energy_state(state)
+        if value is None:
+            prev_was_invalid = True
+            continue
+        if last_valid is not None:
+            t1, v1 = last_valid
+            transitions.append((t1, v1, ts, value, prev_was_invalid))
+        last_valid = (ts, value)
+        prev_was_invalid = False
+
+    # Synthetic zero-delta continuation up to `now`.
+    if now is not None and last_valid is not None and not prev_was_invalid:
+        last_ts, last_value = last_valid
+        if now > last_ts:
+            transitions.append((last_ts, last_value, now, last_value, False))
+
+    return transitions
+
+
+def _distribution_window_start(
+    t1: datetime,
+    t2: datetime,
+    delta: float,
+    was_offline: bool,
+    max_window: timedelta,
+) -> datetime:
+    """Start of the window over which a transition's ``delta`` is spread.
+
+    An offline-recovery transition or a zero-delta one uses the entire
+    uncapped [t1, t2) span; a normal positive-delta step uses at most the
+    last ``max_window`` before ``t2`` (ADR-012/013/014).
+    """
+    if was_offline or delta == 0.0:
+        return t1
+    return max(t1, t2 - max_window)
+
+
 def trapezoidal_slot_contributions(
     raw_states: list[tuple[datetime, str]],
     slot_minutes: int = 5,
@@ -275,28 +338,7 @@ def trapezoidal_slot_contributions(
     slot_width = timedelta(minutes=slot_minutes)
     max_window = timedelta(minutes=max_minutes)
 
-    # Find valid-numeric-reading transitions, tracking whether the entry
-    # immediately preceding each one was invalid (offline gap detection).
-    transitions: list[tuple[datetime, float, datetime, float, bool]] = []
-    last_valid: tuple[datetime, float] | None = None
-    prev_was_invalid = False
-
-    for ts, state in raw_states:
-        value = _parse_energy_state(state)
-        if value is None:
-            prev_was_invalid = True
-            continue
-        if last_valid is not None:
-            t1, v1 = last_valid
-            transitions.append((t1, v1, ts, value, prev_was_invalid))
-        last_valid = (ts, value)
-        prev_was_invalid = False
-
-    # Synthetic zero-delta continuation up to `now` — see docstring above.
-    if now is not None and last_valid is not None and not prev_was_invalid:
-        last_ts, last_value = last_valid
-        if now > last_ts:
-            transitions.append((last_ts, last_value, now, last_value, False))
+    transitions = _find_transitions(raw_states, now)
 
     contributions: dict[datetime, float] = {}
 
@@ -305,12 +347,9 @@ def trapezoidal_slot_contributions(
         if t2 <= t1:
             continue
 
-        if was_offline or delta == 0.0:
-            window_start = t1
-        else:
-            window_start = max(t1, t2 - max_window)
-            if window_start > t1:
-                _fill_zero_slots(contributions, t1, window_start, slot_width)
+        window_start = _distribution_window_start(t1, t2, delta, was_offline, max_window)
+        if window_start > t1:
+            _fill_zero_slots(contributions, t1, window_start, slot_width)
 
         window_seconds = (t2 - window_start).total_seconds()
         if window_seconds <= 0:
@@ -331,6 +370,155 @@ def trapezoidal_slot_contributions(
             slot_cursor = slot_end
 
     return contributions
+
+
+def trapezoidal_jump_windows(
+    raw_states: list[tuple[datetime, str]],
+    max_minutes: int = TRAPEZOID_MAX_MINUTES,
+) -> list[tuple[datetime, datetime]]:
+    """Return ``(t2, window_start)`` for every rewrite-triggering event in an
+    energy sensor's raw state history, in chronological order (ADR-014
+    Amendment 2026-10-05, items 2 and 5; extended by Amendment 2026-10-06).
+
+    A trigger is either a *real jump* — a transition between two valid
+    numeric readings with a positive delta — or an *offline recovery*, i.e.
+    the first valid reading after an offline stretch, **whatever its
+    delta** (Amendment 2026-10-06: a full recalc zero-fills the whole
+    outage, ADR-013 Decision 4, so the slot-timer path must rewrite back to
+    it even when the counter did not move, otherwise the outage stays
+    "no data" instead of 0). Zero-delta and counter-reset transitions
+    between two directly consecutive valid readings, and the synthetic
+    "now" continuation of ADR-013 (this function has no ``now`` parameter),
+    are not triggers and never appear.
+
+    ``window_start`` is the start of the window over which that jump's
+    energy is distributed by ``trapezoidal_slot_contributions``:
+    ``max(t1, t2 - max_minutes)`` for a normal jump, ``t1`` (uncapped) for
+    an offline-recovery jump. The slot-timer path uses it to know how far
+    back a newly arrived jump changes already-written slots. The values
+    are exact timestamps, not slot-aligned.
+    """
+    max_window = timedelta(minutes=max_minutes)
+    windows: list[tuple[datetime, datetime]] = []
+    for t1, v1, t2, v2, was_offline in _find_transitions(raw_states):
+        delta = max(0.0, v2 - v1)
+        if t2 <= t1 or (delta == 0.0 and not was_offline):
+            continue
+        windows.append((t2, _distribution_window_start(t1, t2, delta, was_offline, max_window)))
+    return windows
+
+
+def recent_trigger_from(
+    now: datetime,
+    window: timedelta,
+    max_lookback: timedelta,
+    trigger_since: datetime | None = None,
+) -> datetime:
+    """Earliest ``t2`` that may still trigger an extension of the slot-timer
+    rewrite range (the start of the *trigger window*, ADR-014 Amendment
+    2026-10-06).
+
+    Default ``now - window``: a trigger is applied by the ~4 consecutive
+    cycles that run while it is inside that window. If ``trigger_since`` is
+    given — the end time of the last cycle that completed, or ``now -
+    max_lookback`` for the first cycle of a session — the window reaches back
+    that far, so a trigger that arrived while no cycle was running is still
+    caught. Never earlier than ``now - max_lookback`` (nothing older can
+    change anything inside the bounded range) and never later than
+    ``now - window`` (a recent or future ``trigger_since`` changes nothing).
+    The raw-history fetch in history.py must reach at least this far back,
+    which is why this is shared rather than recomputed there.
+    """
+    base = now - window
+    if trigger_since is None:
+        return base
+    return min(base, max(trigger_since, now - max_lookback))
+
+
+def recent_rewrite_start(
+    jump_windows: list[tuple[datetime, datetime]],
+    now: datetime,
+    window: timedelta,
+    max_lookback: timedelta,
+    slot_minutes: int = 5,
+    trigger_since: datetime | None = None,
+) -> datetime:
+    """Start of the slot-timer path's rewrite range (ADR-014 Amendment
+    2026-10-05, items 1-4; trigger window made dynamic by Amendment
+    2026-10-06).
+
+    ``jump_windows`` is the concatenation of ``trapezoidal_jump_windows``
+    over *all* energy-family sensors, so the result is a single global
+    start applied to every sensor and series (item 3).
+
+    - With no qualifying trigger (idle cycle, item 1) the result is exactly
+      ``now - window`` — the pre-amendment behaviour, unaligned on purpose
+      (the 15-vs-20-minute effect of that is a separate, undecided finding).
+    - A trigger qualifies when it arrived inside the *trigger window*
+      (``trigger_from <= t2 <= now``) and its distribution window starts
+      before ``now - window``. Triggers older than that were already
+      applied by earlier cycles and never extend the range (item 2).
+      ``trigger_from`` is ``now - window`` by default. If ``trigger_since``
+      is given — the end time of the last cycle that *completed*, or, for
+      the first cycle of a session, ``now - max_lookback`` (a one-off
+      catch-up) — the trigger window reaches back that far instead, so a
+      trigger that arrived while the timer was not running (HA restart,
+      suspended host, a failed cycle) is still applied. It never reaches
+      back further than ``now - max_lookback`` (nothing older can change
+      anything inside the bounded range) and is never later than
+      ``now - window``, so a ``trigger_since`` that is recent (the normal
+      5-minute cadence) or in the future leaves the default untouched.
+    - The result is the earliest qualifying ``window_start``, rounded down
+      to its slot start, so the whole first slot of the window is rewritten.
+    - It is clamped to the slot-aligned ``now - max_lookback`` (item 4; an
+      older gap is left to a full history recalc) and is never later than
+      ``now - window``.
+    """
+    slot_width = timedelta(minutes=slot_minutes)
+    base = now - window
+    trigger_from = recent_trigger_from(now, window, max_lookback, trigger_since)
+    start = base
+    for t2, window_start in jump_windows:
+        if not trigger_from <= t2 <= now or window_start >= base:
+            continue
+        start = min(start, _slot_aligned(window_start, slot_width))
+    floor = min(_slot_aligned(now - max_lookback, slot_width), base)
+    return max(start, floor)
+
+
+def carry_forward_open_slot(
+    slot_values: list[tuple[datetime, float]],
+    now: datetime,
+    slot_minutes: int = 5,
+) -> list[tuple[datetime, float]]:
+    """Give the still-open slot a provisional value: the previous slot's.
+
+    The slot-timer path runs seconds after a boundary, so the slot that
+    contains ``now`` has only a few seconds of data behind it and its
+    computed value is ≈ 0 — which draws a spurious drop to 0 at the right
+    edge of the statistics graph and makes ADR-016's live push (the last
+    slot written) almost always 0. Amendment 2026-10-06 (ADR-016): assume
+    the open slot has the same value as the last closed slot instead. That
+    is a guess, and the next cycle replaces it with the real value once
+    the slot has closed — but a guess is closer than 0.
+
+    ``slot_values`` is one entity's ``(slot_start, value)`` list in
+    ascending slot order. The value of the slot containing ``now`` is
+    replaced by the value of the slot immediately before it, and only if
+    *both* are present: a series that has no entry for the open slot (a
+    sensor that is offline right now, a power-family sensor with nothing
+    compiled yet) is not extended, and a series without a preceding slot
+    has nothing to carry forward and is returned unchanged. Returns a new
+    list; the input is never mutated.
+    """
+    slot_width = timedelta(minutes=slot_minutes)
+    open_slot = _slot_aligned(now, slot_width)
+    previous_slot = open_slot - slot_width
+    values = dict(slot_values)
+    if open_slot not in values or previous_slot not in values:
+        return list(slot_values)
+    carried = values[previous_slot]
+    return [(slot, carried if slot == open_slot else value) for slot, value in slot_values]
 
 
 # Maximum number of consecutive missing slots that get bridged by linear
