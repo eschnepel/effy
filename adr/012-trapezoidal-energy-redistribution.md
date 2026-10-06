@@ -168,3 +168,19 @@ ______________________________________________________________________
   `history.py`'s internal-API-adjacent code; the algorithmic core
   (`trapezoidal_slot_contributions`) is fully unit-tested and HA-independent, so
   this risk is isolated to the fetch/write glue.
+
+______________________________________________________________________
+
+## Amendment — 2026-10-06
+
+**Reason:** Audit AUDIT-0002 — this ADR (Decision 3, the slot-timer rewrite
+range) still read as the final word on the recent window.
+
+**Decision:** Cross-reference only. The slot-timer rewrite range described in
+Decision 3 is amended by ADR-014 (Amendment 2026-10-05: the range is extended
+back to where a newly arrived jump's own distribution window starts; Amendment
+2026-10-06: offline recoveries of any delta trigger it, and the trigger window
+follows the last completed cycle). `recalculated_from` can accordingly read back
+up to the extended start on a cycle where a jump arrived.
+
+**Decided by:** Lead Agent (documentation only) — pending human confirmation.

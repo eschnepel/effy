@@ -142,3 +142,23 @@ ______________________________________________________________________
   `SLOT_TIMER_LAG_SECONDS` of it closing, that slot is silently skipped
   (debug-logged) rather than retried — it will only be picked up by a subsequent
   full history recalc.
+
+______________________________________________________________________
+
+## Amendment — 2026-10-06
+
+**Reason:** Audit AUDIT-0002. The slot timer now also has to know when the
+previous cycle completed (a jump that arrived while no cycle ran must still be
+applied — ADR-014 Amendment 2026-10-06).
+
+**Decision:** `EffyCoordinator` keeps the end time of the last completed cycle
+in memory (`_last_recent_run`, volatile, never persisted) and passes the derived
+`trigger_since` to
+`async_recalculate_recent(hass, entry_options, now, energy_reading_cache=None, trigger_since=None)`.
+The parameter is optional and the return shape
+`(written, recalculated_from, touched, last_values)` is unchanged; Decisions 2–4
+above are unaffected (short-term only; timer timing). The slot containing `now`
+is written with a provisional value — see ADR-016 Amendment 2026-10-06.
+
+**Decided by:** human (AUDIT-0002, Issue 1, Option A); Lead Agent (signature) —
+pending human confirmation.

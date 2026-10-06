@@ -270,3 +270,23 @@ ______________________________________________________________________
   meaningful again as a "how far back might something have just changed" signal
   for anything built on top of Effy's output — with the accepted limitation
   noted in Decision 5 for the rare zero-fill-only-via-lookback case.
+
+______________________________________________________________________
+
+## Amendment — 2026-10-06
+
+**Reason:** Audit AUDIT-0002 — Decision 5 (`RECENT_RECALC_WINDOW`, ~20 minutes)
+and the Consequence "`recalculated_from` is normally within a few minutes of
+now" still read as the final word on the recent window.
+
+**Decision:** Cross-reference only. `RECENT_RECALC_WINDOW` remains the *base*
+window of an idle cycle, but the slot-timer rewrite range is extended by ADR-014
+(Amendment 2026-10-05: back to the start of a newly arrived jump's distribution
+window; Amendment 2026-10-06: offline recoveries of any delta trigger it — which
+also keeps Decision 4's zero-fill of an outage in sync with a full recalc — and
+the trigger window follows the last completed cycle).
+`sensor.effy_recalculated_from` therefore reads within a few minutes of now on
+idle cycles and up to the extended start (≤ 1 day) on a cycle where a jump or
+recovery arrived.
+
+**Decided by:** Lead Agent (documentation only) — pending human confirmation.

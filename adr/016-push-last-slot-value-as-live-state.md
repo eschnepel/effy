@@ -106,3 +106,36 @@ ______________________________________________________________________
   or to the "recalculated from" tracking (ADR-012) — this is purely an
   additional, best-effort live-state push layered on top of the existing,
   unchanged statistics write.
+
+______________________________________________________________________
+
+## Amendment — 2026-10-06
+
+**Reason:** Audit AUDIT-0002 (Issue 2). The slot timer runs ~5 seconds after a
+boundary, so the slot that contains `now` is still open: only seconds of data
+stand behind it and its computed value is ≈ 0. The timer path writes that slot
+like any other, and this ADR's push picks it as the "last slot" — so the pushed
+live state was almost always ≈ 0 and the statistics graph ended in a drop to 0
+until the next cycle overwrote the slot.
+
+**Decision:** In the slot-timer path (`async_recalculate_recent`) the open slot
+is written with a *provisional* value: that of the previous (closed) slot, for
+the effective and the derived-power series
+(`calculation.carry_forward_open_slot`). It is a guess; the next cycle
+overwrites it with the real value once the slot has closed ("with the rewrite,
+this changes to the correct value" — but a guess is better than 0). Because the
+push uses the last slot written, the live state now carries that value too;
+`_last_slot_values` is unchanged. Details: only if both the open slot and its
+immediate predecessor exist in the entity's series — a sensor that is offline
+right now (no entry for the open slot) is not extended, and a series with no
+predecessor is left as computed. The smoothed series is not touched (it only
+ever contains compiled, closed slots, so there is no drop to fix). **Scope: the
+slot-timer path only** — the full history recalc (`async_recalculate_history`,
+button) is unchanged and still writes the ≈ 0 open slot (and pushes it) until
+the next timer cycle. Not decided and left as is: the unaligned base start
+`now − RECENT_RECALC_WINDOW`, which makes the idle window effectively 15 minutes
+of closed slots plus the open slot.
+
+**Decided by:** human (AUDIT-0002, Issue 2, new option c: "assume the next slot
+has the same value as the last slot"); scope and the adjacency/offline details
+by Lead Agent — pending human confirmation.

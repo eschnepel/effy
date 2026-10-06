@@ -10,7 +10,9 @@ direct file-path import, invariant assertions).
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +39,11 @@ if not TYPE_CHECKING:
 distribute_loss = _calculation.distribute_loss
 effective_in_original_unit = _calculation.effective_in_original_unit
 trapezoidal_slot_contributions = _calculation.trapezoidal_slot_contributions
+trapezoidal_jump_windows = _calculation.trapezoidal_jump_windows
+recent_rewrite_start = _calculation.recent_rewrite_start
+recent_trigger_from = _calculation.recent_trigger_from
+carry_forward_open_slot = _calculation.carry_forward_open_slot
+_parse_energy_state = _calculation._parse_energy_state
 TRAPEZOID_MAX_MINUTES = _calculation.TRAPEZOID_MAX_MINUTES
 interpolate_slot_gaps = _calculation.interpolate_slot_gaps
 INTERPOLATION_MAX_GAP_SLOTS = _calculation.INTERPOLATION_MAX_GAP_SLOTS
@@ -380,6 +387,430 @@ class TestTrapezoidalSlotContributions:
         raw = [(_ts(10, 0), "0.0"), (_ts(10, 5), "1.0")]
         result = trapezoidal_slot_contributions(raw, now=_ts(10, 15))
         assert result == pytest.approx({_ts(10, 0): 1.0, _ts(10, 5): 0.0, _ts(10, 10): 0.0})
+
+
+class TestTrapezoidalJumpWindows:
+    """ADR-014 Amendment 2026-10-05: expose each real jump's distribution
+    window (t2, window_start) so the slot-timer path knows how far back a
+    newly arrived jump changes already-written slots."""
+
+    def test_normal_jump_within_cap_starts_at_t1(self) -> None:
+        raw = [(_ts(10, 0), "5.00"), (_ts(10, 35), "5.01")]
+        assert trapezoidal_jump_windows(raw) == [(_ts(10, 35), _ts(10, 0))]
+
+    def test_normal_jump_over_the_cap_is_capped_at_max_minutes(self) -> None:
+        """300 min gap, no offline in between: window starts 120 min before t2."""
+        raw = [(_ts(5, 0), "5.00"), (_ts(10, 0), "5.01")]
+        assert trapezoidal_jump_windows(raw) == [(_ts(10, 0), _ts(8, 0))]
+        assert TRAPEZOID_MAX_MINUTES == 120  # the default the line above relies on
+
+    def test_explicit_max_minutes_is_honoured(self) -> None:
+        raw = [(_ts(10, 0), "5.00"), (_ts(10, 30), "5.01")]
+        assert trapezoidal_jump_windows(raw, max_minutes=15) == [(_ts(10, 30), _ts(10, 15))]
+
+    def test_offline_recovery_jump_is_uncapped_and_starts_at_t1(self) -> None:
+        raw = [
+            (_ts(5, 0), "5.00"),
+            (_ts(5, 30), "unavailable"),
+            (_ts(10, 0), "5.01"),
+        ]
+        assert trapezoidal_jump_windows(raw) == [(_ts(10, 0), _ts(5, 0))]
+
+    def test_zero_delta_transition_is_not_a_jump(self) -> None:
+        raw = [(_ts(10, 0), "5.00"), (_ts(10, 30), "5.00")]
+        assert trapezoidal_jump_windows(raw) == []
+
+    def test_zero_delta_offline_recovery_is_a_trigger_starting_at_t1(self) -> None:
+        """AUDIT-0001: a counter that is unchanged across an outage still
+        needs the outage zero-filled (ADR-013 Decision 4), so the recovery
+        reading triggers a rewrite back to the last pre-outage reading."""
+        raw = [(_ts(8, 0), "5.00"), (_ts(8, 30), "unavailable"), (_ts(11, 0), "5.00")]
+        assert trapezoidal_jump_windows(raw) == [(_ts(11, 0), _ts(8, 0))]
+
+    def test_zero_delta_offline_recovery_is_uncapped(self) -> None:
+        raw = [(_ts(1, 0), "5.00"), (_ts(1, 30), "unknown"), (_ts(11, 0), "5.00")]
+        assert trapezoidal_jump_windows(raw) == [(_ts(11, 0), _ts(1, 0))]
+
+    def test_counter_reset_across_an_outage_is_a_trigger(self) -> None:
+        """Recovery with a *lower* reading (delta clamps to 0) is an offline
+        recovery all the same: a full recalc zero-fills the outage."""
+        raw = [(_ts(8, 0), "5.00"), (_ts(8, 30), "unavailable"), (_ts(11, 0), "0.02")]
+        assert trapezoidal_jump_windows(raw) == [(_ts(11, 0), _ts(8, 0))]
+
+    def test_non_numeric_state_without_recovery_is_not_a_trigger(self) -> None:
+        raw = [(_ts(8, 0), "5.00"), (_ts(8, 30), "unavailable")]
+        assert trapezoidal_jump_windows(raw) == []
+
+    def test_zero_delta_after_recovery_is_still_not_a_jump(self) -> None:
+        """Only the first reading after the outage is an offline recovery."""
+        raw = [
+            (_ts(8, 0), "5.00"),
+            (_ts(8, 30), "unavailable"),
+            (_ts(9, 0), "5.00"),
+            (_ts(9, 30), "5.00"),
+        ]
+        assert trapezoidal_jump_windows(raw) == [(_ts(9, 0), _ts(8, 0))]
+
+    def test_counter_reset_decrease_is_not_a_jump(self) -> None:
+        raw = [(_ts(10, 0), "5.00"), (_ts(10, 30), "0.02")]
+        assert trapezoidal_jump_windows(raw) == []
+
+    def test_reset_becomes_new_baseline_for_the_next_jump(self) -> None:
+        raw = [(_ts(10, 0), "5.00"), (_ts(10, 20), "0.02"), (_ts(10, 50), "0.03")]
+        assert trapezoidal_jump_windows(raw) == [(_ts(10, 50), _ts(10, 20))]
+
+    def test_several_jumps_come_back_in_chronological_order(self) -> None:
+        raw = [
+            (_ts(10, 0), "5.00"),
+            (_ts(10, 30), "5.01"),
+            (_ts(10, 50), "5.02"),
+            (_ts(11, 9), "5.03"),
+        ]
+        assert trapezoidal_jump_windows(raw) == [
+            (_ts(10, 30), _ts(10, 0)),
+            (_ts(10, 50), _ts(10, 30)),
+            (_ts(11, 9), _ts(10, 50)),
+        ]
+
+    def test_fewer_than_two_valid_readings_yield_nothing(self) -> None:
+        assert trapezoidal_jump_windows([]) == []
+        assert trapezoidal_jump_windows([(_ts(10, 0), "5.00")]) == []
+        assert trapezoidal_jump_windows([(_ts(10, 0), "unavailable"), (_ts(10, 5), "5.00")]) == []
+
+    def test_has_no_synthetic_now_continuation(self) -> None:
+        """The ADR-013 synthetic zero-delta transition never counts as a
+        jump -- and the function has no `now` parameter that could add it."""
+        raw = [(_ts(10, 0), "5.00"), (_ts(10, 30), "5.01")]
+        assert trapezoidal_jump_windows(raw) == [(_ts(10, 30), _ts(10, 0))]
+        assert "now" not in inspect.signature(trapezoidal_jump_windows).parameters
+
+    def test_window_start_matches_where_slot_contributions_actually_begin(self) -> None:
+        """Single-source-of-truth guard (item 5): the first slot receiving a
+        non-zero contribution is the slot containing window_start."""
+        raw = [(_ts(5, 0), "5.00"), (_ts(10, 0), "5.01")]
+        ((t2, window_start),) = trapezoidal_jump_windows(raw)
+        contributions = trapezoidal_slot_contributions(raw)
+        first_nonzero = min(slot for slot, value in contributions.items() if value > 0)
+        assert first_nonzero == window_start
+        assert t2 == _ts(10, 0)
+
+
+class TestRecentRewriteStart:
+    """ADR-014 Amendment 2026-10-05, items 1-4: pure rule for where the
+    slot-timer path's rewrite range starts."""
+
+    NOW = _ts(12, 0, 5)
+    WINDOW = timedelta(minutes=20)
+    LOOKBACK = timedelta(days=1)
+
+    def _start(self, windows: list[tuple[datetime, datetime]]) -> datetime:
+        result: datetime = recent_rewrite_start(windows, self.NOW, self.WINDOW, self.LOOKBACK)
+        return result
+
+    def test_no_jump_windows_returns_exactly_now_minus_window(self) -> None:
+        assert self._start([]) == self.NOW - self.WINDOW  # 11:40:05, unaligned
+
+    def test_recent_jump_with_older_window_start_extends_to_slot_start(self) -> None:
+        # t2 inside the last 20 min; its window began 10:02:30 -> slot 10:00
+        assert self._start([(_ts(11, 55), _ts(10, 2, 30))]) == _ts(10, 0)
+
+    def test_several_jumps_return_the_global_minimum(self) -> None:
+        windows = [
+            (_ts(11, 50), _ts(11, 20)),  # sensor A
+            (_ts(11, 58), _ts(10, 31)),  # sensor B -> earliest
+            (_ts(11, 45), _ts(11, 0)),  # sensor C
+        ]
+        assert self._start(windows) == _ts(10, 30)
+
+    def test_zero_delta_offline_recovery_extends_to_the_pre_outage_slot(self) -> None:
+        """AUDIT-0001: fed from real raw history, not hand-made windows."""
+        raw = [(_ts(8, 0), "5.00"), (_ts(8, 30), "unavailable"), (_ts(11, 55), "5.00")]
+        assert self._start(trapezoidal_jump_windows(raw)) == _ts(8, 0)
+
+    def test_jump_older_than_the_recent_window_does_not_extend(self) -> None:
+        # t2 = 11:39 < now - window (11:40:05): already applied by earlier cycles
+        assert self._start([(_ts(11, 39), _ts(9, 0))]) == self.NOW - self.WINDOW
+
+    def test_jump_in_the_future_does_not_extend(self) -> None:
+        assert self._start([(_ts(12, 10), _ts(9, 0))]) == self.NOW - self.WINDOW
+
+    def test_window_start_inside_the_base_window_returns_base_unchanged(self) -> None:
+        assert self._start([(_ts(11, 55), _ts(11, 45))]) == self.NOW - self.WINDOW
+
+    def test_window_start_just_before_base_inside_the_straddling_slot(self) -> None:
+        """11:40:03 < base 11:40:05 -> its slot 11:40 must be rewritten too."""
+        assert self._start([(_ts(11, 55), _ts(11, 40, 3))]) == _ts(11, 40)
+
+    def test_extension_is_clamped_to_slot_aligned_max_lookback(self) -> None:
+        """An offline-recovery jump whose pre-outage reading is 3 days back."""
+        result = self._start([(_ts(11, 58), self.NOW - timedelta(days=3))])
+        assert result == _ts(12, 0) - self.LOOKBACK  # aligned(now - 1 day)
+        assert result > self.NOW - timedelta(days=3)
+
+    def test_clamp_never_makes_the_start_later_than_the_base(self) -> None:
+        """Pathological config: lookback shorter than the base window."""
+        result = recent_rewrite_start(
+            [(_ts(11, 55), _ts(9, 0))],
+            self.NOW,
+            timedelta(minutes=20),
+            timedelta(minutes=5),
+        )
+        assert result == self.NOW - self.WINDOW
+
+    def test_slot_minutes_is_respected(self) -> None:
+        result = recent_rewrite_start(
+            [(_ts(11, 55), _ts(10, 7))],
+            self.NOW,
+            self.WINDOW,
+            self.LOOKBACK,
+            slot_minutes=15,
+        )
+        assert result == _ts(10, 0)
+
+
+class TestRecentTriggerWindow:
+    """ADR-014 Amendment 2026-10-06: the trigger window is dynamic. A jump
+    that arrived while no cycle was running must still trigger."""
+
+    NOW = _ts(12, 0, 5)
+    WINDOW = timedelta(minutes=20)
+    LOOKBACK = timedelta(days=1)
+
+    def _from(self, trigger_since: datetime | None) -> datetime:
+        result: datetime = recent_trigger_from(self.NOW, self.WINDOW, self.LOOKBACK, trigger_since)
+        return result
+
+    def _start(
+        self, windows: list[tuple[datetime, datetime]], trigger_since: datetime | None
+    ) -> datetime:
+        result: datetime = recent_rewrite_start(
+            windows, self.NOW, self.WINDOW, self.LOOKBACK, trigger_since=trigger_since
+        )
+        return result
+
+    def test_default_is_now_minus_window(self) -> None:
+        assert self._from(None) == self.NOW - self.WINDOW
+
+    def test_recent_or_future_trigger_since_changes_nothing(self) -> None:
+        """Normal 5-minute cadence: the last cycle ran inside the window."""
+        assert self._from(self.NOW - timedelta(minutes=5)) == self.NOW - self.WINDOW
+        assert self._from(self.NOW + timedelta(hours=1)) == self.NOW - self.WINDOW  # clock step
+
+    def test_a_pause_reaches_back_to_the_last_completed_cycle(self) -> None:
+        assert self._from(_ts(10, 30, 5)) == _ts(10, 30, 5)
+
+    def test_never_reaches_back_further_than_the_max_lookback(self) -> None:
+        assert self._from(self.NOW - timedelta(days=3)) == self.NOW - self.LOOKBACK
+
+    def test_jump_during_a_pause_triggers_only_with_trigger_since(self) -> None:
+        """The audit's case: t2 older than the window at the first cycle after
+        the pause, window start far back."""
+        windows = [(_ts(11, 20), _ts(10, 5))]
+        assert self._start(windows, None) == self.NOW - self.WINDOW  # old behaviour: lost
+        assert self._start(windows, _ts(11, 0)) == _ts(10, 5)  # last cycle was before it
+
+    def test_jump_already_seen_by_the_last_completed_cycle_does_not_trigger(self) -> None:
+        windows = [(_ts(11, 20), _ts(10, 5))]
+        assert self._start(windows, _ts(11, 30)) == self.NOW - self.WINDOW
+
+    def test_jump_older_than_the_max_lookback_does_not_turn_into_a_day_rewrite(self) -> None:
+        windows = [(self.NOW - timedelta(days=2), self.NOW - timedelta(days=2, hours=2))]
+        assert self._start(windows, self.NOW - timedelta(days=3)) == self.NOW - self.WINDOW
+
+    def test_extension_is_still_clamped_to_the_max_lookback(self) -> None:
+        """First cycle of a session (catch-up) + an old offline recovery."""
+        windows = [(_ts(11, 58), self.NOW - timedelta(days=3))]
+        result = self._start(windows, self.NOW - self.LOOKBACK)
+        assert result == _ts(12, 0) - self.LOOKBACK
+
+
+class TestCarryForwardOpenSlot:
+    """ADR-016 Amendment 2026-10-06: the open slot has the previous slot's value."""
+
+    NOW = _ts(12, 0, 5)  # open slot 12:00, last closed slot 11:55
+
+    def test_open_slot_gets_the_previous_slots_value(self) -> None:
+        values = [(_ts(11, 50), 3.0), (_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
+        assert carry_forward_open_slot(values, self.NOW) == [
+            (_ts(11, 50), 3.0),
+            (_ts(11, 55), 7.0),
+            (_ts(12, 0), 7.0),
+        ]
+
+    def test_input_is_not_mutated(self) -> None:
+        values = [(_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
+        carry_forward_open_slot(values, self.NOW)
+        assert values == [(_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
+
+    def test_no_entry_for_the_open_slot_means_nothing_is_invented(self) -> None:
+        """e.g. a sensor that is offline right now."""
+        values = [(_ts(11, 50), 3.0), (_ts(11, 55), 7.0)]
+        assert carry_forward_open_slot(values, self.NOW) == values
+
+    def test_no_previous_slot_means_nothing_to_carry(self) -> None:
+        values = [(_ts(12, 0), 0.01)]
+        assert carry_forward_open_slot(values, self.NOW) == values
+
+    def test_previous_slot_must_be_the_adjacent_one(self) -> None:
+        """A stale value from 10 minutes ago is not 'the last slot'."""
+        values = [(_ts(11, 50), 3.0), (_ts(12, 0), 0.01)]
+        assert carry_forward_open_slot(values, self.NOW) == values
+
+    def test_only_the_open_slot_changes(self) -> None:
+        values = [(_ts(11, 50), 3.0), (_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
+        out = carry_forward_open_slot(values, self.NOW)
+        assert out[:2] == values[:2]
+
+    def test_now_exactly_on_a_boundary_has_no_open_slot_in_range(self) -> None:
+        values = [(_ts(11, 55), 7.0)]
+        assert carry_forward_open_slot(values, _ts(12, 0)) == values
+
+    def test_slot_minutes_is_respected(self) -> None:
+        values = [(_ts(11, 45), 7.0), (_ts(12, 0), 0.01)]
+        assert carry_forward_open_slot(values, self.NOW, slot_minutes=15) == [
+            (_ts(11, 45), 7.0),
+            (_ts(12, 0), 7.0),
+        ]
+
+    def test_empty_series(self) -> None:
+        assert carry_forward_open_slot([], self.NOW) == []
+
+
+_SimRule = Callable[[list[tuple[datetime, datetime]], datetime], datetime]
+
+_SIM_WINDOW = timedelta(minutes=20)
+_SIM_LOOKBACK = timedelta(days=1)
+# history.py's _RAW_HISTORY_BOUNDARY_MARGIN: TRAPEZOID_MAX_MINUTES + one slot
+_SIM_MARGIN = timedelta(minutes=TRAPEZOID_MAX_MINUTES + 5)
+
+
+def _sim_fetch(
+    readings: list[tuple[datetime, str]], start: datetime, end: datetime
+) -> list[tuple[datetime, str]]:
+    """state_changes_during_period(include_start_time_state=True) emulation,
+    plus history.py's offline-anchor lookback (ADR-014/015): if the entry
+    in effect at ``start`` is non-numeric, the last numeric reading before it
+    is prepended so an offline-recovery jump still knows its t1."""
+    before = [r for r in readings if r[0] < start]
+    head = before[-1:]
+    if head and _parse_energy_state(head[0][1]) is None:
+        head = [r for r in before if _parse_energy_state(r[1]) is not None][-1:] + head
+    inside = [r for r in readings if start <= r[0] <= end]
+    return head + inside
+
+
+def _sim_rule_real(windows: list[tuple[datetime, datetime]], now: datetime) -> datetime:
+    start: datetime = recent_rewrite_start(windows, now, _SIM_WINDOW, _SIM_LOOKBACK)
+    return start
+
+
+def _sim_rule_fixed(_windows: list[tuple[datetime, datetime]], now: datetime) -> datetime:
+    """Negative control: the pre-amendment rule (always exactly the window)."""
+    return now - _SIM_WINDOW
+
+
+def _sim_timer_path(
+    readings: list[tuple[datetime, str]],
+    first_cycle: datetime,
+    last_cycle: datetime,
+    rule: _SimRule,
+) -> dict[datetime, float]:
+    """Emulate the slot timer: every 5 min recompute and overwrite the slots
+    in [start, now), as history.async_recalculate_recent does."""
+    store: dict[datetime, float] = {}
+    now = first_cycle
+    while now <= last_cycle:
+        base = now - _SIM_WINDOW
+        raw = _sim_fetch(readings, base - _SIM_MARGIN, now)
+        start = rule(trapezoidal_jump_windows(raw), now)
+        if start < base:
+            raw = _sim_fetch(readings, start - _SIM_MARGIN, now)
+        for slot, value in trapezoidal_slot_contributions(raw, now=now).items():
+            if start <= slot < now:
+                store[slot] = value
+        now += timedelta(minutes=5)
+    return store
+
+
+def _sim_full_recalc(readings: list[tuple[datetime, str]], now: datetime) -> dict[datetime, float]:
+    raw = _sim_fetch(readings, now - timedelta(days=3), now)
+    return {s: v for s, v in trapezoidal_slot_contributions(raw, now=now).items() if s < now}
+
+
+def _in_range(store: dict[datetime, float], lo: datetime, hi: datetime) -> dict[datetime, float]:
+    return {s: v for s, v in store.items() if lo <= s < hi}
+
+
+class TestSlotTimerEquivalenceSimulation:
+    """ADR-014 Amendment 2026-10-05, item 7, at the algorithm level: after
+    the slot-timer cycles have run, every closed slot equals what a full
+    recalc produces, and the area under the curve equals the raw energy.
+    Replays the BMS battery-charge screenshot (0.01 kWh ticks every 19-35
+    min); history.py glue is covered by TASK-0004."""
+
+    TICKS = [(7, 30), (10, 50), (11, 25), (11, 52), (12, 14), (12, 34), (12, 53)]
+
+    def _readings(self, jitter_seconds: int) -> list[tuple[datetime, str]]:
+        return [
+            (_ts(h, m, jitter_seconds), f"{5.0 + 0.01 * i:.2f}")
+            for i, (h, m) in enumerate(self.TICKS)
+        ]
+
+    @pytest.mark.parametrize("jitter_seconds", [0, 37])
+    def test_timer_path_equals_full_recalc_and_conserves_energy(self, jitter_seconds: int) -> None:
+        readings = self._readings(jitter_seconds)
+        store = _sim_timer_path(readings, _ts(10, 0, 5), _ts(13, 5, 5), _sim_rule_real)
+        full = _sim_full_recalc(readings, _ts(13, 5, 5))
+
+        lo, hi = _ts(10, 0), _ts(13, 5)  # slot 13:05 is still in progress
+        assert _in_range(store, lo, hi) == pytest.approx(_in_range(full, lo, hi))
+        # 6 jumps of 0.01 kWh, all of it present in the stored series
+        assert sum(_in_range(store, _ts(0, 0), hi).values()) == pytest.approx(0.06)
+
+    def test_screenshot_peak_rates_are_unchanged(self) -> None:
+        """5 W for the first jump (10 Wh over the 120 min cap), then
+        10 Wh / interval -- the same peaks as the user's chart."""
+        store = _sim_timer_path(self._readings(0), _ts(10, 0, 5), _ts(13, 5, 5), _sim_rule_real)
+        watts = sorted({round(v * 1000 * 12) for v in store.values() if v > 0})
+        assert 5 in watts and 17 in watts and 32 in watts
+
+    def test_negative_control_fixed_window_loses_half_the_energy(self) -> None:
+        """Without the amendment (always rewrite exactly the last window) the
+        same simulation leaves ~half the energy -- the production bug."""
+        readings = self._readings(0)
+        store = _sim_timer_path(readings, _ts(10, 0, 5), _ts(13, 5, 5), _sim_rule_fixed)
+        full = _sim_full_recalc(readings, _ts(13, 5, 5))
+        hi = _ts(13, 5)
+        assert sum(_in_range(store, _ts(0, 0), hi).values()) < 0.04
+        assert _in_range(store, _ts(10, 0), hi) != pytest.approx(_in_range(full, _ts(10, 0), hi))
+
+    def test_offline_recovery_jump_rewrites_the_whole_outage(self) -> None:
+        readings = [
+            (_ts(8, 0), "5.00"),
+            (_ts(8, 30), "unavailable"),
+            (_ts(11, 0), "5.05"),
+        ]
+        store = _sim_timer_path(readings, _ts(8, 0, 5), _ts(11, 35, 5), _sim_rule_real)
+        full = _sim_full_recalc(readings, _ts(11, 35, 5))
+        lo, hi = _ts(8, 0), _ts(11, 35)
+        assert _in_range(store, lo, hi) == pytest.approx(_in_range(full, lo, hi))
+        assert sum(_in_range(store, lo, hi).values()) == pytest.approx(0.05)
+
+    def test_zero_delta_offline_recovery_zero_fills_the_whole_outage(self) -> None:
+        """AUDIT-0001 finding: counter unchanged across an outage. A full
+        recalc zero-fills the outage; the timer path used to leave it as
+        "no data" because nothing triggered the extension."""
+        readings = [
+            (_ts(8, 0), "5.00"),
+            (_ts(8, 30), "unavailable"),
+            (_ts(11, 0), "5.00"),
+        ]
+        store = _sim_timer_path(readings, _ts(8, 0, 5), _ts(11, 35, 5), _sim_rule_real)
+        full = _sim_full_recalc(readings, _ts(11, 35, 5))
+        lo, hi = _ts(8, 0), _ts(11, 35)
+        assert _in_range(full, _ts(8, 30), _ts(11, 0))  # the outage really is in the full store
+        assert _in_range(store, lo, hi) == pytest.approx(_in_range(full, lo, hi))
+        assert all(v == 0.0 for v in _in_range(store, _ts(8, 30), _ts(11, 0)).values())
 
 
 class TestInterpolateSlotGaps:

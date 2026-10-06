@@ -82,7 +82,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .calculation import LossDistribution
 from .const import CONF_INPUT_SENSORS, CONF_OUTPUT_SENSORS
-from .history import async_recalculate_recent
+from .history import async_recalculate_recent, recent_trigger_since
 from .sensor_utils import SLOT_MINUTES
 
 _LOGGER = logging.getLogger(__name__)
@@ -182,6 +182,16 @@ class EffyCoordinator:
         # contents itself, just owns and hands it out so it survives
         # across calls within the same HA session.
         self.last_valid_energy_readings: dict[str, tuple[datetime, str]] = {}
+
+        # End time (the ``now`` it ran with) of the last slot-timer cycle that
+        # *completed* without raising — volatile, in memory only, so ``None``
+        # again after every Home Assistant start (ADR-014 Amendment
+        # 2026-10-06). Lets the next cycle also catch a counter jump that
+        # arrived while no cycle was running (restart, suspended host, failed
+        # cycles): history.recent_trigger_since turns it into the
+        # ``trigger_since`` of async_recalculate_recent, with a one-off
+        # RECENT_REWRITE_MAX_LOOKBACK catch-up when it is still ``None``.
+        self._last_recent_run: datetime | None = None
 
         # Slot-aligned timer state. Drives the history-driven slot
         # computation (ADR-011). Self-reschedules after every firing.
@@ -364,7 +374,13 @@ class EffyCoordinator:
             self._entry.options,
             now,
             energy_reading_cache=self.last_valid_energy_readings,
+            trigger_since=recent_trigger_since(self._last_recent_run, now),
         )
+        # Only reached when the cycle completed (an exception above leaves
+        # the marker alone, so the next cycle's trigger window covers this
+        # one too). max(): cycles may overlap and finish out of order.
+        if self._last_recent_run is None or now > self._last_recent_run:
+            self._last_recent_run = now
         if earliest is not None:
             self.set_recalculated_from(earliest)
         if touched:

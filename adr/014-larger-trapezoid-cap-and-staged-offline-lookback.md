@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-13 **Status:** Accepted — amends ADR-012
 (`TRAPEZOID_MAX_MINUTES`) and ADR-013 Decision 5 (`RECENT_RECALC_WINDOW`,
-`_fetch_last_valid_state_before`).
+`_fetch_last_valid_state_before`). **Decision 2's "accepted trade-off" was
+reversed on 2026-10-05 — see the Amendment at the end of this file.**
 
 **See also:** ADR-015 (same day) refines Decision 3 further: the lookback now
 also skips entirely when the fetch window has no recovery in it at all (a sensor
@@ -161,3 +162,167 @@ ______________________________________________________________________
   arrive has its older slots' correction delayed until the next full history
   recalc, even though the rate itself, once computed, is already correct and
   un-inflated.
+
+______________________________________________________________________
+
+## Amendment — 2026-10-05
+
+**Reason:** Decision 2's accepted trade-off — a jump that took longer than
+`RECENT_RECALC_WINDOW` (20 min) to arrive keeps its older slots at 0 until the
+next full history recalc — turned out to be the *normal* case for low-resolution
+energy meters (BMS charge counter at 0.01 kWh resolution, ticking every 19–35
+min), not an edge case. Observed in production on `BMS Batterie Ladung derived`:
+every 10 Wh tick showed up only as a short (~15 min) bump at the correct rate,
+separated by flat-0 gaps — the very oscillation Decision 1 was meant to remove.
+The stored series violated the energy-conservation guarantee of ADR-012 (area
+under the derived power ≈ half of the raw energy in a reproduction: 30.2 Wh vs.
+60 Wh for 6 ticks). A manual full recalc produced the correct, conserving series
+(validated by the human on the live instance), confirming the algorithm is right
+and only the slot-timer's rewrite range is too narrow. The "staleness window,
+not an incorrect rate" framing in Decision 2 understated this: the *rate* was
+right, the *energy* was not.
+
+**Decision:** The slot-timer path (`async_recalculate_recent`) rewrites back to
+wherever a newly arrived jump's own distribution window starts, instead of
+always exactly `RECENT_RECALC_WINDOW`:
+
+1. **Idle cycles are unchanged.** With no new jump, the rewrite range is still
+   the last `RECENT_RECALC_WINDOW` (20 min) — no extra write cost in the common
+   case.
+1. **A jump extends the range** *(trigger widened to every offline recovery by
+   Amendment 2026-10-06 below)*. For every energy-family sensor, each *real*
+   jump — a transition between two valid readings with `delta > 0`, including
+   the first reading after an offline stretch, but excluding zero-delta
+   transitions and the synthetic "now" continuation (ADR-013) — whose end `t2`
+   lies within `RECENT_RECALC_WINDOW` before `now` moves the rewrite start back
+   to the slot containing that jump's distribution-window start:
+   `max(t1, t2 − TRAPEZOID_MAX_MINUTES)` for a normal jump, `t1` (uncapped) for
+   an offline-recovery jump.
+1. **The extended start is global.** It is the minimum over all sensors and
+   applies to *all* sensors and all three series (effective, derived power,
+   smoothed) for that cycle. Never per-entity: `distribute_loss` needs every
+   sensor's reading for a slot, so a narrower range for one sensor would run the
+   waterfall on a subset and overwrite correct older rows with wrong ones.
+1. **Bounded.** The extension never reaches earlier than
+   `now − RECENT_REWRITE_MAX_LOOKBACK` (1 day). An offline gap longer than that
+   is still corrected by the next full history recalc, as before.
+1. **Single source of truth for jump detection.** The transition detection
+   inside `calculation.trapezoidal_slot_contributions` is factored into a shared
+   private helper; a new pure function in `calculation.py` exposes each real
+   jump's `(t2, window_start)` from that same helper — no duplicated transition
+   logic (ADR-000 §3: pure, HA-free, zero-mock tests).
+1. **Raw-history margin.** `_RAW_HISTORY_BOUNDARY_MARGIN` is applied before the
+   *extended* start, so jumps overlapping the extended range still see their own
+   start.
+1. **Testable invariant.** After every slot-timer cycle at time `T`, each closed
+   slot the cycle wrote equals what a full history recalc at `T` would produce
+   for that slot, and the area under the derived power over a jump equals the
+   jump's delta (conservation).
+
+**Unchanged:** `RECENT_RECALC_WINDOW` stays 20 min; short-term statistics only
+(ADR-011 Decision 2) — hourly long-term values still come exclusively from a
+full recalc; zero-fill semantics (ADR-013 Decision 4); `TRAPEZOID_MAX_MINUTES` =
+120\.
+
+**Consequences of this amendment:**
+
+- On a cycle where a jump arrived, up to ~28 slots per sensor per series are
+  rewritten instead of 4 (a jump stays inside the 20-min trigger window for ~4
+  consecutive cycles). Idle cycles cost the same as before.
+- `sensor.effy_recalculated_from` (ADR-012/013) can now read up to ~2 h back on
+  a cycle where a jump arrived (it reports the earliest touched slot); that is
+  accurate — those slots really were rewritten.
+- Supersedes the "Accepted trade-off" paragraph of Decision 2 and the last
+  bullet of the original Consequences section ("a jump that took between
+  `RECENT_RECALC_WINDOW` and `TRAPEZOID_MAX_MINUTES` to arrive has its older
+  slots' correction delayed until the next full history recalc").
+- Not addressed here (separate findings, not decided): the unaligned
+  `start = now − RECENT_RECALC_WINDOW` filter makes the effective window 15 min
+  rather than 20; the 5-second-old in-progress slot is written (as ~0) and
+  picked as the "last slot" for ADR-016's live push.
+
+**Decided by:** human (Option 1 selected, diagnosis validated by a manual recalc
+on the live instance); design details 1–7 by Lead Agent — pending human
+confirmation.
+
+______________________________________________________________________
+
+## Amendment — 2026-10-06
+
+### Part 1 — offline recoveries of any delta (AUDIT-0001)
+
+**Reason:** Audit AUDIT-0001 found that the 2026-10-05 amendment's item 2
+excluded zero-delta transitions without exception, including a zero-delta
+*offline recovery* (counter unchanged across an outage, e.g. 5.00 → unavailable
+→ 5.00). A full recalc zero-fills such an outage (ADR-013 Decision 4); the
+slot-timer path never rewrote back to it, so item 7 (the timer path equals a
+full recalc) was violated: "no data" instead of 0 during the outage until the
+next full recalc. No energy was lost (delta 0).
+
+**Decision:** Every offline recovery is a trigger, whatever its delta. Item 2
+now reads: *each real jump (a transition between two valid readings with
+`delta > 0`) **or offline recovery (the first valid reading after an offline
+stretch, including `delta == 0` and a counter reset)** whose end `t2` lies
+within the trigger window before `now` moves the rewrite start back to the slot
+containing that event's distribution-window start* — `t1` (uncapped) for an
+offline recovery, `max(t1, t2 − TRAPEZOID_MAX_MINUTES)` for a normal jump.
+Zero-delta and reset transitions between two directly consecutive valid readings
+and the synthetic "now" continuation are still not triggers. Still bounded by
+`RECENT_REWRITE_MAX_LOOKBACK` (item 4); the cost is one wide (≤ 1 day) rewrite
+per outage recovery. Implemented in `calculation.trapezoidal_jump_windows`.
+
+**Decided by:** human (AUDIT-0001, Issue 1, Option A).
+
+### Part 2 — the trigger window follows the last completed cycle (AUDIT-0002, Issue 1)
+
+**Reason:** The trigger condition of item 2 was
+`now − RECENT_RECALC_WINDOW <= t2`. A jump that arrived while the slot timer was
+not running for longer than that window (HA restart, long blocking, suspended
+host, failed cycles) was therefore older than the window at the first cycle
+afterwards and never extended the range: the older part of its distribution
+window stayed at stale 0s until a full recalc — the very energy loss the
+2026-10-05 amendment fixed for the always-running case. Reproduced: the BMS
+scenario with no cycles from 11:55 to 12:40 stored 0.0418 kWh instead of 0.0600
+kWh. This also retires the "long-neglected sensor → full recalc" caveat of
+Decision 2 for pauses of up to `RECENT_REWRITE_MAX_LOOKBACK`.
+
+**Decision:** The trigger window is dynamic (new item 8):
+
+8. A jump / offline recovery triggers the extension when
+   `trigger_from <= t2 <= now`, where `trigger_from` is
+   `now − RECENT_RECALC_WINDOW` by default and reaches back to `trigger_since`
+   when one is passed:
+   `min(now − window, max(trigger_since, now − RECENT_REWRITE_MAX_LOOKBACK))`
+   (`calculation.recent_trigger_from`, single source of truth). `trigger_since`
+   is the `now` of the last cycle that **completed without raising**, kept in
+   memory by `EffyCoordinator` (never persisted; advanced with `max()` because
+   cycles may overlap) — so a failed cycle is covered by the next one. On the
+   first cycle of a session (no previous cycle) a one-off catch-up window of
+   `RECENT_REWRITE_MAX_LOOKBACK` is used (`history.recent_trigger_since`). At
+   the normal 5-minute cadence `trigger_since` lies inside the window and
+   changes nothing: idle cycles keep the same range, the same single raw fetch
+   per sensor and the same writes. The *first* raw fetch of a cycle starts
+   `_RAW_HISTORY_BOUNDARY_MARGIN` before `min(base start, trigger_from)`;
+   otherwise a jump older than the base window would not be visible at all. The
+   extension itself is still bounded by `RECENT_REWRITE_MAX_LOOKBACK` (item 4);
+   a jump older than that bound is ignored because it can no longer change
+   anything inside the bounded range, so a long pause does not become a day-long
+   rewrite for nothing.
+
+`async_recalculate_recent` gains the optional keyword
+`trigger_since: datetime | None = None` (default = pre-amendment behaviour;
+return shape unchanged) — an ADR-011 matter, noted there.
+
+**Consequences:** The first cycle after every Home Assistant start reads up to
+one day (+ margin) of raw history per energy sensor and rewrites back to the
+earliest jump/outage window of the last day if any sensor had one — up to ~288
+slots per sensor and series, once per start (idle sensors cost only the read).
+This is an accepted trade-off for closing the restart gap; it runs as the usual
+background task of the slot timer, but happens close to Home Assistant's
+bootstrap — if bootstrap warnings (ADR-014 Context 2) ever reappear, this
+catch-up is the first suspect.
+
+**Decided by:** human (AUDIT-0002, Issue 1, Option A: dynamic trigger window,
+one-off catch-up of `RECENT_REWRITE_MAX_LOOKBACK` after start-up); parameter
+shape and the "last *completed* cycle" rule by Lead Agent — pending human
+confirmation.

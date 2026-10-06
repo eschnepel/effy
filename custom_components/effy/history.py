@@ -169,9 +169,13 @@ from .calculation import (
     SensorReading,
     TRAPEZOID_MAX_MINUTES,
     _parse_energy_state,
+    carry_forward_open_slot,
     distribute_loss,
     effective_in_original_unit,
     interpolate_slot_gaps,
+    recent_rewrite_start,
+    recent_trigger_from,
+    trapezoidal_jump_windows,
     trapezoidal_slot_contributions,
 )
 from .const import (
@@ -220,20 +224,51 @@ _RAW_HISTORY_BOUNDARY_MARGIN = timedelta(minutes=TRAPEZOID_MAX_MINUTES + 5)
 # rewriting up to 2 hours of statistics every ~5 minutes for every sensor
 # — reintroducing the exact cost (and the "recalculated_from always shows
 # the window size" symptom) ADR-013 shrank this away from in the first
-# place, just at a different size. The accepted trade-off (ADR-014): a
-# jump that took longer than this window to arrive gets its correct,
-# smooth (uncapped, since ADR-014) rate computed and written for whatever
-# recent slots fall within this window right away, but the older portion
-# of that same jump's window stays at whatever it was previously written
-# as (typically 0, from the "no new reading yet" synthetic continuation)
-# until the next full history recalc rewrites it — a staleness window, not
-# an incorrect *rate*, since the rate itself is never computed capped/
-# inflated anymore either way. See ADR-011/012/013 for why this window
-# exists at all, and ADR-014 for why it doesn't grow with the cap. A
+# place, just at a different size. This window is only the *base* range of an
+# idle cycle, though: since the ADR-014 Amendment (2026-10-05) a jump that
+# arrives inside this window extends the rewrite range back to where that
+# jump's own distribution window starts (RECENT_REWRITE_MAX_LOOKBACK
+# below), so a jump that took longer than this window to arrive is no
+# longer left half-written (stale 0s from the "no new reading yet"
+# synthetic continuation) until the next full history recalc — idle cycles
+# stay this cheap, and only a cycle that actually saw a jump pays for the
+# wider rewrite. See ADR-011/012/013 for why this window exists at all,
+# and ADR-014 (+ Amendment) for why it doesn't grow with the cap. A
 # genuinely long-neglected sensor (e.g. HA itself was down for days) is
 # still corrected eventually by the next full history recalc, whose own
 # window is much larger (max_history_days) — same fallback as before.
 RECENT_RECALC_WINDOW = timedelta(minutes=20)
+
+# Hard bound on how far back a jump-triggered extension of the slot-timer
+# rewrite range may reach (ADR-014 Amendment 2026-10-05, item 4). Normal
+# jumps reach at most TRAPEZOID_MAX_MINUTES (+ RECENT_RECALC_WINDOW) back;
+# only an offline-recovery jump (uncapped window, starts at the last
+# pre-outage reading) can reach further, and one day is enough to cover an
+# overnight outage or an HA restart without letting a single cycle rewrite
+# days of statistics. An older gap is left to the next full history recalc,
+# as before.
+RECENT_REWRITE_MAX_LOOKBACK = timedelta(days=1)
+
+
+def recent_trigger_since(previous_run: datetime | None, now: datetime) -> datetime:
+    """The ``trigger_since`` argument for ``async_recalculate_recent``
+    (ADR-014 Amendment 2026-10-06): how far back a counter jump / offline
+    recovery may have arrived without any cycle having applied it yet.
+
+    ``previous_run`` is the ``now`` of the last cycle that *completed*
+    (kept in memory by EffyCoordinator). Every trigger up to that moment was
+    seen by a cycle, so only later ones are still outstanding — in normal
+    5-minute operation this is inside RECENT_RECALC_WINDOW and changes
+    nothing; after a pause (HA restart, suspended host, failed cycles) it
+    reaches back across the pause. On the first cycle of a session there is
+    no previous run, and nothing is known about what happened while HA was
+    down, so a one-off catch-up window of RECENT_REWRITE_MAX_LOOKBACK is
+    assumed.
+    """
+    if previous_run is None:
+        return now - RECENT_REWRITE_MAX_LOOKBACK
+    return previous_run
+
 
 # Staged lookback distances for _fetch_last_valid_state_before, tried in
 # order, cheapest/narrowest first (ADR-014) — only escalating to the next
@@ -589,14 +624,119 @@ def _effy_smoothed_entity_id(source_entity_id: str) -> str:
     return f"sensor.effy_{slug}_smoothed"
 
 
+async def _fetch_energy_raw_with_anchor(
+    hass: HomeAssistant,
+    recorder: Any,
+    eid: str,
+    raw_history_start: datetime,
+    end: datetime,
+    max_history_days: int,
+    energy_reading_cache: dict[str, tuple[datetime, str]] | None,
+) -> list[tuple[datetime, str]]:
+    """Raw state history for one energy-family sensor over
+    [raw_history_start, end], with the offline-anchor lookback applied and
+    the ADR-015 last-valid-reading cache kept warm.
+
+    Extracted from _compute_effective_slots so the slot-timer path's
+    first (base-window) fetch and its jump-extended second fetch share
+    exactly one implementation of the anchor logic (ADR-014 Amendment
+    2026-10-05) — an offline-recovery jump's pre-outage reading must be
+    visible in *both*.
+    """
+    raw_states: list[tuple[datetime, str]] = await recorder.async_add_executor_job(
+        _fetch_raw_energy_states, hass, eid, raw_history_start, end
+    )
+    # RECENT_RECALC_WINDOW is deliberately small (ADR-013) — if the
+    # sensor was already offline when this window's own fetch starts,
+    # the window contains no valid baseline to redistribute the
+    # eventual return-to-online jump against. Detected cheaply: the
+    # chronologically-first fetched entry is itself invalid.
+    #
+    # Only worth searching for an anchor if this window also contains
+    # an actual *recovery* — at least one valid reading somewhere in
+    # it. If the sensor is invalid for the *entire* window (still
+    # offline throughout, e.g. a battery empty all night with an
+    # integration that reports its discharge sensor as
+    # unavailable/unknown rather than 0), an anchor wouldn't be used
+    # for anything anyway: trapezoidal_slot_contributions only forms a
+    # transition once a valid reading follows the invalid stretch, and
+    # only adds the synthetic now-continuation when the sensor is
+    # *currently* valid (ADR-013) — neither applies here, so finding
+    # the anchor would be wasted work, repeated on every single cycle
+    # for as long as the outage lasts (amends ADR-014 Decision 3).
+    # Skipping it here means: no search at all while nothing has
+    # changed, and exactly one search on the cycle a real reading
+    # finally arrives.
+    first_is_invalid = raw_states and _parse_energy_state(raw_states[0][1]) is None
+    has_recovery_in_window = any(_parse_energy_state(state) is not None for _, state in raw_states)
+    if first_is_invalid and has_recovery_in_window:
+        # Check the volatile last-known-valid-reading cache (ADR-015)
+        # before touching the recorder at all — if some earlier cycle
+        # this session already saw this entity in a valid state, that
+        # cached (timestamp, state) *is* the answer
+        # _fetch_last_valid_state_before would otherwise have to query
+        # the recorder for, at zero cost. Only genuinely falls back to
+        # the recorder for a sensor whose outage predates this
+        # coordinator's own runtime (e.g. right after a Home Assistant
+        # restart, before any cycle has had a chance to observe it).
+        cached = (energy_reading_cache or {}).get(eid)
+        anchor = (
+            cached
+            if cached is not None and cached[0] < raw_history_start
+            else await recorder.async_add_executor_job(
+                _fetch_last_valid_state_before, hass, eid, raw_history_start, max_history_days
+            )
+        )
+        if anchor is not None:
+            raw_states = [anchor, *raw_states]
+
+    # Keep the cache warm regardless of whether it was used above:
+    # remember the most recent *valid* reading seen this cycle (which
+    # may be the just-fetched anchor itself, if raw_states was
+    # entirely invalid otherwise), so a *future* outage for this same
+    # entity can skip the recorder query entirely too.
+    if energy_reading_cache is not None:
+        latest_valid: tuple[datetime, str] | None = None
+        for ts, state in raw_states:
+            if _parse_energy_state(state) is not None:
+                latest_valid = (ts, state)
+        if latest_valid is not None:
+            cached = energy_reading_cache.get(eid)
+            if cached is None or latest_valid[0] > cached[0]:
+                energy_reading_cache[eid] = latest_valid
+    return raw_states
+
+
 async def _compute_effective_slots(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     start: datetime,
     end: datetime,
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
+    extend_for_jumps: bool = False,
+    trigger_since: datetime | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """Core computation shared by async_recalculate_history and async_recalculate_recent.
+
+    ``extend_for_jumps`` is the slot-timer path's switch (ADR-014 Amendment
+    2026-10-05): ``[start, end)`` is then only the *base* window
+    (``end - start`` == RECENT_RECALC_WINDOW), and if any energy-family
+    sensor saw a real counter jump inside it, the range is moved back —
+    for *all* sensors and all three series at once, never per sensor,
+    because distribute_loss needs every sensor's reading for a slot — to
+    where that jump's own distribution window starts
+    (``calculation.recent_rewrite_start``, bounded by
+    RECENT_REWRITE_MAX_LOOKBACK). Without this a jump spread over more than
+    RECENT_RECALC_WINDOW would be only partly written, leaving stale 0s
+    behind and losing energy. Raw history is then fetched a second time
+    from the new, earlier start — only on such cycles; an idle cycle makes
+    exactly the one fetch per sensor it always did. Full history recalc
+    leaves this False and is unchanged. ``trigger_since`` (only meaningful
+    with ``extend_for_jumps``; ADR-014 Amendment 2026-10-06) widens the
+    window in which a jump counts as a trigger back to the last completed
+    cycle (``calculation.recent_trigger_from``); the *first* raw fetch then
+    has to reach back that far too, or a jump older than the base window
+    would not even be visible. Without it (the default) nothing changes.
 
     Resolves units (preferring statistics metadata over the live entity's
     current unit — see _get_statistics_units), builds each entity's
@@ -698,67 +838,59 @@ async def _compute_effective_slots(
 
     indexed: dict[str, dict[datetime, StatRow]] = {}
 
-    # ---- Power-family sensors: unchanged, statistics `mean` per slot ----
-    if power_ids:
-        raw_stats: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-            _fetch_statistics, hass, power_ids, start, end
-        )
-        for eid, rows in raw_stats.items():
-            indexed[eid] = {row["start"]: row for row in rows}
-
     # ---- Energy-family sensors: trapezoidal-redistributed raw history (ADR-012, ADR-013) ----
+    # Raw history is fetched first (before the power-family statistics) so
+    # that, on the slot-timer path, a jump-extended start (ADR-014
+    # Amendment) is known before anything is fetched or filtered by `start`.
     raw_history_start = start - _RAW_HISTORY_BOUNDARY_MARGIN
+    if extend_for_jumps and trigger_since is not None:
+        # Catch-up (ADR-014 Amendment 2026-10-06): jumps since `trigger_since`
+        # can predate the base window, so the first fetch must see them. A
+        # no-op for the normal cadence (trigger_from == start there).
+        trigger_from = recent_trigger_from(
+            end, end - start, RECENT_REWRITE_MAX_LOOKBACK, trigger_since
+        )
+        raw_history_start = min(start, trigger_from) - _RAW_HISTORY_BOUNDARY_MARGIN
+    energy_raw: dict[str, list[tuple[datetime, str]]] = {}
     for eid in energy_ids:
-        raw_states = await recorder.async_add_executor_job(
-            _fetch_raw_energy_states, hass, eid, raw_history_start, end
+        energy_raw[eid] = await _fetch_energy_raw_with_anchor(
+            hass, recorder, eid, raw_history_start, end, max_history_days, energy_reading_cache
         )
-        # RECENT_RECALC_WINDOW is deliberately small (ADR-013) — if the
-        # sensor was already offline when this window's own fetch starts,
-        # the window contains no valid baseline to redistribute the
-        # eventual return-to-online jump against. Detected cheaply: the
-        # chronologically-first fetched entry is itself invalid.
-        #
-        # Only worth searching for an anchor if this window also contains
-        # an actual *recovery* — at least one valid reading somewhere in
-        # it. If the sensor is invalid for the *entire* window (still
-        # offline throughout, e.g. a battery empty all night with an
-        # integration that reports its discharge sensor as
-        # unavailable/unknown rather than 0), an anchor wouldn't be used
-        # for anything anyway: trapezoidal_slot_contributions only forms a
-        # transition once a valid reading follows the invalid stretch, and
-        # only adds the synthetic now-continuation when the sensor is
-        # *currently* valid (ADR-013) — neither applies here, so finding
-        # the anchor would be wasted work, repeated on every single cycle
-        # for as long as the outage lasts (amends ADR-014 Decision 3).
-        # Skipping it here means: no search at all while nothing has
-        # changed, and exactly one search on the cycle a real reading
-        # finally arrives.
-        first_is_invalid = raw_states and _parse_energy_state(raw_states[0][1]) is None
-        has_recovery_in_window = any(
-            _parse_energy_state(state) is not None for _, state in raw_states
+
+    if extend_for_jumps and energy_ids:
+        jump_windows = [w for raw in energy_raw.values() for w in trapezoidal_jump_windows(raw)]
+        extended_start = recent_rewrite_start(
+            jump_windows,
+            end,
+            end - start,
+            RECENT_REWRITE_MAX_LOOKBACK,
+            SLOT_MINUTES,
+            trigger_since=trigger_since,
         )
-        if first_is_invalid and has_recovery_in_window:
-            # Check the volatile last-known-valid-reading cache (ADR-015)
-            # before touching the recorder at all — if some earlier cycle
-            # this session already saw this entity in a valid state, that
-            # cached (timestamp, state) *is* the answer
-            # _fetch_last_valid_state_before would otherwise have to query
-            # the recorder for, at zero cost. Only genuinely falls back to
-            # the recorder for a sensor whose outage predates this
-            # coordinator's own runtime (e.g. right after a Home Assistant
-            # restart, before any cycle has had a chance to observe it).
-            cached = (energy_reading_cache or {}).get(eid)
-            anchor = (
-                cached
-                if cached is not None and cached[0] < raw_history_start
-                else await recorder.async_add_executor_job(
-                    _fetch_last_valid_state_before, hass, eid, raw_history_start, max_history_days
-                )
+        if extended_start < start:
+            _LOGGER.debug(
+                "Effy recent recalc: counter jump(s) in the last %s extend the rewrite range "
+                "from %s back to %s",
+                end - start,
+                start,
+                extended_start,
             )
-            if anchor is not None:
-                raw_states = [anchor, *raw_states]
+            start = extended_start
+            raw_history_start = start - _RAW_HISTORY_BOUNDARY_MARGIN
+            for eid in energy_ids:
+                energy_raw[eid] = await _fetch_energy_raw_with_anchor(
+                    hass,
+                    recorder,
+                    eid,
+                    raw_history_start,
+                    end,
+                    max_history_days,
+                    energy_reading_cache,
+                )
+
+    for eid in energy_ids:
         contributions = trapezoidal_slot_contributions(
-            raw_states, slot_minutes=SLOT_MINUTES, now=end
+            energy_raw[eid], slot_minutes=SLOT_MINUTES, now=end
         )
         indexed[eid] = {
             slot: {"start": slot, "change": value}
@@ -766,20 +898,15 @@ async def _compute_effective_slots(
             if start <= slot < end
         }
 
-        # Keep the cache warm regardless of whether it was used above:
-        # remember the most recent *valid* reading seen this cycle (which
-        # may be the just-fetched anchor itself, if raw_states was
-        # entirely invalid otherwise), so a *future* outage for this same
-        # entity can skip the recorder query entirely too.
-        if energy_reading_cache is not None:
-            latest_valid: tuple[datetime, str] | None = None
-            for ts, state in raw_states:
-                if _parse_energy_state(state) is not None:
-                    latest_valid = (ts, state)
-            if latest_valid is not None:
-                cached = energy_reading_cache.get(eid)
-                if cached is None or latest_valid[0] > cached[0]:
-                    energy_reading_cache[eid] = latest_valid
+    # ---- Power-family sensors: unchanged, statistics `mean` per slot ----
+    # Fetched from the (possibly jump-extended) `start`, so every sensor
+    # covers the same range.
+    if power_ids:
+        raw_stats: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
+            _fetch_statistics, hass, power_ids, start, end
+        )
+        for eid, rows in raw_stats.items():
+            indexed[eid] = {row["start"]: row for row in rows}
 
     # ---- Smoothed power-family INPUT sensors: gap interpolation ----
     # Bridges short (<= INTERPOLATION_MAX_GAP_SLOTS) runs of missing slots
@@ -878,6 +1005,23 @@ async def _compute_effective_slots(
         }
 
     return per_sensor, per_sensor_power, per_sensor_smoothed
+
+
+def _carry_forward_open_slot(
+    series: dict[str, dict[str, Any]],
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    """Apply ``calculation.carry_forward_open_slot`` to every entity of one
+    per-sensor series (ADR-016 Amendment 2026-10-06). Returns a new dict;
+    entities whose series has nothing to carry forward are passed through
+    unchanged."""
+    return {
+        statistic_id: {
+            **info,
+            "slot_values": carry_forward_open_slot(info["slot_values"], now, SLOT_MINUTES),
+        }
+        for statistic_id, info in series.items()
+    }
 
 
 def _last_slot_values(
@@ -1025,30 +1169,35 @@ async def async_recalculate_recent(
     entry_options: dict[str, Any],
     now: datetime,
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
+    trigger_since: datetime | None = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     """
     Recalculate and write effy statistics for whatever recent slots need it.
 
     Intended to be called shortly after a slot closes (EffyCoordinator's
     slot timer, ADR-011). Unlike the original fixed single-slot design,
-    the exact range recomputed is dynamic within RECENT_RECALC_WINDOW
-    (ADR-012): a trapezoidal-redistributed energy jump can touch more than
-    one slot — up to 24 for a normal (120-minute-capped, ADR-014) jump —
-    so this always recomputes and rewrites every slot touched by *any*
-    sensor within RECENT_RECALC_WINDOW of ``now``, not just the single
-    slot that most recently closed. RECENT_RECALC_WINDOW is deliberately
-    small and, since ADR-014, deliberately decoupled from
+    the exact range recomputed is dynamic (ADR-012, ADR-014 Amendment
+    2026-10-05): an idle cycle rewrites every slot within
+    RECENT_RECALC_WINDOW of ``now`` for *any* sensor, but a trapezoidal-
+    redistributed energy jump can touch many more slots than that — up to
+    24 for a normal (120-minute-capped, ADR-014) jump, more for an
+    offline-recovery jump — so when a real counter jump arrived inside
+    RECENT_RECALC_WINDOW, the range is extended back (for all sensors and
+    all three series at once) to where that jump's own distribution window
+    starts, bounded by RECENT_REWRITE_MAX_LOOKBACK. That keeps the
+    slot-timer output equal to what a full history recalc would write —
+    including conserving the jump's energy — instead of leaving the older
+    part of the jump's window at stale 0s until the next full recalc.
+    RECENT_RECALC_WINDOW itself stays small and decoupled from
     TRAPEZOID_MAX_MINUTES (just enough to cover a missed timer tick or
-    two — see its own docstring for why it doesn't grow with the cap); a
-    sensor that comes back online from a genuinely long offline gap is
-    still handled correctly regardless of this window's size, via
+    two — see its own comment for why it doesn't grow with the cap), so
+    idle cycles cost what they always did. A sensor that comes back online
+    from a genuinely long offline gap is handled via
     _compute_effective_slots' staged _fetch_last_valid_state_before
     lookback (30 min → 1 day → the full configured max_history_days,
-    ADR-014) — not by making this window itself wide enough to contain
-    the whole gap, the way it originally was. A truly long-neglected
-    sensor (offline longer than max_history_days, or HA itself down for
-    that long) is still corrected eventually by the next full history
-    recalc.
+    ADR-014) plus the extension above (up to RECENT_REWRITE_MAX_LOOKBACK);
+    a gap older than that, or HA itself being down for that long, is still
+    corrected by the next full history recalc.
 
     Deliberately writes ONLY the short-term (5-minute) statistic, never the
     long-term (hourly) one, for the "effective", "derived power", and
@@ -1061,11 +1210,12 @@ async def async_recalculate_recent(
     across all three series, or None if nothing was written this run (e.g.
     the recorder hasn't compiled statistics for the relevant slots yet, or
     no sensor changed) — see ADR-012 for how this feeds the "recalculated
-    from" sensor. Thanks to RECENT_RECALC_WINDOW now being small (ADR-013),
-    this is normally within a few minutes of ``now``, not always ~4 hours
-    back as it was when the window itself was 4 hours wide; it only
-    reaches further back than the window when the targeted offline lookback
-    above actually fires. touched_entity_ids is every effy_* entity_id
+    from" sensor. On an idle cycle this is normally within a few minutes
+    of ``now``; on a cycle where a counter jump arrived it is the start of
+    the extended range (up to ~2 hours back for a normal jump, further for
+    an offline-recovery jump, bounded by RECENT_REWRITE_MAX_LOOKBACK) —
+    accurate, since those slots really were rewritten (ADR-014 Amendment).
+    touched_entity_ids is every effy_* entity_id
     that got at least one slot written this run — the caller
     (EffyCoordinator's slot timer) pushes it, together with last_values,
     through notify_updated() so those entities' dashboard cards see a
@@ -1076,6 +1226,25 @@ async def async_recalculate_recent(
     Decision 4: still no backdating into the closed slot itself, just an
     ordinary *live* state update timestamped "now", additive to the
     statistics write, exactly as ADR-011 anticipated).
+
+    ``trigger_since`` (ADR-014 Amendment 2026-10-06) is how far back a jump
+    may have arrived without any cycle having applied it yet — see
+    ``recent_trigger_since``, which EffyCoordinator uses to derive it from
+    the end time of the last completed cycle (one-off catch-up window of
+    RECENT_REWRITE_MAX_LOOKBACK on the first cycle of a session). It widens
+    the window in which a jump triggers the extension, so a jump that
+    arrived while the timer was not running (HA restart, suspended host)
+    is no longer left half-written. ``None`` (the default) keeps the
+    pre-amendment trigger window of exactly RECENT_RECALC_WINDOW.
+
+    The slot that contains ``now`` is still open — only seconds of data
+    stand behind it, so its computed value is ≈ 0. It is written with a
+    *provisional* value instead: the previous (closed) slot's, for the
+    effective and derived-power series (``calculation.carry_forward_open_slot``,
+    ADR-016 Amendment 2026-10-06). The next cycle overwrites it with the
+    real value once the slot has closed, and ADR-016's live push (the last
+    slot written) therefore carries that guess rather than ≈ 0. The full
+    history recalc is unchanged in this respect.
 
     ``energy_reading_cache``, if given, is EffyCoordinator's volatile
     last-known-valid-reading cache (ADR-015) — passed straight through to
@@ -1088,8 +1257,16 @@ async def async_recalculate_recent(
     """
     start = now - RECENT_RECALC_WINDOW
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
-        hass, entry_options, start, now, energy_reading_cache=energy_reading_cache
+        hass,
+        entry_options,
+        start,
+        now,
+        energy_reading_cache=energy_reading_cache,
+        extend_for_jumps=True,
+        trigger_since=trigger_since,
     )
+    per_sensor = _carry_forward_open_slot(per_sensor, now)
+    per_sensor_power = _carry_forward_open_slot(per_sensor_power, now)
     if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.debug(
             "Effy recent recalc: nothing to recompute in the %s before %s",
