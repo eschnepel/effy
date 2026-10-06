@@ -6,14 +6,14 @@
 recalculation timer alongside the debounce timer described in this ADR's Option
 C — the *Flow* below should be read together with that amendment.
 
-______________________________________________________________________
+---
 
 ## Context
 
 The `effy_*` output sensors must reflect the current loss distribution as input
 and output sensors change. Four strategies were evaluated.
 
-______________________________________________________________________
+---
 
 ## Options considered
 
@@ -31,7 +31,7 @@ immediately.
 | **Con** | If multiple source sensors update in the same burst (e.g. a Modbus poll returning 5 registers at once), each event triggers a full recalculation immediately, before the others have landed. The intermediate results are overwritten quickly, but the CPU work is done N times instead of once. |
 | **Con** | No deduplication: two source sensors changing 1 ms apart fire two full recalculations. |
 
-______________________________________________________________________
+---
 
 ### Option B – Debounced update with scheduling delay
 
@@ -54,7 +54,7 @@ if not self._refresh_pending:
 | **Con** | The 0.5 s value is a heuristic – too short and bursts still slip through; too long and the display feels sluggish. |
 | **Neutral** | Still O(N·(M+K)) listeners; the benefit is only in recalculation count, not listener count. |
 
-______________________________________________________________________
+---
 
 ### Option C – Shared coordinator with debouncing *(current implementation)*-
 
@@ -77,7 +77,7 @@ state_change → coordinator updates cache → debounce timer → one recalculat
 | **Con** | Significantly more code: coordinator class, subscription mechanism, push notification to child sensors. |
 | **Con** | Over-engineering for the typical residential case (< 10 sensors, < 30 listeners). |
 
-______________________________________________________________________
+---
 
 ### Option D – Cache + update-on-change only
 
@@ -92,7 +92,7 @@ state-change event it re-reads all states, recomputes, and only calls
 | **Con** | Adds complexity without reducing the listener count or recalculation count. |
 | **Verdict** | Dominated by Option C; not worth implementing on its own. |
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -105,7 +105,7 @@ callbacks.
 Option B was considered as a stepping stone but skipped in favour of the clean
 coordinator design. Option D is not worth implementing independently.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -116,7 +116,7 @@ ______________________________________________________________________
 - **Neutral:** On HA restart, all states are replayed, triggering an initial
   recalculation per sensor – correct behaviour for first-load initialisation.
 
-______________________________________________________________________
+---
 
 ## Amendment – 2026-07-01: LiveReading accumulator replaces the raw-value cache
 

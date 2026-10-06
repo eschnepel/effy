@@ -10,7 +10,7 @@ recalculation, and changes it to fire *after* each boundary instead of *before*
 — the "Decision" section below (lead time, `Option C` live flow) reflects the
 pre-ADR-011 live design.
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -45,7 +45,7 @@ state for an extended period (e.g. a quiet system overnight), `_do_refresh`
 never fires — pushed sensor values stay frozen at whatever they last happened to
 be, regardless of what `to_sensor_reading` would compute if it were asked.
 
-______________________________________________________________________
+---
 
 ## Options considered
 
@@ -64,7 +64,7 @@ An intermediate fix added `last_event_ts` per entity and a hardcoded
 
 Rejected in favour of a mechanism that doesn't need a magic number.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -160,7 +160,7 @@ changes state at all for an extended period — the case Problem C describes,
 which the `reset()` fix alone cannot address, since it only changes what a
 recalculation *computes*, not whether one *happens*.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -184,7 +184,7 @@ ______________________________________________________________________
 - **Neutral:** `last_rate`, `STALE_AFTER_SECONDS`, and `last_event_ts` from the
   rejected intermediate approach do not exist in the shipped code.
 
-______________________________________________________________________
+---
 
 ## Corrections to earlier ADRs
 

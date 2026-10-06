@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-17 **Status:** Accepted
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -98,7 +98,7 @@ from the user's own configuration; there is no supported, documented API for a
 This has to be the user's own `configuration.yaml` change — Effy cannot silently
 apply it.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -139,7 +139,7 @@ ______________________________________________________________________
    change to this attribute can only disable the warning, never break
    `async_setup_entry` itself.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

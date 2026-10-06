@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-30 **Status:** Accepted
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -18,7 +18,7 @@ Two options were considered:
 - **Cap at zero** – if outputs temporarily exceed inputs, no adjustment is made
   and all effective values equal their raw values.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -29,7 +29,7 @@ total_loss = max(0.0, sum_inputs_w - sum_outputs_w)
 Negative loss is silently clamped to zero. No loss is distributed in such
 intervals.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

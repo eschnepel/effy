@@ -17,7 +17,7 @@ already exists so workers don't add redundant installs.
 - **Purpose:** recorder / statistics APIs used by `history.py`; stubbed (not
   installed) in tests via `sys.modules` — see `tests/test_coordinator_slot.py`
 
-______________________________________________________________________
+---
 
 ## pytest 9.1.1
 

@@ -19,7 +19,7 @@ public API can backdate a live state into an already-closed slot, so the
 statistics write remains the only thing that corrects that slot; ADR-016 only
 changes what the *additive* live push carries.
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -32,7 +32,7 @@ uses — "History nur für einen Slot" (history, but for exactly one slot).
 
 Three concrete design questions came up while wiring this up.
 
-______________________________________________________________________
+---
 
 ## Decision 1 — reuse `async_recalculate_history`'s logic for one slot
 
@@ -123,7 +123,7 @@ substitute for the backdated 5-minute history write implemented here.
 (`subscribe`/`unsubscribe` unchanged), but nothing currently publishes to it —
 `async_recalculate_slot` only writes statistics.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -143,7 +143,7 @@ ______________________________________________________________________
   (debug-logged) rather than retried — it will only be picked up by a subsequent
   full history recalc.
 
-______________________________________________________________________
+---
 
 ## Amendment — 2026-10-06
 

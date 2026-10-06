@@ -9,7 +9,7 @@ values — the low-resolution quantisation problem this ADR addresses is a speci
 case ADR-012 also handles correctly. Kept below for historical context only;
 none of the code it describes still exists.
 
-______________________________________________________________________
+---
 
 ## Context
 

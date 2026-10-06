@@ -12,7 +12,7 @@ extended; (2) `RECENT_RECALC_WINDOW` (Decision 3 below) shrinks from 4 hours to
 handling offline gaps — this also fixes `recalculated_from` effectively always
 reading "~4 hours ago" regardless of what actually changed.
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -32,7 +32,7 @@ distinguishes normal reporting gaps from genuine sensor-offline periods.
 
 Three further decisions came out of implementing this.
 
-______________________________________________________________________
+---
 
 ## Decision 1 — the trapezoidal algorithm and its two distribution modes
 
@@ -142,7 +142,7 @@ This is the mechanism the question in ADR-011 Decision 4 anticipated:
 this single timestamp to know when to re-derive anything built on top of Effy's
 output, without needing to diff historical values themselves.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -169,7 +169,7 @@ ______________________________________________________________________
   (`trapezoidal_slot_contributions`) is fully unit-tested and HA-independent, so
   this risk is isolated to the fetch/write glue.
 
-______________________________________________________________________
+---
 
 ## Amendment — 2026-10-06
 

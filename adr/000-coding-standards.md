@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-30 **Status:** Accepted
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -12,7 +12,7 @@ understand *why* the code looks the way it does without having to infer it from
 individual diffs. The numbered ADRs (001 onward) cover specific domain
 decisions; this one covers everything that applies uniformly across all files.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -171,7 +171,7 @@ having to hunt down every comment that explained it.
   inputs are live sensor readings that are expected to occasionally be noisy
   rather than invalid.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

@@ -2,7 +2,7 @@ wrap = 80
 
 extensions = [      # options: a list of enabled extensions (default: all installed are enabled)
     "gfm",
-    "tables",
+    "simple_breaks",
 ]
 codeformatters = [  # options: a list of enabled code formatter languages (default: all installed are enabled)
     "python",
@@ -11,11 +11,11 @@ codeformatters = [  # options: a list of enabled code formatter languages (defau
     "yaml",
 ]
 
-[plugin.tables]
-compact_tables = true
-
 exclude = [
     ".venv/**",
     ".pytest_cache/**",
     "tasks/archived/**",
 ]
+
+[plugin.tables]
+compact_tables = true
