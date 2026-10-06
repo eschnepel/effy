@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-01 **Status:** Accepted
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -30,7 +30,7 @@ sensor in Wh — the cancellation breaks:
 `1 000 + 1 000`. Sensor B would be assigned ~12× less loss than Sensor A despite
 contributing the same physical energy.
 
-______________________________________________________________________
+---
 
 ## Scope: History path vs. Live path
 
@@ -58,7 +58,7 @@ more accurate when the coordinator fires slightly early or late. The resulting
 `original_unit` is set to `W` or `kW` so that `effective_in_original_unit`
 converts back to the same power unit.
 
-______________________________________________________________________
+---
 
 ## Options considered
 
@@ -130,7 +130,7 @@ value — the natural output unit for an average-power sensor.
 | **Pro** | Both paths use the same concept (Wh→W); the live path additionally uses real elapsed time for higher accuracy. |
 | **Con** | `original_unit` is silently changed at the reader boundary; callers that inspect `SensorReading.original_unit` after conversion will see W/kW even if the underlying sensor is Wh/kWh. This is intentional and documented here. |
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -144,7 +144,7 @@ performs an equivalent conversion directly inside
 `_warn_mixed_units` and `_unit_family` that were introduced as a temporary
 interim measure have been removed; the conversion makes them unnecessary.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

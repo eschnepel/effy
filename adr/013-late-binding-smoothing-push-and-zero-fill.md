@@ -14,7 +14,7 @@ decoupled from that cap rather than growing with it, and
 full history) instead of a single unbounded search — the latter having caused a
 real Home Assistant bootstrap timeout.
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -43,7 +43,7 @@ derived-sensor / recalculation machinery ADR-012 introduced:
    worse: zero-filling the entire 4-hour window every cycle means practically
    the whole window is "touched" every single time.
 
-______________________________________________________________________
+---
 
 ## Decision 1 — derived-sensor creation no longer races the source integration's own startup
 
@@ -239,7 +239,7 @@ a zero-fill. This was considered and accepted rather than adding a real-vs-fill
 distinction: the small window bounds how often this can happen to the rare
 offline-recovery case, rather than every cycle.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -271,7 +271,7 @@ ______________________________________________________________________
   for anything built on top of Effy's output — with the accepted limitation
   noted in Decision 5 for the rare zero-fill-only-via-lookback case.
 
-______________________________________________________________________
+---
 
 ## Amendment — 2026-10-06
 

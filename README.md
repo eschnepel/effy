@@ -1,8 +1,9 @@
 # Effy – Effective PV Loss Distribution
 
-A [Home Assistant](https://www.home-assistant.io/) custom integration that calculates
-the conversion/wiring losses of a PV + BMS system and distributes them **absolutely
-evenly** across all active input sources using a waterfall model.
+A [Home Assistant](https://www.home-assistant.io/) custom integration that
+calculates the conversion/wiring losses of a PV + BMS system and distributes
+them **absolutely evenly** across all active input sources using a waterfall
+model.
 
 ---
 
@@ -10,16 +11,18 @@ evenly** across all active input sources using a waterfall model.
 
 ### Via HACS (recommended)
 
-1. Add this repository as a [custom repository](https://hacs.xyz/docs/faq/custom_repositories/) in HACS (category: Integration).
-2. Search for **Effy** in HACS and install it.
-3. Restart Home Assistant.
-4. Go to **Settings → Integrations → Add Integration** and search for **Effy**.
+1. Add this repository as a
+   [custom repository](https://hacs.xyz/docs/faq/custom_repositories/) in HACS
+   (category: Integration).
+1. Search for **Effy** in HACS and install it.
+1. Restart Home Assistant.
+1. Go to **Settings → Integrations → Add Integration** and search for **Effy**.
 
 ### Manual installation
 
 1. Copy `custom_components/effy/` into `config/custom_components/effy/`.
-2. Restart Home Assistant.
-3. Go to **Settings → Integrations → Add Integration** and search for **Effy**.
+1. Restart Home Assistant.
+1. Go to **Settings → Integrations → Add Integration** and search for **Effy**.
 
 ---
 
@@ -34,19 +37,18 @@ recorder:
       - sensor.effy_*
 ```
 
-Effy writes 5-minute statistics for its own `sensor.effy_*` entities
-directly into the recorder database (see ADR-003/ADR-017 — there is no
-public HA API for this). If these entities are *not* also excluded from
-the recorder's own state/statistics tracking, Home Assistant's built-in
-recorder independently tries to compile statistics for them too, from
-their normal state history — racing Effy's own writes for the same
-5-minute slot and occasionally raising a database error
-(`UNIQUE constraint failed: statistics_short_term...`) from HA core
-itself. Excluding the glob only stops that redundant native tracking;
-Effy's own statistics writes are unaffected, and history/energy-dashboard
-graphs for `effy_*` entities continue to populate normally. If you forget
-this step, Effy raises a Repair issue in **Settings → System → Repairs**
-telling you to add it.
+Effy writes 5-minute statistics for its own `sensor.effy_*` entities directly
+into the recorder database (see ADR-003/ADR-017 — there is no public HA API for
+this). If these entities are *not* also excluded from the recorder's own
+state/statistics tracking, Home Assistant's built-in recorder independently
+tries to compile statistics for them too, from their normal state history —
+racing Effy's own writes for the same 5-minute slot and occasionally raising a
+database error (`UNIQUE constraint failed: statistics_short_term...`) from HA
+core itself. Excluding the glob only stops that redundant native tracking;
+Effy's own statistics writes are unaffected, and history/energy-dashboard graphs
+for `effy_*` entities continue to populate normally. If you forget this step,
+Effy raises a Repair issue in **Settings → System → Repairs** telling you to add
+it.
 
 ---
 
@@ -55,12 +57,15 @@ telling you to add it.
 All parameters are set via the UI (Config Flow + Options Flow).
 
 | Parameter | Description | Default |
-|---|---|---|
+| -- | -- | -- |
 | **Input sensors** | PV strings, BMS import-from-battery, BMS import-from-grid | – |
 | **Output sensors** | BMS export-to-battery, BMS export-to-grid | – |
 | **Max history days** | How many days of 5-min statistics to reprocess | 28 |
 
-Sensors may be in **W, kW, Wh, or kWh**. Effy converts all values to W-equivalent average power internally. Output sensors are written in W (or kW), regardless of whether the source sensor uses Wh or kWh — the output represents average power over the interval, which is the physically meaningful quantity.
+Sensors may be in **W, kW, Wh, or kWh**. Effy converts all values to
+W-equivalent average power internally. Output sensors are written in W (or kW),
+regardless of whether the source sensor uses Wh or kWh — the output represents
+average power over the interval, which is the physically meaningful quantity.
 
 ---
 
@@ -69,7 +74,7 @@ Sensors may be in **W, kW, Wh, or kWh**. Effy converts all values to W-equivalen
 For every input sensor one output sensor is created:
 
 | Source entity ID | Effy entity ID | Effy entity name |
-|---|---|---|
+| -- | -- | -- |
 | `sensor.pv_south` | `sensor.effy_pv_south` | PV South (effective) |
 | `sensor.bms_bat_import` | `sensor.effy_bms_bat_import` | BMS bat import (effective) |
 
@@ -93,8 +98,8 @@ The cap at zero prevents measurement noise from producing negative losses.
 
 ### 2 – Waterfall distribution
 
-Only **non-zero** inputs participate. They are sorted **ascending by value**
-and processed one by one:
+Only **non-zero** inputs participate. They are sorted **ascending by value** and
+processed one by one:
 
 ```
 equal_share = remaining_loss / count_of_remaining_active_sensors
@@ -120,7 +125,7 @@ The invariant `Σ effective_inputs = Σ outputs` always holds.
 **Scenario** – one 5-minute interval, mixed units (W for PV, Wh for BMS):
 
 | Sensor | Role | Raw value | Unit |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | PV South | input | 153 | W |
 | PV East | input | 60 | W |
 | PV North | input | 7 | W |
@@ -132,8 +137,8 @@ The invariant `Σ effective_inputs = Σ outputs` always holds.
 
 > For sensors in Wh or kWh, Effy converts the 5-minute energy delta to
 > W-equivalent average power (÷ slot duration in hours) before applying the
-> waterfall. W and kW sensors are used as-is. All values in the table
-> below are the W-equivalent figures seen by `distribute_loss`.
+> waterfall. W and kW sensors are used as-is. All values in the table below are
+> the W-equivalent figures seen by `distribute_loss`.
 
 ### Step 1 – Total loss
 
@@ -146,7 +151,7 @@ total_loss = max(0, 225 − 195)        =  30
 ### Step 2 – Active inputs, sorted ascending
 
 | # | Sensor | Value |
-|---|---|---|
+| -- | -- | -- |
 | 1 | BMS bat import | 5 |
 | 2 | PV North | 7 |
 | 3 | PV East | 60 |
@@ -157,20 +162,20 @@ total_loss = max(0, 225 − 195)        =  30
 ### Step 3 – Waterfall
 
 | Step | Sensor | Value | Equal share | Can pay? | Assigned | Remaining |
-|---|---|---|---|---|---|---|
+| -- | -- | -- | -- | -- | -- | -- |
 | 1 | BMS bat import | 5 | 30 ÷ 4 = **7.50** | ✗ (5 < 7.50) | **5.00** *(full)* | 25.00 |
 | 2 | PV North | 7 | 25 ÷ 3 = **8.33** | ✗ (7 < 8.33) | **7.00** *(full)* | 18.00 |
 | 3 | PV East | 60 | 18 ÷ 2 = **9.00** | ✓ | **9.00** | 9.00 |
 | 4 | PV South | 153 | 9 ÷ 1 = **9.00** | ✓ | **9.00** | 0.00 |
 
 Both BMS bat import and PV North are too small to absorb their equal share;
-their entire value is assigned as loss and the remainder cascades to the
-larger sensors.
+their entire value is assigned as loss and the remainder cascades to the larger
+sensors.
 
 ### Step 4 – Effective values
 
 | Sensor | Raw | Loss share | **Effective** |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | `sensor.effy_pv_south` | 153 W | 9.00 W | **144.00 W** |
 | `sensor.effy_pv_east` | 60 W | 9.00 W | **51.00 W** |
 | `sensor.effy_pv_north` | 7 W | 7.00 W | **0.00 W** |
@@ -185,95 +190,93 @@ larger sensors.
 ## History recalculation
 
 Press the **Re-calculate History** button (under the Effy device in the
-Integrations panel, category *Diagnostic*) to reprocess up to
-`max_history_days` of 5-minute statistics.
+Integrations panel, category *Diagnostic*) to reprocess up to `max_history_days`
+of 5-minute statistics.
 
-The same loss-distribution algorithm is applied to each 5-minute slot.
-Existing statistics for the `effy_*` sensors are **overwritten**, which is
-useful after first installation or after changing the sensor list.
+The same loss-distribution algorithm is applied to each 5-minute slot. Existing
+statistics for the `effy_*` sensors are **overwritten**, which is useful after
+first installation or after changing the sensor list.
 
 ### State-class handling during history recalculation
 
 | Source state class | Field read | Wh→W conversion | Written as |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | `TOTAL_INCREASING` | `change` (HA-computed delta, Wh/kWh) | ÷ (5 min / 60) → W | `mean=val_W` |
 | `TOTAL` (Wh/kWh unit) | `change` | ÷ (5 min / 60) → W | `mean=val_W` |
 | `TOTAL` (W/kW unit) | `mean` | none | `mean=val_W` |
 | `MEASUREMENT` | `mean` | none | `mean=val_W` |
 
-All output statistics are written with `mean` only – no `state`/`sum`
-field – using `{"has_mean": True, "has_sum": False}` metadata.  The `mean`
-value is always in W (or kW), representing the average power over the
-5-minute interval.  For `TOTAL_INCREASING` and `TOTAL`-as-energy sources
-this is the energy delta divided by the slot duration; for `MEASUREMENT`
-and `TOTAL`-as-power sources it is the HA-computed 5-minute mean directly.
+All output statistics are written with `mean` only – no `state`/`sum` field –
+using `{"has_mean": True, "has_sum": False}` metadata. The `mean` value is
+always in W (or kW), representing the average power over the 5-minute interval.
+For `TOTAL_INCREASING` and `TOTAL`-as-energy sources this is the energy delta
+divided by the slot duration; for `MEASUREMENT` and `TOTAL`-as-power sources it
+is the HA-computed 5-minute mean directly.
 
 ### ⚠️ Genuine 5-minute statistics via an internal recorder API
 
 Home Assistant's recorder stores 5-minute data in a separate
 `statistics_short_term` table, which the **public** statistics import API
-(`async_add_external_statistics`) cannot write to — it only supports
-hourly long-term statistics, and rejects any timestamp that isn't aligned
-to the top of the hour. There is no documented, versioned API to
-retroactively write 5-minute statistics for a past period; HA's own
-5-minute compiler only ever runs against "now".
+(`async_add_external_statistics`) cannot write to — it only supports hourly
+long-term statistics, and rejects any timestamp that isn't aligned to the top of
+the hour. There is no documented, versioned API to retroactively write 5-minute
+statistics for a past period; HA's own 5-minute compiler only ever runs against
+"now".
 
 To still provide genuine 5-minute data (rather than silently degrading to
 hourly), Effy's `history.py` calls `Recorder.async_import_statistics(...)`
-directly with `table=StatisticsShortTerm` — a method that exists on the
-recorder instance but is not part of HA's documented integration API
-surface. It writes to **both** tables on every recalculation:
+directly with `table=StatisticsShortTerm` — a method that exists on the recorder
+instance but is not part of HA's documented integration API surface. It writes
+to **both** tables on every recalculation:
 
-- `statistics_short_term` (5-minute) – only for slots within the
-  recorder's *actually configured* `purge_keep_days` (Effy reads the live
-  value from the recorder instance at runtime — this is a single, global
-  recorder setting that is **not** configurable per entity, but users
-  commonly change it from HA's 10-day default via `configuration.yaml:
-  recorder: purge_keep_days: N`, so Effy always matches whatever is
-  actually configured); older 5-minute slots are skipped since HA's own
-  purge would delete them again regardless.
-- `statistics` (hourly, long-term) – for the entire `max_history_days`
-  window, so data survives beyond the short-term retention window (e.g.
-  for the Energy dashboard).
+- `statistics_short_term` (5-minute) – only for slots within the recorder's
+  *actually configured* `purge_keep_days` (Effy reads the live value from the
+  recorder instance at runtime — this is a single, global recorder setting that
+  is **not** configurable per entity, but users commonly change it from HA's
+  10-day default via `configuration.yaml: recorder: purge_keep_days: N`, so Effy
+  always matches whatever is actually configured); older 5-minute slots are
+  skipped since HA's own purge would delete them again regardless.
+- `statistics` (hourly, long-term) – for the entire `max_history_days` window,
+  so data survives beyond the short-term retention window (e.g. for the Energy
+  dashboard).
 
 **Practical consequence for users:** if you inspect `effy_*` sensor history
-further back than your configured `purge_keep_days` (10 days unless you
-changed it), you will see hourly granularity instead of 5-minute
-granularity — this is expected and is HA's own short-term retention at
-work, not a bug in Effy.
+further back than your configured `purge_keep_days` (10 days unless you changed
+it), you will see hourly granularity instead of 5-minute granularity — this is
+expected and is HA's own short-term retention at work, not a bug in Effy.
 
 **Practical consequence for maintainers:** this relies on private recorder
-internals (the `table` parameter of `Recorder.async_import_statistics`,
-and the `StatisticsShortTerm` / `Statistics` SQLAlchemy models) that are
-not guaranteed to be stable across Home Assistant core releases. If history
-recalculation starts failing after an HA core update, check
-`custom_components/effy/history.py`'s module docstring first — it explains
-the full reasoning and the exact internal calls involved — and consult
-ADR-003 and ADR-004 for the design history behind this choice. This
-approach was validated against a real, in-memory recorder instance
-(`pytest-homeassistant-custom-component`) during development, covering
-both the initial write and the overwrite-on-rerun case, but no automated
-regression test currently runs against this in CI.
+internals (the `table` parameter of `Recorder.async_import_statistics`, and the
+`StatisticsShortTerm` / `Statistics` SQLAlchemy models) that are not guaranteed
+to be stable across Home Assistant core releases. If history recalculation
+starts failing after an HA core update, check
+`custom_components/effy/history.py`'s module docstring first — it explains the
+full reasoning and the exact internal calls involved — and consult ADR-003 and
+ADR-004 for the design history behind this choice. This approach was validated
+against a real, in-memory recorder instance
+(`pytest-homeassistant-custom-component`) during development, covering both the
+initial write and the overwrite-on-rerun case, but no automated regression test
+currently runs against this in CI.
 
 This already happened once in practice, not just hypothetically: HA core
-≈2025.10+ replaced the `has_mean`/`has_sum` flags on `StatisticMetaData`
-with `mean_type` (`StatisticMeanType` enum) and a new required
-`unit_class` field, which broke history recalculation with `KeyError:
-'unit_class'` on any core new enough to require it. `history.py` now
-builds its metadata through `_build_statistic_metadata()`, which detects
-at import time whether `StatisticMeanType` exists and includes the new
-fields only when it does, falling back to the legacy flags otherwise. See
-ADR-003's `unit_class` / `mean_type` section for the full story — including
-the caveat that this particular fix could not be re-verified against a
-real instance of the newer core that originally hit the bug, only against
-the older core this integration's test suite runs against.
+≈2025.10+ replaced the `has_mean`/`has_sum` flags on `StatisticMetaData` with
+`mean_type` (`StatisticMeanType` enum) and a new required `unit_class` field,
+which broke history recalculation with `KeyError: 'unit_class'` on any core new
+enough to require it. `history.py` now builds its metadata through
+`_build_statistic_metadata()`, which detects at import time whether
+`StatisticMeanType` exists and includes the new fields only when it does,
+falling back to the legacy flags otherwise. See ADR-003's `unit_class` /
+`mean_type` section for the full story — including the caveat that this
+particular fix could not be re-verified against a real instance of the newer
+core that originally hit the bug, only against the older core this integration's
+test suite runs against.
 
 ---
 
 ## Architecture Decision Records
 
 | ADR | Title |
-|---|---|
+| -- | -- |
 | [000](adr/000-coding-standards.md) | Code quality standards, programming style & core concepts |
 | [001](adr/001-waterfall-loss-distribution.md) | Waterfall model for absolute loss distribution |
 | [002](adr/002-unit-normalisation.md) | Unit normalisation: W and Wh treated identically within an interval |

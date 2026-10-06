@@ -1,0 +1,12 @@
+name: "Effy CodeQL config — main"
+
+# Everything except tests/, which has its own job/config
+# (codeql-config-tests.yml). Mirrors the main/tests surface split used
+# in the sibling Shady project (see Shady's ADR-000 §1a) so each
+# surface can carry its own query-filters scoped to its own paths if a
+# surface-specific false positive shows up later. No exclusions are
+# needed yet: unlike Shady, Effy's codebase has no `typing.overload`/
+# `typing.Protocol` stub bodies and no deliberately broad
+# `except BaseException` in tests.
+paths-ignore:
+  - tests

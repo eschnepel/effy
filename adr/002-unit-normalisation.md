@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-30 **Status:** Accepted
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -30,7 +30,7 @@ loss_Wh = (Σ inputs_W − Σ outputs_W) × Δt
 
 The distribution ratios are identical regardless of whether we work in W or Wh.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -44,7 +44,7 @@ ______________________________________________________________________
   unit** via `effective_in_original_unit` before being written to `native_value`
   (live sensor) or `StatisticData.mean` (history).
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -59,7 +59,7 @@ ______________________________________________________________________
 - **Neutral:** kW/kWh sensors are rare in practice for individual PV strings but
   are supported transparently.
 
-______________________________________________________________________
+---
 
 ## Amendment – 2026-07-01: Unit normalisation at the reader layer (see ADR-008)
 

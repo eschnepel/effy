@@ -11,7 +11,7 @@ invalid for the whole window otherwise re-triggered the search every single
 cycle for no benefit), and a volatile coordinator-level cache lets most
 lookbacks that *do* fire skip the recorder query altogether.
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -48,7 +48,7 @@ Fixing (1) by simply raising the cap made (2) more likely to matter more often
 too: a larger cap means more "is this actually a long-but-normal gap, or an
 offline one?" situations for the lookback to resolve.
 
-______________________________________________________________________
+---
 
 ## Decision 1 — `TRAPEZOID_MAX_MINUTES` raised from 15 to 120 minutes
 
@@ -132,7 +132,7 @@ search runs while the outage is ongoing and nothing has changed; exactly one
 search runs on the cycle the sensor's first post-outage reading actually
 arrives.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -163,7 +163,7 @@ ______________________________________________________________________
   recalc, even though the rate itself, once computed, is already correct and
   un-inflated.
 
-______________________________________________________________________
+---
 
 ## Amendment — 2026-10-05
 
@@ -245,7 +245,7 @@ full recalc; zero-fill semantics (ADR-013 Decision 4); `TRAPEZOID_MAX_MINUTES` =
 on the live instance); design details 1–7 by Lead Agent — pending human
 confirmation.
 
-______________________________________________________________________
+---
 
 ## Amendment — 2026-10-06
 

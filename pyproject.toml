@@ -22,6 +22,11 @@ classifiers = [
 
 [dependency-groups]
 dev = [
+  "mdformat",
+  "mdformat-config",
+  "mdformat-gfm",
+  "mdformat-ruff",
+  "mdformat-simple-breaks",
   "mypy",
   "pre-commit",
   "pytest",

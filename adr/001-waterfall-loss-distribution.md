@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-30 **Status:** Accepted
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -21,7 +21,7 @@ Two distribution strategies were considered:
 The requirement is an **absolutely equal** distribution: every active source
 should carry the same absolute watt burden, not the same percentage.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -37,7 +37,7 @@ Use an **absolute waterfall model**:
 This produces the most even possible absolute distribution given the constraint
 that no effective value may go below zero.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

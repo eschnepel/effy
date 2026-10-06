@@ -1,8 +1,7 @@
 # Effy – Effective PV Loss Distribution
 
 Calculates conversion/wiring losses across a PV + BMS system and distributes
-them absolutely evenly across all active input sources using a waterfall
-model.
+them absolutely evenly across all active input sources using a waterfall model.
 
 ## Features
 

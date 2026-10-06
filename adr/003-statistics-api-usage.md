@@ -9,7 +9,7 @@ MEASUREMENT/TOTAL-as-power sensors' `mean`, unchanged), but a trapezoidal-rule
 redistribution over raw state history instead. The "which field" decision below
 is otherwise unaffected.
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -23,7 +23,7 @@ Several design questions arose:
 1. **How many API calls** to use for fetching?
 1. **Which fields to write** for the output statistics?
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -240,7 +240,7 @@ different retention:
 
 See ADR-004 for the overwrite mechanics in more detail.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -265,7 +265,7 @@ ______________________________________________________________________
   clearly flagged in `history.py`'s module docstring for whoever maintains this
   integration through a future HA core upgrade.
 
-______________________________________________________________________
+---
 
 ## Amendment – 2026-07-01: Symmetry with the live path
 
@@ -285,7 +285,7 @@ A seamless transition occurs when a slot closes: the history path writes the
 authoritative `change` value via `async_import_statistics` (ADR-004), which
 overwrites whatever the live coordinator had accumulated.
 
-______________________________________________________________________
+---
 
 ## Amendment – 2026-07-02: Filling `state` for frontend statistics cards
 
@@ -319,7 +319,7 @@ had visible gaps even though `mean` was fully populated and correct.
 concerns `state`, not the sum-statistic question addressed in the original
 decision above.
 
-______________________________________________________________________
+---
 
 ## Amendment – 2026-07-07: read units from statistics metadata, not the live entity
 
@@ -364,7 +364,7 @@ against real HA logs rather than pure unit tests). The new `WARNING` log is the
 way to confirm on a real installation whether this was actually the mechanism at
 play.
 
-______________________________________________________________________
+---
 
 ## Amendment – 2026-07-07: `effy_*` effective values for energy sensors were mislabeled, not mis-scaled
 

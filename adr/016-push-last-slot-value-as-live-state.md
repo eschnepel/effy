@@ -5,7 +5,7 @@ ADR-011 Decision 4 concluded was possible; supersedes the "unknown"-only push
 described there (and in effect since, in `EffyCoordinator.notify_updated` /
 `EffySensor._on_updated` and its siblings).
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -29,7 +29,7 @@ real number to look at instead of "unknown", and the next recalculation of that
 now-current slot corrects it in turn, exactly as every other slot already gets
 corrected once it closes.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -79,7 +79,7 @@ so the live display is never more than one slot-cycle away from correct, and the
 statistics tables (what history/energy-dashboard graphs actually read) are never
 wrong at all.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
@@ -107,7 +107,7 @@ ______________________________________________________________________
   additional, best-effort live-state push layered on top of the existing,
   unchanged statistics write.
 
-______________________________________________________________________
+---
 
 ## Amendment — 2026-10-06
 

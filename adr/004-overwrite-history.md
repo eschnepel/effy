@@ -3,14 +3,14 @@
 **Date:** 2026-06-30 **Status:** Accepted (superseded implementation detail –
 see "Implementation" below)
 
-______________________________________________________________________
+---
 
 ## Context
 
 When the *Re-calculate History* button is pressed, Effy must decide whether to
 **overwrite** existing `effy_*` statistics or only **fill in missing slots**.
 
-______________________________________________________________________
+---
 
 ## Decision
 
@@ -18,7 +18,7 @@ Always **overwrite** existing statistics for the same `statistic_id` +
 timestamp, across both the short-term (5-minute) and long-term (hourly) recorder
 statistics tables.
 
-______________________________________________________________________
+---
 
 ## Rationale
 
@@ -35,7 +35,7 @@ The primary use cases for history recalculation are:
 An append-only strategy would leave stale rows from a previous configuration,
 producing incorrect energy totals in dashboards.
 
-______________________________________________________________________
+---
 
 ## Implementation
 
@@ -84,7 +84,7 @@ recorder API (`Recorder.async_import_statistics` parametrized with
 `table=StatisticsShortTerm`), the risks involved, and why no public, documented
 alternative exists.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

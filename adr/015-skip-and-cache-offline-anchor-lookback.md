@@ -3,7 +3,7 @@
 **Date:** 2026-07-13 **Status:** Accepted — amends ADR-014 Decision 3
 (`_fetch_last_valid_state_before`'s trigger condition and cost).
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -32,7 +32,7 @@ same discussion:
    nothing has changed and the anchor it would find is never actually used until
    the sensor actually recovers.
 
-______________________________________________________________________
+---
 
 ## Decision 1 — only search when the window also contains a recovery
 
@@ -80,7 +80,7 @@ rather than reaching into a global — this keeps them testable and explicit abo
 the one piece of cross-call state they now use, matching how `entry_options` is
 already passed explicitly rather than read from `hass.data`.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

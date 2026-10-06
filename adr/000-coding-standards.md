@@ -1,8 +1,17 @@
 # ADR-000 – Code Quality Standards, Programming Style & Core Concepts
 
-**Date:** 2026-06-30 **Status:** Accepted
+**Date:** 2026-06-30 **Status:** Accepted **Last updated:** 2026-10-06 — §1's
+tooling table gained `mdformat`, now wired into `.pre-commit-config.yaml`
+(previously `.mdformat.toml` existed but nothing ran it), adopted from the
+sibling Shady project along with the `mdformat-simple-breaks` additional
+dependency Shady doesn't need (Effy's `.mdformat.toml` enables the
+`simple_breaks` extension, not Shady's `tables`); also new §1a documents CodeQL,
+which §1's tooling table did not previously mention at all despite
+`.github/workflows/codeql.yml` already existing: the `main`/`tests` path-scoped
+job split (`.github/codeql/codeql-config-main.yml` / `codeql-config-tests.yml`),
+likewise adopted from the sibling Shady project.
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -12,24 +21,54 @@ understand *why* the code looks the way it does without having to infer it from
 individual diffs. The numbered ADRs (001 onward) cover specific domain
 decisions; this one covers everything that applies uniformly across all files.
 
-______________________________________________________________________
+---
 
 ## Decision
 
-### 1 — Tooling: ruff, mypy strict, pytest
+### 1 — Tooling: ruff, mypy strict, mdformat, pytest
 
-Three tools gate every change, run via `.github/workflows/ci.yml`:
+Four tools gate every change, run via `.github/workflows/ci.yml`:
 
 | Tool | Purpose | Invocation |
 | -- | -- | -- |
 | `ruff format` | Code formatting (replaces black) | `ruff format custom_components/` |
 | `ruff check` | Linting (replaces flake8/isort/pyupgrade) | `ruff check custom_components/` |
 | `mypy --strict` | Static type checking | `mypy custom_components/effy tests --config-file mypy.ini` |
+| `mdformat` | Markdown formatting | `.pre-commit-config.yaml`'s `mdformat` hook (`executablebooks/mdformat`), config read from `.mdformat.toml` |
 | `pytest` | Unit tests | `pytest tests/` |
 
-All four must pass with zero errors before a change is considered complete.
+All five must pass with zero errors before a change is considered complete.
 `mypy --strict` is non-negotiable: every function signature carries full type
 annotations, including return types on methods that return `None`.
+
+### 1a — Static analysis: CodeQL
+
+CodeQL (the `+security-and-quality` query pack) runs via
+`.github/workflows/codeql.yml`, separately from §1's pre-commit/CI gate — it
+does not block a PR the way those checks do, but findings surface in the repo's
+Security tab and are treated as required reading before merge.
+
+This is two jobs over a `main`/`tests` matrix rather than one undifferentiated
+scan: `.github/codeql/codeql-config-main.yml` covers everything except `tests/`,
+`.github/codeql/codeql-config-tests.yml` covers only `tests/`, and each
+`analyze` step uploads under its own `/language:python-main` /
+`/language:python-tests` category so neither overwrites the other in the
+Security tab. The split exists because `query-filters` match on query metadata
+(rule id, tags) only, never on file path — with a single config there would be
+no way to exclude a rule for `tests/` without also disabling it for
+`custom_components/`, or vice versa. This structure (and this paragraph) is
+adopted from the sibling [Shady](https://github.com/eschnepel/shady) project's
+ADR-000 §1a.
+
+No `query-filters` exclusions are currently defined in either config file:
+unlike Shady, Effy's codebase has no `typing.overload`/`typing.Protocol`
+`...`-bodied stubs (the source of Shady's `py/ineffectual-statement` exclusion)
+and no deliberately broad `except BaseException` in tests (the source of Shady's
+`py/catch-base-exception` exclusion). If a verified, surface-specific false
+positive shows up in Effy later, add a targeted `query-filters` entry to the
+relevant config file rather than suppressing it inline — see Shady's ADR-000 §1a
+for why inline `lgtm[...]`/`codeql[...]` suppression comments do not actually
+work with this toolchain.
 
 ### 2 — Handling Home Assistant's untyped surface
 
@@ -171,7 +210,7 @@ having to hunt down every comment that explained it.
   inputs are live sensor readings that are expected to occasionally be noisy
   rather than invalid.
 
-______________________________________________________________________
+---
 
 ## Consequences
 

@@ -9,7 +9,7 @@ family (idle entities no longer collapse `reset_ts`/`updated_ts` together) and
 corrects the now-outdated "`reset` zeroes `avg`" statement in the POWER section
 below (see ADR-006's 2026-07-03 amendment instead).
 
-______________________________________________________________________
+---
 
 ## Context
 
@@ -36,7 +36,7 @@ The history path (ADR-003) solves both correctly:
 The live path requires an analogous mechanism without the fixed 5-minute slot
 grid.
 
-______________________________________________________________________
+---
 
 ## Initial approach (slot-anchor, now superseded)
 
@@ -60,7 +60,7 @@ value is thus only accurate in the middle of a slot.
 
 Both problems are resolved by the `LiveReading` accumulator described below.
 
-______________________________________________________________________
+---
 
 ## Requirements
 
@@ -76,7 +76,7 @@ ______________________________________________________________________
 1. Multiple state-change events between two recalculations must be handled
    correctly: the accumulator must absorb all of them.
 
-______________________________________________________________________
+---
 
 ## Decision – `LiveReading` accumulator
 
@@ -178,7 +178,7 @@ After recalculation, `reset` zeroes `avg` and moves `reset_ts = updated_ts`.
 > fire within the same debounce window as whichever sensor triggered the
 > recalculation.
 
-______________________________________________________________________
+---
 
 ## Comparison with the slot-anchor approach
 
@@ -192,7 +192,7 @@ ______________________________________________________________________
 | Extra data structures | `_slot_anchor` dict | `LiveReading` per entity (in-place) |
 | POWER sensors | Passed through as-is | Time-weighted average |
 
-______________________________________________________________________
+---
 
 ## History path alignment
 
@@ -211,7 +211,7 @@ The `_stat_field_for` function in `history.py` now treats `TOTAL` with Wh/kWh
 the same as `TOTAL_INCREASING`, reading `change` instead of `mean`. This mirrors
 the live path's `_state_class_family` mapping.
 
-______________________________________________________________________
+---
 
 ## Consequences
 
