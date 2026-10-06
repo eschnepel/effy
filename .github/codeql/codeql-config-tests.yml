@@ -1,0 +1,9 @@
+name: "Effy CodeQL config — tests"
+
+# tests/ only. Mirrors the main/tests surface split used in the sibling
+# Shady project (see Shady's ADR-000 §1a) so each surface can carry its
+# own query-filters scoped to its own paths if a surface-specific false
+# positive shows up later. No exclusions are needed yet (see
+# codeql-config-main.yml for why).
+paths:
+  - tests
