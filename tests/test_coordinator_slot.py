@@ -148,8 +148,8 @@ _history_stub.__package__ = "effy"
 sys.modules["effy.history"] = _history_stub
 _effy_pkg.history = _history_stub  # type: ignore[attr-defined]
 
-_calc_mod = _load("effy.calculation", "calculation.py")
-_unused_su_mod = _load("effy.sensor_utils", "sensor_utils.py")
+_load("effy.calculation", "calculation.py")
+_load("effy.sensor_utils", "sensor_utils.py")
 _coord_mod = _load("effy.coordinator", "coordinator.py")
 
 if not TYPE_CHECKING:
