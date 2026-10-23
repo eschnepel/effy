@@ -38,6 +38,13 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
   a 6-min wall-clock watchdog; HA minimum 2026.3) calling
   `async_recalculate_recent` (ADR-010/011/012). One lock serializes it with the
   history recalculation (ADR-011 Amendment 2026-10-16).
+- Standby power (ADR-018): `sensor.effy_standby_power`, only with a BMS input,
+  recorded (ADR-020). A pure machine in `calculation.py` reads *drain intervals*
+  (two consecutive one-step peaks of one BMS input, everything else quiet from
+  the slot before the first to the slot after the last peak, confirmed 125 min
+  later) into a 5 % running average; the loss model is untouched. The slot job
+  feeds it last, under the lock, from the statistics Effy wrote; restart =
+  restore plus a replay of 24 h inside the first job.
 - Slot-timer path writes **short-term only**; hourly long-term only from full
   recalc (ADR-011 D2). Full recalc = button/service (`max_history_days`, default
   28).
@@ -66,7 +73,7 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
 - Statistics must be correct for graph/energy-dashboard cards; live state is
   best-effort (ADR-011 D4, ADR-016).
 - No recorder exclusion is required: `sensor.effy_*` is recorded, and Effy only
-  updates rows the recorder inserted (ADR-020 Draft, supersedes ADR-017; the
+  updates rows the recorder inserted (ADR-020 Accepted, supersedes ADR-017; the
   README says an old exclusion may be removed).
 - `calculation.py` tested with zero mocking, loaded via file-path import
   (ADR-000 §6).

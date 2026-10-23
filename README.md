@@ -91,6 +91,41 @@ Each output sensor exposes three extra attributes for diagnostics:
 - `total_loss_w` – total system loss in W for the current reading
 - `loss_share_w` – the share of that loss assigned to this sensor in W
 
+### Standby power
+
+If at least one **BMS input** is configured, Effy also creates
+`sensor.effy_standby_power` (**Standby power**, W, state class measurement,
+recorded like every Effy sensor): the power the battery system itself draws to
+keep running. The standby stays inside the loss above; this sensor only reads it
+separately, so every other `effy_*` series is unchanged. Without a BMS input the
+sensor does not exist.
+
+How it is read (ADR-018): a BMS counter that reports in coarse steps (for
+example 10 Wh) jumps once per step. When two consecutive jumps of the same BMS
+input are exactly one step each, and nothing else — no PV input, no output, no
+other BMS input — showed any flow from just before the first jump until just after
+the second, the time between them is a *drain interval*: the standby energy of
+one step divided by that time is one standby power value. An interval is
+confirmed 125 minutes after its second jump, so that a counter that reports a
+load late has redistributed it first. Each confirmed interval moves the state by
+5 %: `new = 0.95 · old + 0.05 · value`. A BMS fed from the grid is found the
+same way; no option names the drain source. A BMS input that reports power (W)
+works too: an isolated reading above 0 is a jump, two consecutive readings above
+0 are sustained power and break the chain.
+
+The sensor is **unavailable** (not unknown, and never an invented default)
+until the first interval has counted. It is rounded to 0.1 W and has these
+attributes: `last_counted_value`, `last_drain_interval_end`, `drain_source`,
+`counted_intervals` and `last_processed_slot`.
+
+After a restart the estimate and its counters come back from Home Assistant's
+restored state; Effy then replays the last 24 hours of BMS jumps and slot
+statistics inside its first slot job (it never blocks Home Assistant's startup),
+which gives the same result as uninterrupted operation. A downtime longer than 3
+days loses the intervals that would have been confirmed in the gap. If your BMS
+reports in a unit that jumps rarely (hours between jumps), the estimate is
+slow to appear.
+
 ---
 
 ## How the algorithm works
@@ -293,3 +328,15 @@ test suite runs against.
 | [006](adr/006-live-update-strategy.md) | Live sensor update strategy (shared coordinator with debouncing) |
 | [007](adr/007-total-increasing-live-delta.md) | Live accumulation and Wh→W conversion for energy sensors |
 | [008](adr/008-mixed-unit-comparability.md) | Comparability of W and Wh in mixed-unit configurations |
+| [009](adr/009-low-resolution-kwh-smoothing.md) | Smoothing low-resolution kWh sensor noise |
+| [010](adr/010-idle-energy-staleness-and-slot-timer.md) | Idle-entity staleness in the live path & a slot-aligned recalculation timer |
+| [011](adr/011-slot-timer-history-recalc.md) | Slot-timer-driven single-slot history recalculation |
+| [012](adr/012-trapezoidal-energy-redistribution.md) | Trapezoidal energy redistribution, derived-power sensor, and recalculated-from tracking |
+| [013](adr/013-late-binding-smoothing-push-and-zero-fill.md) | Late-bound derived sensors, gap smoothing, dashboard-refresh push, and idle-sensor zero-fill |
+| [014](adr/014-larger-trapezoid-cap-and-staged-offline-lookback.md) | Larger trapezoidal cap, and a staged (not unbounded) offline-anchor lookback |
+| [015](adr/015-skip-and-cache-offline-anchor-lookback.md) | Skip the offline-anchor lookback when nothing changed, and cache its answer |
+| [016](adr/016-push-last-slot-value-as-live-state.md) | Push the last recalculated slot's value as a live state |
+| [017](adr/017-recorder-exclusion-for-effy-entities.md) | Recorder exclusion for `sensor.effy_*` (superseded by ADR-020) |
+| [018](adr/018-standby-power-sensor.md) | Standby power estimate from drain intervals |
+| [019](adr/019-input-sensors-split-by-role.md) | Input sensors split by role (PV / BMS) |
+| [020](adr/020-effy-entities-recorded-without-exclusion.md) | Effy entities are recorded; the exclusion requirement of ADR-017 is retired |

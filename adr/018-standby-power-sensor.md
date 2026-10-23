@@ -1,8 +1,9 @@
 # ADR-018 – Standby Power Estimate from Drain Intervals
 
-**Date:** 2026-10-13 **Status:** Draft — every open decision was taken by the
-human on 2026-10-13 and is wired into the text; awaiting the human's
-confirmation before Stage 2 of TASK-0005 starts. Terms follow `GLOSSARY.md`.
+**Date:** 2026-10-13 **Status:** Accepted 2026-10-17 (human) — every open
+decision was taken by the human on 2026-10-13 and is wired into the text; the
+human confirmed the ADR on 2026-10-17, Stage 2 of TASK-0005 starts. Terms follow
+`GLOSSARY.md`.
 
 ---
 

@@ -202,8 +202,28 @@ async def _fake_async_rewrite_hourly(hass: Any, units: dict[str, str], hour_star
 
 _lock_probe: list[Any] = [None]  # set per test: () -> bool, is the lock held now
 
+# The standby machine's feed (TASK-0005 Stage 2): (options, state, now, lock_held) per call.
+_standby_calls: list[tuple[Any, Any, datetime, bool]] = []
+_standby_raise_next: list[bool] = [False]
+
+
+async def _fake_async_update_standby(
+    hass: Any, entry_options: Any, state: Any, now: datetime
+) -> Any:
+    """Records the call and whether the lock was held; returns a state that moved on."""
+    lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
+    _standby_calls.append((entry_options, state, now, lock_held))
+    if _job_hook[0] is not None:
+        await _job_hook[0]("standby")
+    if _standby_raise_next[0]:
+        _standby_raise_next[0] = False
+        raise RuntimeError("standby exploded")
+    return sys.modules["effy.calculation"].DrainState(estimate=12.0, count=state.count + 1)
+
+
 _history_stub = ModuleType("effy.history")
 _history_stub.async_rewrite_hourly = _fake_async_rewrite_hourly  # type: ignore[attr-defined]
+_history_stub.async_update_standby = _fake_async_update_standby  # type: ignore[attr-defined]
 _history_stub.async_probe_last_slot_ready = _fake_async_probe_last_slot_ready  # type: ignore[attr-defined]
 _history_stub.async_recalculate_history = _fake_async_recalculate_history  # type: ignore[attr-defined]
 _history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
@@ -581,6 +601,8 @@ _EVENT = "recorder_5min_statistics_generated"
 def _reset_slot_job_fakes() -> None:
     _hourly_calls.clear()
     _hourly_raise_next[0] = False
+    _standby_calls.clear()
+    _standby_raise_next[0] = False
     _lock_probe[0] = None
     _history_calls.clear()
     _history_full_calls.clear()
@@ -1054,3 +1076,158 @@ class TestHourlyRewriteInTheSlotJob(_SlotCoordinatorBase):
         coord = self._prepare()
         await coord._async_recalculate_recent_and_report()
         assert _hourly_calls == []
+
+
+# ---------------------------------------------------------------------------
+# The standby power machine in the slot job (TASK-0005 Stage 2, ADR-018)
+# ---------------------------------------------------------------------------
+
+
+class TestStandbyInTheSlotJob(_SlotCoordinatorBase):
+    def _bms_coordinator(self, *, restored: bool = True) -> EffyCoordinator:
+        _reset_slot_job_fakes()
+        coord = EffyCoordinator(
+            _FakeHass(),
+            _FakeEntry(["sensor.pv"], ["sensor.grid_export"], ["sensor.bms_discharge"]),
+        )
+        coord._probe_interval = timedelta(milliseconds=1)
+        if restored:
+            coord.restore_standby(None)
+        _lock_probe[0] = lambda: coord._recorder_job_lock().locked()
+        return coord
+
+    async def _job(self, coord: EffyCoordinator, at: datetime) -> None:
+        coord._now = lambda: at  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+
+    def test_the_standby_exists_only_with_a_bms_input(self) -> None:
+        assert self._bms_coordinator().standby_enabled
+        assert not self._coordinator().standby_enabled
+
+    @pytest.mark.asyncio
+    async def test_without_a_bms_input_nothing_is_fed(self) -> None:
+        coord = self._coordinator()
+        coord.restore_standby(None)
+        await self._job(coord, _ts(12, 0, 10))
+        assert _standby_calls == []
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_fed_before_the_sensor_restored(self) -> None:
+        coord = self._bms_coordinator(restored=False)
+        assert coord.standby_state is None
+        await self._job(coord, _ts(12, 0, 10))
+        assert len(_history_calls) == 1  # the job itself ran
+        assert _standby_calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_job_feeds_the_machine_under_the_lock_after_the_recalculation(self) -> None:
+        coord = self._bms_coordinator()
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        await self._job(coord, _ts(12, 0, 10))  # slot 11:55 done: the hourly rewrite runs too
+        assert order == ["recent", "hourly", "standby"]
+        options, state, now, lock_held = _standby_calls[0]
+        assert options == coord._entry.options and now == _ts(12, 0, 10) and lock_held
+        assert state.estimate is None
+        assert coord.standby_state is not None and coord.standby_state.estimate == 12.0
+
+    @pytest.mark.asyncio
+    async def test_the_next_job_continues_from_the_state_of_the_last(self) -> None:
+        coord = self._bms_coordinator()
+        await self._job(coord, _ts(12, 0, 10))
+        await self._job(coord, _ts(12, 5, 10))
+        assert [call[1].count for call in _standby_calls] == [0, 1]
+
+    @pytest.mark.asyncio
+    async def test_subscribers_get_the_state_and_can_unsubscribe(self) -> None:
+        coord = self._bms_coordinator()
+        seen: list[Any] = []
+        unsubscribe = coord.subscribe_standby(seen.append)
+        await self._job(coord, _ts(12, 0, 10))
+        assert [state.estimate for state in seen] == [12.0]
+        unsubscribe()
+        unsubscribe()  # idempotent
+        await self._job(coord, _ts(12, 5, 10))
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failing_feed_is_logged_and_neither_fails_the_job_nor_moves_the_state(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._bms_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_standby(seen.append)
+        _standby_raise_next[0] = True
+        with caplog.at_level(logging.ERROR):
+            await self._job(coord, _ts(12, 0, 10))
+        task = coord._slot_job_task
+        assert task is not None and task.done() and task.exception() is None
+        assert seen == [] and coord.standby_state is not None and coord.standby_state.count == 0
+        assert any("standby" in r.getMessage().lower() for r in caplog.records)
+        assert coord._last_recent_run is not None  # the recalculation itself completed
+        await self._job(coord, _ts(12, 5, 10))  # retried with the same state
+        assert [call[1].count for call in _standby_calls] == [0, 0]
+        assert coord.standby_state.count == 1
+
+    def test_restoring_gives_the_replay_its_starting_state(self) -> None:
+        coord = self._bms_coordinator(restored=False)
+        data = {
+            "estimate": 12.5,
+            "count": 7,
+            "last_slot": "2024-01-01T11:55:00+00:00",
+            "resolution": {"sensor.bms_discharge": 10.0},
+        }
+        state = coord.restore_standby(data)
+        assert state.estimate == 12.5 and state.count == 7
+        assert state.suppress_until == _ts(11, 55)
+        assert coord.standby_state is state
+        # unusable data starts empty: the first feed replays the last 24 hours
+        fresh = coord.restore_standby({"estimate": "x"})
+        assert fresh.estimate is None and fresh.count == 0 and fresh.suppress_until is None
+
+    def test_setup_and_restore_never_touch_the_recorder(self) -> None:
+        coord = self._bms_coordinator(restored=False)
+        coord.async_setup()
+        coord.restore_standby(None)
+        assert _standby_calls == [] and _history_calls == []
+        coord.async_shutdown()
+
+    @pytest.mark.asyncio
+    async def test_the_existing_recalculation_is_identical_with_and_without_the_machine(
+        self,
+    ) -> None:
+        results: list[tuple[list[Any], list[Any]]] = []
+        for bms in (False, True):
+            _reset_slot_job_fakes()
+            ids = ["sensor.bms_discharge"] if bms else None
+            coord = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"], ids))
+            coord._probe_interval = timedelta(milliseconds=1)
+            coord.restore_standby(None)
+            notified: list[Any] = []
+
+            def record(entity_ids: Any, values: Any = None, sink: list[Any] = notified) -> None:
+                sink.append((set(entity_ids), dict(values or {})))
+
+            coord.notify_updated = record  # type: ignore[method-assign,assignment]
+            _history_return_value[0] = (
+                1,
+                _ts(11, 55),
+                {"sensor.effy_x"},
+                {"sensor.effy_x": (1.0, "W")},
+            )
+            await self._job(coord, _ts(12, 0, 10))
+            calls = [(c[2], c[3] is coord.last_valid_energy_readings) for c in _history_calls]
+            results.append((calls, notified))
+        assert results[0] == results[1]
+        assert results[0][0] and results[0][1]

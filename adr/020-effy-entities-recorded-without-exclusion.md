@@ -1,7 +1,7 @@
 # ADR-020 – Effy Entities Are Recorded; the Exclusion Requirement of ADR-017 Is Retired
 
-**Date:** 2026-10-16 **Status:** Draft — awaiting the human's confirmation.
-Supersedes ADR-017. Terms follow `GLOSSARY.md`.
+**Date:** 2026-10-16 **Status:** Accepted 2026-10-17 (human). Supersedes
+ADR-017. Terms follow `GLOSSARY.md`.
 
 ---
 

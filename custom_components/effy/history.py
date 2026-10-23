@@ -166,13 +166,22 @@ except ImportError:
 
 from .sensor_utils import SLOT_MINUTES, effective_unit_for, is_energy_family, to_power_equivalent
 from .calculation import (
+    DRAIN_LOOKBACK,
+    DrainBreak,
+    DrainPeak,
+    DrainSeen,
+    DrainState,
     SensorReading,
     TRAPEZOID_MAX_MINUTES,
     _parse_energy_state,
+    drain_activity_start,
+    drain_feed,
     drop_open_slot,
     distribute_loss,
     effective_in_original_unit,
+    energy_drain_events,
     interpolate_slot_gaps,
+    power_drain_events,
     recent_rewrite_start,
     recent_trigger_from,
     trapezoidal_jump_windows,
@@ -183,7 +192,7 @@ from .const import (
     CONF_OUTPUT_SENSORS,
     DEFAULT_MAX_HISTORY_DAYS,
 )
-from .inputs import all_input_ids
+from .inputs import all_input_ids, bms_input_ids
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1406,6 +1415,171 @@ async def async_probe_last_slot_ready(
         if means.get(previous) is not None and means.get(last) is None:
             return False
     return True
+
+
+# How far back one standby replay may reach (ADR-018 §5, "the replay cost must be
+# bounded"): a restart replays DRAIN_LOOKBACK before the last processed slot, but
+# never more than this before the last completed slot. A longer downtime loses
+# the intervals that would have been confirmed in the gap, nothing else.
+STANDBY_REPLAY_MAX = timedelta(days=3)
+
+
+async def _classify_sensors(
+    hass: HomeAssistant, recorder: Any, entity_ids: list[str]
+) -> dict[str, tuple[str, bool]]:
+    """``entity_id -> (unit, is_energy_family)``, the unit being the one the
+    statistics are stored in (``_get_statistics_units``), like
+    ``_compute_effective_slots``."""
+    stats_units: dict[str, str] = await recorder.async_add_executor_job(
+        _get_statistics_units, hass, entity_ids
+    )
+    result: dict[str, tuple[str, bool]] = {}
+    for eid in entity_ids:
+        unit = stats_units.get(eid) or _get_unit(hass, eid)
+        result[eid] = (unit, _stat_field_for(_get_state_class(hass, eid), unit) == "change")
+    return result
+
+
+async def async_read_drain_events(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    armed_since: dict[str, datetime],
+    since: datetime,
+    until: datetime,
+) -> list[DrainPeak | DrainBreak | DrainSeen]:
+    """Peaks, breaks and seen readings of every BMS input in ``[since, until)`` (ADR-018 §1).
+
+    Read from the raw state history, one bounded read per BMS input. A source
+    that has an armed turn is read from one minute before the turn's peak, so
+    the link between that peak and the next one is intact (the first row of a
+    read carries the start time, not the real time of its state); all other
+    sources from one minute before ``since``. Events before ``since`` are left out.
+    Nothing is read without a BMS input.
+    """
+    bms_ids = bms_input_ids(entry_options)
+    if not bms_ids:
+        return []
+    recorder = get_recorder(hass)
+    classes = await _classify_sensors(hass, recorder, bms_ids)
+    margin = timedelta(minutes=1)
+    events: list[DrainPeak | DrainBreak | DrainSeen] = []
+    for eid in bms_ids:
+        unit, is_energy = classes[eid]
+        start = min(armed_since.get(eid, since), since) - margin
+        raw: list[tuple[datetime, str]] = await recorder.async_add_executor_job(
+            _fetch_raw_energy_states, hass, eid, start, until
+        )
+        if is_energy:
+            found = energy_drain_events(eid, raw, 1000.0 if unit == "kWh" else 1.0)
+            events.extend(e for e in found if since <= e.t < until)
+        else:
+            found_power = power_drain_events(eid, raw, 1000.0 if unit == "kW" else 1.0)
+            events.extend(e for e in found_power if since <= e.t < until)
+    return events
+
+
+async def async_read_drain_activity(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    start: datetime,
+    end: datetime,
+) -> dict[datetime, frozenset[str]]:
+    """Which sensors show flow in which slot of ``[start, end)`` (ADR-018 §3).
+
+    Read from the short-term statistics Effy itself writes, so a counter that
+    redistributes late is seen as the waterfall sees it: ``effy_*_power`` for an
+    energy-family sensor (input or output), ``effy_*_smoothed`` for a
+    power-family input, the source's own ``mean`` for a power-family output.
+    The result maps a slot to the *source* entity IDs with a value that is not
+    zero. A slot in which no sensor has a statistic at all is left out: it is
+    unknown, which the machine never treats as quiet. One read for all sensors.
+    """
+    input_ids = all_input_ids(entry_options)
+    output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
+    all_ids = input_ids + output_ids
+    if not all_ids:
+        return {}
+    recorder = get_recorder(hass)
+    classes = await _classify_sensors(hass, recorder, all_ids)
+    statistic_ids: dict[str, str] = {}  # statistic id -> source entity id
+    for eid in all_ids:
+        _unit, is_energy = classes[eid]
+        if is_energy:
+            statistic_ids[_effy_power_entity_id(eid)] = eid
+        elif eid in input_ids:
+            statistic_ids[_effy_smoothed_entity_id(eid)] = eid
+        else:
+            statistic_ids[eid] = eid
+    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
+        _fetch_statistics, hass, list(statistic_ids), start, end
+    )
+    active: dict[datetime, set[str]] = {}
+    for statistic_id, stat_rows in rows.items():
+        source = statistic_ids.get(statistic_id)
+        if source is None:
+            continue
+        for row in stat_rows:
+            slot = row["start"]
+            value = row.get("mean")
+            if value is None or not start <= slot < end:
+                continue
+            members = active.setdefault(slot, set())
+            if value != 0.0:
+                members.add(source)
+    return {slot: frozenset(members) for slot, members in active.items()}
+
+
+async def async_update_standby(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    state: DrainState,
+    now: datetime,
+) -> DrainState:
+    """Feed the standby machine every slot that completed since it last ran (ADR-018 §3, §5).
+
+    Call after the recent recalculation, under the same lock: the statistics it
+    just wrote are what the machine reads. The slots are those after
+    ``state.last_slot`` up to the last completed slot of ``now``. A fresh state
+    (no processed slot) is a *replay*: it starts DRAIN_LOOKBACK before the last
+    slot the restored state processed (or before ``now`` without one), at most
+    STANDBY_REPLAY_MAX back, and feeds the same peaks and slots live operation
+    would have seen; ``state.suppress_until`` keeps what the restored estimate
+    already holds from counting twice. The open slot is never fed.
+    """
+    if not bms_input_ids(entry_options):
+        return state  # the sensor only exists with a BMS input (ADR-018 D4)
+    slot_seconds = SLOT_MINUTES * 60
+    slot_width = timedelta(seconds=slot_seconds)
+    epoch = now.timestamp()
+    last = datetime.fromtimestamp(epoch - (epoch % slot_seconds) - slot_seconds, tz=timezone.utc)
+    if state.last_slot is not None:
+        first = state.last_slot + slot_width
+    else:
+        anchor = state.suppress_until if state.suppress_until is not None else last
+        first = max(anchor - DRAIN_LOOKBACK, last - STANDBY_REPLAY_MAX)
+        first = datetime.fromtimestamp(
+            first.timestamp() - (first.timestamp() % slot_seconds), tz=timezone.utc
+        )
+    first = max(first, last - STANDBY_REPLAY_MAX)
+    if first > last:
+        return state
+    slots: list[datetime] = []
+    cursor = first
+    while cursor <= last:
+        slots.append(cursor)
+        cursor += slot_width
+    end = last + slot_width
+    events = await async_read_drain_events(
+        hass,
+        entry_options,
+        {state.armed.source: state.armed.t} if state.armed is not None else {},
+        first,
+        end,
+    )
+    needed = drain_activity_start(state)
+    activity_start = min(needed, first - slot_width) if needed is not None else first - slot_width
+    activity = await async_read_drain_activity(hass, entry_options, activity_start, end)
+    return drain_feed(state, events, slots, activity)
 
 
 def _fetch_statistics(

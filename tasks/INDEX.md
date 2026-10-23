@@ -8,7 +8,7 @@
 | TASK-0002-rewrite-start-rule | Pure rule for extended rewrite start + simulation test | done | TASK-0001-jump-window-helper | worker-inline + reviewer-inline |
 | TASK-0003-history-extended-rewrite-range | Wire extended range into `async_recalculate_recent` | done | TASK-0001-jump-window-helper, TASK-0002-rewrite-start-rule | worker-inline + reviewer-inline |
 | TASK-0004-slot-timer-equivalence-test | Slot timer vs full recalc equivalence test (CAP-1 acceptance) | done | TASK-0003-history-extended-rewrite-range | worker-inline + reviewer-inline |
-| TASK-0005-standby-power-sensor | Investigate and expose the battery system's standby power (CAP-2; Stage 1 investigation + Draft ADR-018 → human gate → Stage 2 implementation, which needs TASK-0007b and TASK-0008, both done now: only the ADR-018 confirmation is missing) | review (Stage 1 done; waiting at the gate) | — | worker-inline + reviewer-inline (Stage 1) |
+| TASK-0005-standby-power-sensor | Investigate and expose the battery system's standby power (CAP-2; Stage 1 investigation + ADR-018 → human gate → Stage 2 implementation; ADR-018 and ADR-020 confirmed 2026-10-17) | review (Stage 1 done; Stage 2 implemented, reviewer PASS; open points for the human listed in the task) | TASK-0007b-retire-recorder-exclusion, TASK-0008-split-input-sensors-by-role (Stage 2) | worker-inline + reviewer-inline |
 | TASK-0006-recorder-synchronized-slot-trigger | Recorder-synchronized slot trigger, as Shady's TASK-0041, plus one lock serializing recent and history recalculation (CAP-3; Home Assistant minimum 2026.3) | done | — | worker-inline + reviewer-inline |
 | TASK-0007a-effy-writes-after-the-recorder | Effy never inserts a row the recorder will insert: no open-slot statistic, first job waits for the recorder, hourly row rewritten at the hour's last slot (CAP-3; approved 2026-10-16) | done | TASK-0006-recorder-synchronized-slot-trigger | worker-inline + reviewer-inline |
 | TASK-0007b-retire-recorder-exclusion | Retire the recorder exclusion of ADR-017 (CAP-3; needed by TASK-0005 Stage 2; approved 2026-10-16) | done | TASK-0007a-effy-writes-after-the-recorder | worker-inline + reviewer-inline |
@@ -27,11 +27,11 @@ Stage 2 needs 0007 and 0008.
 Process notes (no structural change): TASK-0007b (2026-10-16), same inline flow:
 tests first (5 failed against the pre-change code), removal, separate review —
 PASS (284 tests, ruff, mypy, format clean; no reference to the removed names is
-left in the code). ADR-020 is a **Draft** (supersedes ADR-017, whose status now
-says so) until the human confirms it. Honest limits: Shady has no statistics
-import and no exclusion, so nothing it validated carries over; Home Assistant
-2026.3 and a live instance were not available, so ADR-020's verification rests
-on the 2025.1.4 source and the first live check is the human's. TASK-0007a
+left in the code). ADR-020 is **Accepted** (2026-10-17; supersedes ADR-017,
+whose status now says so). Honest limits: Shady has no statistics import and no
+exclusion, so nothing it validated carries over; Home Assistant 2026.3 and a
+live instance were not available, so ADR-020's verification rests on the
+2025.1.4 source and the first live check is the human's. TASK-0007a
 (2026-10-16), same inline flow: tests first (8 history and 4 coordinator tests
 failed on behaviour; the calculation tests failed at collection),
 implementation, separate review — PASS (declared symbols checked by script; the
@@ -93,6 +93,7 @@ changed.
 | 2026-10-16 | TASK-0008 | ADR-019 Accepted with a silent migration of the old key into the PV list (no `VERSION` bump, persisted before the update listener, one warning, new keys win); TASK-0008 depends on TASK-0006 (shared files); CAP-4 approved | human: the Draft's "no migration, set up again" replaced; entry and entity IDs stay the same |
 | 2026-10-16 | TASK-0007 | split into [TASK-0007a-effy-writes-after-the-recorder, TASK-0007b-retire-recorder-exclusion]; decided: Effy never writes the open slot's statistic (option A); first job after a restart is held until the first recorder event (Q10); hourly roll-up question still open | human, Q8 and Q10 |
 | 2026-10-16 | TASK-0007 | hourly row rewritten by the slot job when the last completed slot starts at minute 55, no second event subscription (Q9); native `min`/`max` of an updated row become NULL (HA `_update_statistics`), so the rewrite also fixes the hourly `min`/`max` | human, Q9; Gate 2 for 0007a/0007b pending |
+| 2026-10-17 | TASK-0005 | ADR-018 and ADR-020 confirmed by the human; Stage 2 implemented inline in one task (pure machine → history glue → coordinator → sensor, tests first each step), not split: the steps are strictly sequential and share `calculation.py`/`coordinator.py`; reviewer PASS; 7 points the ADR leaves open listed in the task for the human's confirmation | human: "ADR 18 and 20 approved, proceed" |
 
 ## Audit Groups
 

@@ -1,8 +1,9 @@
 # Task: Investigate and expose the battery system's standby power as an Effy sensor
 
-- **Status:** review
+- **Status:** review (Stage 1 done; Stage 2 implemented and reviewed PASS
+  2026-10-17, awaiting the human's acceptance of the open points below)
 - **Related ADRs:** \[ADR-000, ADR-001, ADR-002, ADR-003, ADR-005, ADR-008,
-  ADR-012, ADR-013, ADR-017, ADR-018 (Draft), ADR-019 (Draft)\]
+  ADR-012, ADR-013, ADR-018, ADR-019, ADR-020\]
 - **Dependencies:** Stage 1: none. Stage 2:
   [TASK-0007b-retire-recorder-exclusion, TASK-0008-split-input-sensors-by-role]
 
@@ -155,6 +156,21 @@ This task has two stages with a human decision between them:
 - `history.py` recorder read/write helpers (`_fetch_statistics`,
   `_write_recorder_statistics`, …) for any statistic-based option
 
+### Consumed Interfaces for Stage 2 (filled by the Lead Agent 2026-10-17 from the Delivered Artifacts of TASK-0006, TASK-0007a/b, TASK-0008)
+
+- `inputs.bms_input_ids`, `inputs.all_input_ids` from
+  `custom_components/effy/inputs.py` (→ TASK-0008)
+- `coordinator.EffyCoordinator._bms_input_ids`, `_recorder_job_lock`,
+  `_async_recalculate_recent_and_report` (the slot job, lock held) (→ TASK-0006)
+- `history._fetch_raw_energy_states`, `_fetch_statistics`,
+  `_get_statistics_units`, `_stat_field_for`, `_effy_power_entity_id`,
+  `_effy_smoothed_entity_id` from `custom_components/effy/history.py`; the
+  statistics Effy writes after the recorder compiled a slot, none for the open
+  slot (→ TASK-0007a)
+- `calculation._find_transitions`, `_parse_energy_state`, `_slot_aligned`,
+  `TRAPEZOID_MAX_MINUTES` (existing)
+- The sensor is recorded, no exclusion (→ TASK-0007b, ADR-020)
+
 ## Delivered Artifacts
 
 <!-- Filled by the Worker AFTER implementation. -->
@@ -179,7 +195,37 @@ This task has two stages with a human decision between them:
     mypy 2.1.0); `mdformat --check` clean on the edited `.md` files.
   - README ADR table not touched (it stops at ADR-008); it is updated in Stage 2
     with the loss wording.
-- Stage 2: (to be filled after the gate)
+- Stage 2 (2026-10-17, ADR-018 and ADR-020 confirmed by the human the same day):
+  - `custom_components/effy/calculation.py` (pure, new section "Standby power"):
+    constants `DRAIN_VALIDATION_DELAY` (125 min), `DRAIN_ESTIMATE_WEIGHT`
+    (0.05), `DRAIN_LOOKBACK` (24 h), `DRAIN_UNKNOWN`; dataclasses `DrainPeak`,
+    `DrainBreak`, `DrainSeen`, `DrainSlot`, `DrainArmed`, `DrainInterval`,
+    `DrainState`; type alias `DrainActivity`; adapters
+    `energy_drain_events(source, raw_states, wh_per_unit)` and
+    `power_drain_events(source, raw_states, w_per_unit)`; the transition
+    `drain_step(state, event, activity, validation_delay)`; the batch driver
+    `drain_feed(state, events, slots, activity, validation_delay)`;
+    `drain_activity_start(state)`; restore: `drain_restore_data(state)` and
+    `drain_state_from_restore(data)`.
+  - `custom_components/effy/history.py` (glue): `STANDBY_REPLAY_MAX` (3 days),
+    `_classify_sensors`, `async_read_drain_events`, `async_read_drain_activity`,
+    `async_update_standby(hass, entry_options, state, now)`.
+  - `custom_components/effy/coordinator.py`: `EffyCoordinator.standby_enabled`,
+    `standby_state`, `restore_standby(data)`, `subscribe_standby(cb)`,
+    `_async_update_standby(now)` (called last in the slot job, lock held); type
+    alias `StandbyCallback`.
+  - `custom_components/effy/sensor.py`: `standby_unique_id(entry)`,
+    `_standby_entities(hass, entry, coordinator)`, `_StandbyExtraData`,
+    `EffyStandbyPowerSensor` → `sensor.effy_standby_power`.
+  - Tests: `tests/test_standby.py` (52 + 1: adapters, ported scenarios C1–C10,
+    batch driver, restore, replay equivalence), `tests/test_standby_glue.py` (9:
+    end to end through the real `async_recalculate_recent`, bounded reads,
+    replay, read-only regression), `tests/test_standby_sensor.py` (11),
+    `tests/test_coordinator_slot.py` → `TestStandbyInTheSlotJob` (10).
+    `tests/test_standby_scenario.py` keeps `TestStandbyOnlySlotToday` only; the
+    throwaway prototype is gone.
+  - README: ADR table complete (009–020), "Standby power" section.
+  - External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
 
 ## Findings
 
@@ -332,12 +378,55 @@ the human; A3–A5 remain assumptions to check on the live system after Stage 2.
 
 ### Open decisions for the gate
 
-None. ADR-018 and ADR-019 are Draft only until the human confirms them.
+None. ADR-018, ADR-019 and ADR-020 were confirmed by the human on 2026-10-17.
 
-### Proposed Stage 2 acceptance criteria (if ADR-018 is confirmed as drafted)
+### Stage 2 review (2026-10-17, reviewer role, separate pass)
 
-The provisional Stage 2 criteria above are shaped for Option A (SoC) and are
-replaced by these if ADR-018 is confirmed (after TASK-0007b and TASK-0008):
+PASS. Checked against the Stage 2 criteria below, ADR-018 §1–§7 and cases
+C1–C10: every row of the §3 table and every case has a test; the new sensor is
+read-only (a test proves every statistic written by the recent recalculation is
+identical with and without the machine); `pytest` 340 passed, `ruff check`,
+`ruff format`, `mypy` clean with the locked toolchain.
+
+### Stage 2 — points the ADR leaves open (decided by the Lead Agent, **to be confirmed by the human**)
+
+None changes the ADR's behaviour in the cases it describes; each closes a gap
+that identical replay/live results or a bounded cost forces. Not recorded as ADR
+amendments until confirmed.
+
+1. **Activity source.** "Statistics of every sensor" is read from what Effy
+   itself wrote: `effy_*_power` (energy-family, input or output),
+   `effy_*_smoothed` (power-family input), the source's `mean` (power-family
+   output). A slot in which no sensor has any statistic is *unknown*, and an
+   unknown slot is never quiet (ADR-018 §3 requires the slot before a peak to be
+   *known*; I applied it to the re-read span too).
+1. **24 h bound.** An armed turn or pending interval whose first peak is older
+   than 24 h before the slot being processed is dropped. This is the replay
+   lookback of §5 applied to live operation, so that what the live machine may
+   hold is exactly what a restart can rebuild.
+1. **Replay bound.** A replay starts 24 h before the last processed slot but
+   never more than 3 days before the last completed slot (`STANDBY_REPLAY_MAX`);
+   a longer downtime loses the intervals confirmed in the gap. §5 asks for
+   bounded cost without a number.
+1. **Restore data.** The restart needs more than the five attributes of §5: the
+   exact (unrounded) estimate and the learned resolution per source, otherwise
+   replay cannot equal live operation. They are stored as the entity's extra
+   restore data, not as attributes; the five attributes are exactly those of §5.
+1. **Power-family limit.** A state history holds only changes, so a power
+   reading that stays unchanged for hours looks like one isolated peak until its
+   successor arrives. The human's BMS inputs are energy counters; this only
+   concerns power-family BMS inputs.
+1. **Orphan sensor.** When the last BMS input is removed in the options, the
+   registered `sensor.effy_standby_power` is removed from the entity registry
+   (ADR-018 D4: it exists only with a BMS input).
+1. **Not yet seen on the live system:** A3–A5 of Stage 1 (real BMS counters,
+   polling delay, the slot job's timing against the recorder commit) remain to
+   be checked there.
+
+### Stage 2 acceptance criteria (ADR-018 confirmed 2026-10-17; they replace the provisional ones above, all met)
+
+The provisional Stage 2 criteria above were shaped for Option A (SoC) and are
+replaced by these (after TASK-0007b and TASK-0008):
 
 - Given raw readings of an energy-family BMS input, then a pure adapter yields
   its peaks with their heights and power equivalents; given a power-family BMS

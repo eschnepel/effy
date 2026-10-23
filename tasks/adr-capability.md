@@ -20,17 +20,16 @@ rewrite range per ADR-014 Amendment items 1–7 (incl. offline-recovery jumps).
 slot written / pushed as live value (ADR-016); hourly long-term statistics
 (still full-recalc only).
 
-## CAP-2 — Battery-system standby power sensor *(proposed 2026-10-13, pending Gate 1)*
+## CAP-2 — Battery-system standby power sensor *(proposed 2026-10-13; design ADR-018 confirmed 2026-10-17, implemented in TASK-0005 Stage 2)*
 
 **What the user sees:** a `sensor.effy_*` entity reporting the power the battery
 system itself draws to keep running (W), usable by other integrations — first
 the sibling project Chargy, which would pick it as its standby power instead of
 estimating it itself.
 
-**End-to-end demonstration:** not yet defined — it depends on the design chosen
-in the Draft ADR that TASK-0005 produces (SoC-based, flow-balance-based or
-pass-through). TASK-0005 is the investigation; implementation follows only after
-a human has confirmed that ADR.
+**End-to-end demonstration:** a quiet night in which a BMS counter with 10 Wh
+steps jumps every 50 minutes: `sensor.effy_standby_power` reads 12 W once the
+first drain interval is confirmed (ADR-018; `tests/test_standby_glue.py`).
 
 **Scope (in):** investigate whether standby power can be separated from the
 conversion/wiring loss Effy already distributes (ADR-001, ADR-005); expose the

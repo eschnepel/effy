@@ -1,6 +1,6 @@
 # ADR-017 – Require Recorder Exclusion for `sensor.effy_*` Entities
 
-**Date:** 2026-07-17 **Status:** Superseded by ADR-020 (Draft)
+**Date:** 2026-07-17 **Status:** Superseded by ADR-020 (Accepted 2026-10-17)
 
 ---
 

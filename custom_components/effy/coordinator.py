@@ -64,6 +64,14 @@ It owns:
     recorder event (the watchdog counts from setup before any job), and when
     the last completed slot is the last of its hour the slot job rewrites that
     hour's long-term row after its recent recalculation, under the lock.
+  - TASK-0005 Stage 2 (ADR-018): the standby power machine. When at least one
+    BMS input is configured, every slot job feeds it after its recent
+    recalculation, still under the lock (history.async_update_standby reads the
+    statistics that recalculation just wrote). The state lives here; the
+    standby sensor restores it at start (restore_standby) and receives it after
+    every job (subscribe_standby). Nothing is fed before the sensor has
+    restored, and the first feed after a start is the replay of ADR-018 §5 —
+    inside the slot job, so it never blocks Home Assistant's startup.
   - One lock that serializes the recent recalculation and the history
     recalculation (button), see "Thread safety".
   - A small, volatile, in-memory cache of each energy-family entity's
@@ -92,7 +100,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -101,7 +109,7 @@ from homeassistant.const import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 
-from .calculation import LossDistribution
+from .calculation import DrainState, LossDistribution, drain_state_from_restore
 from .const import CONF_OUTPUT_SENSORS
 from .inputs import all_input_ids, bms_input_ids, pv_input_ids
 from .history import (
@@ -109,6 +117,7 @@ from .history import (
     async_recalculate_history,
     async_recalculate_recent,
     async_rewrite_hourly,
+    async_update_standby,
     recent_trigger_since,
 )
 from .sensor_utils import SLOT_MINUTES
@@ -139,6 +148,8 @@ RecalculatedFromCallback = Callable[[datetime], None]
 # (value, unit) of the entity's last-written slot this run, or (None, None)
 # if no value is known for it (ADR-016) — see notify_updated/subscribe_updates.
 EntityUpdateCallback = Callable[[float | None, str | None], None]
+# The standby power machine's state after every slot job (ADR-018 §5).
+StandbyCallback = Callable[[DrainState], None]
 
 
 def _next_slot_trigger_delay(
@@ -254,6 +265,12 @@ class EffyCoordinator:
         # See _recorder_job_lock.
         self._lock_state: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
 
+        # Standby power machine (ADR-018). ``_standby_state`` stays ``None`` until
+        # the standby sensor has restored (restore_standby): feeding earlier
+        # would replay without the restored aggregates and count twice.
+        self._standby_state: DrainState | None = None
+        self._standby_subscribers: list[StandbyCallback] = []
+
     @property
     def pv_input_ids(self) -> list[str]:
         """Source entity IDs of the PV inputs (ADR-019)."""
@@ -263,6 +280,38 @@ class EffyCoordinator:
     def bms_input_ids(self) -> list[str]:
         """Source entity IDs of the BMS inputs (ADR-019); the drain sources of ADR-018."""
         return list(self._bms_input_ids)
+
+    @property
+    def standby_enabled(self) -> bool:
+        """The standby power sensor exists only with at least one BMS input (ADR-018 D4)."""
+        return bool(self._bms_input_ids)
+
+    @property
+    def standby_state(self) -> DrainState | None:
+        """The standby machine's state, ``None`` before the sensor restored (ADR-018)."""
+        return self._standby_state
+
+    def restore_standby(self, data: Mapping[str, Any] | None) -> DrainState:
+        """Start the standby machine from the data the sensor restored (ADR-018 §5).
+
+        ``data`` is what ``calculation.drain_restore_data`` produced before the
+        restart, or ``None`` when nothing was restored. Without usable data the
+        machine starts empty and its first feed replays the last 24 hours. Returns
+        the state it starts from; from now on slot jobs feed it.
+        """
+        restored = drain_state_from_restore(data) if data else None
+        self._standby_state = restored if restored is not None else DrainState()
+        return self._standby_state
+
+    def subscribe_standby(self, cb: StandbyCallback) -> Callable[[], None]:
+        """Register the standby sensor's callback; it gets the state after every slot job."""
+        self._standby_subscribers.append(cb)
+
+        def _unsubscribe() -> None:
+            if cb in self._standby_subscribers:
+                self._standby_subscribers.remove(cb)
+
+        return _unsubscribe
 
     # ------------------------------------------------------------------
     # Setup / teardown
@@ -560,6 +609,30 @@ class EffyCoordinator:
                 self.notify_updated(touched, last_values)
             if slot is not None and (slot + timedelta(minutes=SLOT_MINUTES)).minute == 0:
                 await self._async_rewrite_hour(slot, last_values)
+            await self._async_update_standby(now)
+
+    async def _async_update_standby(self, now: datetime) -> None:
+        """Feed the standby machine and tell its sensor (ADR-018).
+
+        Called with the recalculation lock held, after the recent recalculation
+        wrote the statistics the machine reads. Does nothing without a BMS input or
+        before the sensor restored. A failure is logged and never fails the slot
+        job (ADR-000 §8): the state is left as it was, so the next job feeds the
+        same slots again.
+        """
+        state = self._standby_state
+        if state is None or not self._bms_input_ids:
+            return
+        try:
+            new_state = await async_update_standby(self._hass, self._entry.options, state, now)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Effy: updating the standby power estimate failed")
+            return
+        self._standby_state = new_state
+        for cb in list(self._standby_subscribers):
+            cb(new_state)
 
     async def _async_rewrite_hour(
         self, slot: datetime, last_values: dict[str, tuple[float, str]]

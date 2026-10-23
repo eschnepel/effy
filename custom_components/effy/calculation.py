@@ -18,8 +18,10 @@ Algorithm (full rationale in ADR-001):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from typing import Any
 
 
 @dataclass
@@ -577,3 +579,445 @@ def effective_in_original_unit(
 ) -> float:
     """Return the effective value for a sensor converted back to its original unit."""
     return _from_w(distribution.effective_values_w[entity_id], original_unit)
+
+
+# ---------------------------------------------------------------------------
+# Standby power: drain intervals (ADR-018, TASK-0005 Stage 2)
+# ---------------------------------------------------------------------------
+#
+# Standby power stays inside the loss (ADR-001/005, nothing above changes). It is
+# read separately from the *peaks* of the BMS inputs: the span between two
+# consecutive peaks of one input that have the same height, while no other
+# sensor is active, is a *drain interval*; its power equivalent is one value of
+# the standby power. Everything here is pure: the adapters turn raw readings into
+# events, ``drain_step`` is the one transition ``(state, event) -> state``.
+
+# Redistribution cap (TRAPEZOID_MAX_MINUTES) plus one slot of margin: a lagging
+# counter has redistributed its energy into earlier slots by then (ADR-018 §3).
+DRAIN_VALIDATION_DELAY = timedelta(minutes=TRAPEZOID_MAX_MINUTES + 5)
+# Weight of one counted interval in the live estimate (ADR-018 §3).
+DRAIN_ESTIMATE_WEIGHT = 0.05
+# An armed turn or pending interval whose first peak is older than this before
+# the slot being processed is dropped. It is the replay lookback of ADR-018 §5:
+# what the live machine may still hold is exactly what a restart can rebuild.
+DRAIN_LOOKBACK = timedelta(hours=24)
+
+_DRAIN_SLOT = timedelta(minutes=5)
+# Activity marker for a slot with no statistics at all: "known" is a condition
+# of ADR-018 §3, so an unknown slot is never quiet.
+DRAIN_UNKNOWN = "?"
+_UNKNOWN_ACTIVITY: frozenset[str] = frozenset({DRAIN_UNKNOWN})
+
+# slot start -> source entity IDs of the sensors with flow in it
+DrainActivity = Mapping[datetime, frozenset[str]]
+
+
+@dataclass(frozen=True)
+class DrainPeak:
+    """A peak of a BMS input. ``height`` is its first derivation: the energy of the
+    jump (Wh) for an energy-family sensor, the reading (W) for a power-family one.
+    ``power_w`` is its power equivalent and ``t_prev`` the time of the directly
+    preceding peak; both are ``None`` when no peak precedes it directly."""
+
+    t: datetime
+    source: str
+    t_prev: datetime | None
+    power_w: float | None
+    height: float
+    is_energy: bool
+
+
+@dataclass(frozen=True)
+class DrainBreak:
+    """Offline, counter reset, or sustained power: nothing spans across it."""
+
+    t: datetime
+    source: str
+
+
+@dataclass(frozen=True)
+class DrainSeen:
+    """A non-zero reading of a power-family sensor, seen only to learn its resolution."""
+
+    t: datetime
+    source: str
+    value: float
+
+
+@dataclass(frozen=True)
+class DrainSlot:
+    """Slot ``slot`` has completed (at ``slot`` + 5 min)."""
+
+    slot: datetime
+
+
+DrainEvent = DrainPeak | DrainBreak | DrainSeen | DrainSlot
+
+
+@dataclass(frozen=True)
+class DrainArmed:
+    """The peak a turn starts from: the next peak of ``source`` closes an interval."""
+
+    source: str
+    t: datetime
+    height: float
+    is_energy: bool
+
+
+@dataclass(frozen=True)
+class DrainInterval:
+    """A span between two consecutive peaks of one source, waiting to be confirmed."""
+
+    source: str
+    t1: datetime
+    t2: datetime
+    power_w: float
+    start_height: float
+    end_height: float
+    is_energy: bool
+
+
+@dataclass(frozen=True)
+class DrainState:
+    """The whole state of the machine; every field is plain data."""
+
+    resolution: Mapping[str, float] = field(default_factory=dict)
+    last_nonzero: Mapping[str, float] = field(default_factory=dict)
+    armed: DrainArmed | None = None
+    pending: tuple[DrainInterval, ...] = ()
+    last_slot: datetime | None = None
+    last_slot_active: frozenset[str] = frozenset()
+    estimate: float | None = None
+    count: int = 0
+    last_value: float | None = None
+    last_end: datetime | None = None
+    last_source: str | None = None
+    # Intervals confirmed (quiet and old enough), counted or not, and the last one.
+    confirmed: int = 0
+    last_confirmed: DrainInterval | None = None
+    # Replay after a restart: a confirmation at a slot up to here is already in the
+    # restored estimate and must not count again.
+    suppress_until: datetime | None = None
+
+
+def energy_drain_events(
+    source: str,
+    raw_states: list[tuple[datetime, str]],
+    wh_per_unit: float,
+) -> list[DrainPeak | DrainBreak]:
+    """Peaks and breaks of an energy-family BMS input from its raw state history.
+
+    A jump becomes a peak: its height is the energy of the jump in Wh
+    (``wh_per_unit`` converts the counter's unit), its power equivalent that
+    energy divided by the time since the previous jump — only when the transition
+    right before it was a jump too. An offline recovery or a counter reset is a
+    break; an unchanged reading is neither and ends the chain. Pass the
+    *unfiltered* raw history (offline entries included), like
+    ``trapezoidal_slot_contributions``.
+    """
+    events: list[DrainPeak | DrainBreak] = []
+    previous_jump: datetime | None = None
+    for t1, v1, t2, v2, was_offline in _find_transitions(raw_states):
+        delta_wh = (v2 - v1) * wh_per_unit
+        if was_offline or delta_wh < 0.0:
+            events.append(DrainBreak(t2, source))
+            previous_jump = None
+        elif delta_wh == 0.0:
+            previous_jump = None
+        else:
+            hours = (t2 - previous_jump).total_seconds() / 3600.0 if previous_jump else None
+            events.append(
+                DrainPeak(
+                    t2,
+                    source,
+                    previous_jump,
+                    delta_wh / hours if hours else None,
+                    delta_wh,
+                    True,
+                )
+            )
+            previous_jump = t2
+    return events
+
+
+def power_drain_events(
+    source: str,
+    raw_states: list[tuple[datetime, str]],
+    w_per_unit: float,
+) -> list[DrainPeak | DrainBreak | DrainSeen]:
+    """Peaks, breaks and seen readings of a power-family BMS input.
+
+    A reading above 0 with no reading above 0 directly before or after it is a
+    peak; its height and power equivalent are the reading (in W, ``w_per_unit``
+    converts the sensor's unit). Two consecutive readings above 0 are sustained
+    power: no peak, a break. An offline entry is a break. Every reading above 0 is
+    also reported as seen, so the resolution can be learned from steps between
+    distinct readings. A reading that stays unchanged for long is a single entry
+    in a state history: it looks isolated until its successor arrives.
+    """
+    values: list[tuple[datetime, float | None]] = []
+    for t, state in raw_states:
+        parsed = _parse_energy_state(state)
+        values.append((t, None if parsed is None else parsed * w_per_unit))
+    events: list[DrainPeak | DrainBreak | DrainSeen] = []
+    previous_peak: datetime | None = None
+    for i, (t, value) in enumerate(values):
+        if value is None:
+            events.append(DrainBreak(t, source))
+            previous_peak = None
+        elif value > 0.0:
+            events.append(DrainSeen(t, source, value))
+            before = values[i - 1][1] if i > 0 else 0.0
+            after = values[i + 1][1] if i + 1 < len(values) else 0.0
+            if (before or 0.0) > 0.0 or (after or 0.0) > 0.0:
+                events.append(DrainBreak(t, source))
+                previous_peak = None
+            else:
+                events.append(DrainPeak(t, source, previous_peak, value, value, False))
+                previous_peak = t
+    return events
+
+
+def drain_activity_start(state: DrainState) -> datetime | None:
+    """The oldest slot whose activity the machine still needs: the slot before the
+    first peak of the armed turn or of any pending interval (``None`` if neither)."""
+    starts = [_slot_aligned(p.t1, _DRAIN_SLOT) for p in state.pending]
+    if state.armed is not None:
+        starts.append(_slot_aligned(state.armed.t, _DRAIN_SLOT))
+    return min(starts) - _DRAIN_SLOT if starts else None
+
+
+def _drain_disturbed(activity: DrainActivity, source: str, t1: datetime, slot: datetime) -> bool:
+    """True if any sensor other than ``source`` is active (or a slot is unknown)
+    in any slot from the slot before ``t1`` up to ``slot``."""
+    current = _slot_aligned(t1, _DRAIN_SLOT) - _DRAIN_SLOT
+    while current <= slot:
+        if activity.get(current, _UNKNOWN_ACTIVITY) - {source}:
+            return True
+        current += _DRAIN_SLOT
+    return False
+
+
+def _drain_peak(state: DrainState, peak: DrainPeak) -> DrainState:
+    resolution = state.resolution
+    if peak.is_energy:
+        known = resolution.get(peak.source)
+        resolution = {
+            **resolution,
+            peak.source: peak.height if known is None else min(known, peak.height),
+        }
+    turn = DrainArmed(peak.source, peak.t, peak.height, peak.is_energy)
+    armed = state.armed
+    if (
+        armed is not None
+        and armed.source == peak.source
+        and peak.t_prev == armed.t
+        and peak.power_w is not None
+    ):
+        interval = DrainInterval(
+            peak.source, armed.t, peak.t, peak.power_w, armed.height, peak.height, peak.is_energy
+        )
+        return replace(state, resolution=resolution, pending=(*state.pending, interval), armed=turn)
+    quiet_before = state.last_slot == _slot_aligned(peak.t, _DRAIN_SLOT) - _DRAIN_SLOT and not (
+        state.last_slot_active - {peak.source}
+    )
+    return replace(state, resolution=resolution, armed=turn if quiet_before else None)
+
+
+def _drain_seen(state: DrainState, seen: DrainSeen) -> DrainState:
+    before = state.last_nonzero.get(seen.source)
+    resolution = state.resolution
+    if before is not None and before != seen.value:
+        step = abs(before - seen.value)
+        known = resolution.get(seen.source)
+        resolution = {**resolution, seen.source: step if known is None else min(known, step)}
+    return replace(
+        state, resolution=resolution, last_nonzero={**state.last_nonzero, seen.source: seen.value}
+    )
+
+
+def _drain_confirm(state: DrainState, interval: DrainInterval, slot: datetime) -> DrainState:
+    """Quiet over its span and old enough. It counts only if its peaks have the same
+    height (they differ by less than the learned resolution) and, for an
+    energy-family sensor, both are exactly one step (ADR-018 §3, D1/D2)."""
+    state = replace(state, confirmed=state.confirmed + 1, last_confirmed=interval)
+    resolution = state.resolution.get(interval.source)
+    if resolution is None:
+        return state  # no resolution learned yet: nothing can be validated
+    same = abs(interval.start_height - interval.end_height) < resolution
+    if interval.is_energy:
+        same = (
+            same
+            and interval.start_height < 1.5 * resolution
+            and interval.end_height < 1.5 * resolution
+        )
+    if not same or (state.suppress_until is not None and slot <= state.suppress_until):
+        return state
+    estimate = (
+        interval.power_w
+        if state.estimate is None
+        else (1.0 - DRAIN_ESTIMATE_WEIGHT) * state.estimate
+        + DRAIN_ESTIMATE_WEIGHT * interval.power_w
+    )
+    return replace(
+        state,
+        estimate=estimate,
+        count=state.count + 1,
+        last_value=interval.power_w,
+        last_end=interval.t2,
+        last_source=interval.source,
+    )
+
+
+def _drain_slot(
+    state: DrainState,
+    event: DrainSlot,
+    activity: DrainActivity,
+    validation_delay: timedelta,
+) -> DrainState:
+    slot = event.slot
+    horizon = slot - DRAIN_LOOKBACK
+    armed = state.armed
+    if armed is not None and (
+        armed.t < horizon or _drain_disturbed(activity, armed.source, armed.t, slot)
+    ):
+        armed = None
+    pending = [
+        p
+        for p in state.pending
+        if p.t1 >= horizon and not _drain_disturbed(activity, p.source, p.t1, slot)
+    ]
+    ready = [
+        p
+        for p in pending
+        if slot >= _slot_aligned(p.t2, _DRAIN_SLOT) + _DRAIN_SLOT + validation_delay
+    ]
+    state = replace(
+        state,
+        armed=armed,
+        pending=tuple(p for p in pending if p not in ready),
+        last_slot=slot,
+        last_slot_active=activity.get(slot, _UNKNOWN_ACTIVITY),
+    )
+    for interval in ready:
+        state = _drain_confirm(state, interval, slot)
+    return state
+
+
+def drain_step(
+    state: DrainState,
+    event: DrainEvent,
+    activity: DrainActivity,
+    validation_delay: timedelta = DRAIN_VALIDATION_DELAY,
+) -> DrainState:
+    """The one transition of the machine (ADR-018 §3): ``(state, event) -> state``.
+
+    Events must arrive in time order, a slot completion before a peak at the
+    same instant. ``activity`` is only read for a ``DrainSlot``: the sensors with
+    flow per slot as the statistics know them now; a slot missing from it is
+    unknown, which is never quiet.
+    """
+    if isinstance(event, DrainSlot):
+        return _drain_slot(state, event, activity, validation_delay)
+    if isinstance(event, DrainPeak):
+        return _drain_peak(state, event)
+    if isinstance(event, DrainSeen):
+        return _drain_seen(state, event)
+    return replace(state, armed=None, pending=())
+
+
+def drain_feed(
+    state: DrainState,
+    events: Iterable[DrainPeak | DrainBreak | DrainSeen],
+    slots: Iterable[datetime],
+    activity: DrainActivity,
+    validation_delay: timedelta = DRAIN_VALIDATION_DELAY,
+) -> DrainState:
+    """Feed peaks/breaks/seen readings and completed slots in time order.
+
+    ``slots`` are the starts of the slots that have completed; events at or after
+    the end of the last of them belong to a slot that is still open and are left
+    out. A slot completion sorts before an event at the same instant.
+    """
+    slot_list = sorted(slots)
+    if not slot_list:
+        return state
+    until = slot_list[-1] + _DRAIN_SLOT
+    timeline: list[tuple[datetime, int, int, DrainEvent]] = [
+        (slot + _DRAIN_SLOT, 0, i, DrainSlot(slot)) for i, slot in enumerate(slot_list)
+    ]
+    timeline.extend((e.t, 1, i, e) for i, e in enumerate(events) if e.t < until)
+    timeline.sort(key=lambda item: item[:3])
+    for _when, _kind, _index, event in timeline:
+        state = drain_step(state, event, activity, validation_delay)
+    return state
+
+
+def drain_restore_data(state: DrainState) -> dict[str, Any]:
+    """What survives a restart (plain JSON types): the aggregates and the learned
+    resolution. The armed turn and pending intervals are rebuilt by replay.
+
+    ``last_slot`` is the slot the aggregates are valid up to. A state restored but
+    not yet fed still carries it as ``suppress_until``, which is what a second
+    restart needs."""
+    processed = state.last_slot or state.suppress_until
+    return {
+        "estimate": state.estimate,
+        "count": state.count,
+        "last_value": state.last_value,
+        "last_end": state.last_end.isoformat() if state.last_end else None,
+        "last_source": state.last_source,
+        "last_slot": processed.isoformat() if processed is not None else None,
+        "resolution": dict(state.resolution),
+    }
+
+
+def _restore_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def drain_state_from_restore(data: Mapping[str, Any]) -> DrainState | None:
+    """The state to start a replay from, or ``None`` when ``data`` holds no estimate.
+
+    The result has no processed slot (the replay feeds them again) and
+    ``suppress_until`` set to the last processed slot, so intervals confirmed up to
+    then are not counted twice. Malformed data gives ``None``: the replay then
+    starts from nothing, which is correct because without an estimate nothing
+    was counted yet.
+    """
+    estimate = data.get("estimate")
+    count = data.get("count")
+    last_slot = _restore_time(data.get("last_slot"))
+    if (
+        isinstance(estimate, bool)
+        or not isinstance(estimate, int | float)
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or last_slot is None
+    ):
+        return None
+    last_value = data.get("last_value")
+    last_source = data.get("last_source")
+    raw_resolution = data.get("resolution")
+    resolution: dict[str, float] = {}
+    if isinstance(raw_resolution, Mapping):
+        resolution = {
+            str(k): float(v)
+            for k, v in raw_resolution.items()
+            if isinstance(v, int | float) and not isinstance(v, bool)
+        }
+    return DrainState(
+        resolution=resolution,
+        estimate=float(estimate),
+        count=count,
+        last_value=float(last_value) if isinstance(last_value, int | float) else None,
+        last_end=_restore_time(data.get("last_end")),
+        last_source=last_source if isinstance(last_source, str) else None,
+        suppress_until=last_slot,
+    )

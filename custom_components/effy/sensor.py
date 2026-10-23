@@ -17,6 +17,10 @@ an acceptable tradeoff (the next recalculation of that slot corrects it).
 EffyRecalculatedFromSensor is the one sensor whose live value has always
 reflected a real timestamp even with the live path off: it subscribes to
 the coordinator's separate recalculated-from channel.
+EffyStandbyPowerSensor (TASK-0005 Stage 2, ADR-018) is the one sensor with a real
+live state of its own: the battery system's standby power, estimated by the
+coordinator's standby machine after every slot job. It exists only when at
+least one BMS input is configured.
 """
 
 from __future__ import annotations
@@ -28,16 +32,28 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.util import slugify
 
-from .calculation import LossDistribution, effective_in_original_unit
+from .calculation import (
+    DrainState,
+    LossDistribution,
+    drain_restore_data,
+    effective_in_original_unit,
+)
 from .const import CONF_OUTPUT_SENSORS, DOMAIN
 from .inputs import all_input_ids
 from .coordinator import EffyCoordinator
 from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
+
+
+def standby_unique_id(entry: ConfigEntry) -> str:
+    """Unique ID of the standby power sensor of one config entry."""
+    return f"{entry.entry_id}_standby_power"
 
 
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
@@ -91,6 +107,7 @@ async def async_setup_entry(
         )
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
+    entities.extend(_standby_entities(hass, entry, coordinator))
 
     async_add_entities(entities, update_before_add=False)
 
@@ -101,6 +118,24 @@ async def async_setup_entry(
 
     # Trigger one immediate recalculation so sensors have values on first load
     coordinator.force_refresh()
+
+
+def _standby_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """The standby power sensor, only with a BMS input (ADR-018 D4, ADR-019).
+
+    Without one an entity registered earlier (the BMS inputs were removed in the
+    options) is removed from the registry, so the sensor does not linger as an
+    orphan: it exists only if at least one BMS input is configured.
+    """
+    if coordinator.standby_enabled:
+        return [EffyStandbyPowerSensor(hass, entry, coordinator)]
+    registry = er.async_get(hass)
+    stale = registry.async_get_entity_id("sensor", DOMAIN, standby_unique_id(entry))
+    if stale is not None:
+        registry.async_remove(stale)
+    return []
 
 
 def _build_derived_entities(
@@ -582,4 +617,121 @@ class EffyRecalculatedFromSensor(SensorEntity):  # type: ignore[misc]
     @callback  # type: ignore[untyped-decorator]
     def _on_recalculated_from(self, ts: datetime) -> None:
         self._attr_native_value = ts
+        self.async_write_ha_state()
+
+
+class _StandbyExtraData(ExtraStoredData):  # type: ignore[misc]
+    """What the standby sensor stores beside its state: the exact estimate and the
+    machine's aggregates (``calculation.drain_restore_data``), not the rounded state."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self._data)
+
+
+class EffyStandbyPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """The battery system's standby power in W (ADR-018 §5).
+
+    The state is the coordinator's 5 % average over the counted drain intervals,
+    rounded to 0.1 W; the entity is *unavailable* (not unknown) until the first
+    interval has counted, so a consumer never reads an invented number. It is
+    recorded like every Effy sensor (ADR-020): state history and, with state
+    class measurement, long-term statistics. The unrounded estimate and the
+    machine's aggregates survive a restart as extra restore data; the
+    coordinator rebuilds the rest by replay (``restore_standby``).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_name = "Standby power"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_unique_id = standby_unique_id(entry)
+        self._drain: DrainState | None = None
+        self._unsub_coordinator: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return self._attr_unique_id or ""
+
+    @property
+    def entity_id(self) -> str:
+        return "sensor.effy_standby_power"
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    @property
+    def available(self) -> bool:
+        return self._drain is not None and self._drain.estimate is not None
+
+    @property
+    def native_value(self) -> float | None:
+        if self._drain is None or self._drain.estimate is None:
+            return None
+        return round(self._drain.estimate, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Provenance of the estimate (ADR-018 §5)."""
+        drain = self._drain
+        if drain is None or drain.estimate is None:
+            return None
+        processed = drain.last_slot or drain.suppress_until
+        return {
+            "last_counted_value": round(drain.last_value, 3)
+            if drain.last_value is not None
+            else None,
+            "last_drain_interval_end": drain.last_end.isoformat() if drain.last_end else None,
+            "drain_source": drain.last_source,
+            "counted_intervals": drain.count,
+            "last_processed_slot": processed.isoformat() if processed else None,
+        }
+
+    @property
+    def extra_restore_state_data(self) -> _StandbyExtraData | None:
+        if self._drain is None:
+            return None
+        return _StandbyExtraData(drain_restore_data(self._drain))
+
+    async def async_added_to_hass(self) -> None:
+        """Restore, then hand the coordinator the restored aggregates and subscribe.
+
+        The coordinator feeds its machine only after this ran, so the first
+        replay starts from the restored estimate instead of counting twice. The
+        replay itself happens later inside a slot job: nothing here waits for the
+        recorder, so Home Assistant's startup is never blocked (ADR-018 §6).
+        """
+        await super().async_added_to_hass()
+        last = await self.async_get_last_extra_data()
+        self._drain = self._coordinator.restore_standby(last.as_dict() if last else None)
+        self._unsub_coordinator = self._coordinator.subscribe_standby(self._on_standby)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_coordinator is not None:
+            self._unsub_coordinator()
+            self._unsub_coordinator = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_standby(self, state: DrainState) -> None:
+        """The machine moved on after a slot job: take its state and publish it."""
+        self._drain = state
         self.async_write_ha_state()
