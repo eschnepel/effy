@@ -169,6 +169,16 @@ rewrites only the slots near now. _Avoid_: Slot recalc
 history days, started by the button or the service; the only writer of hourly
 (long-term) statistics. _Avoid_: Full recalc
 
+**Recalculation phase**: One of the three parts of a recalculation: *fetch*
+(reading raw states and statistics from the recorder), *compute* (the slot
+values, on the event loop unless ADR-022 moves it), *write* (importing the
+statistics). The time of each is logged. _Avoid_: Stage, step
+
+**Parse probe**: One extra pass over all raw states during a history
+recalculation, timed on its own, so the cost of parsing (state strings to
+numbers, timestamps to epoch seconds) is visible apart from the compute phase. A
+diagnostic, not part of the calculation. _Avoid_: Parsing phase
+
 **Closing step**: The last action of a recalculation, the slot job or the
 history recalculation: the update of the recalculated-from sensor. It tells a
 listener that the recalculation's statistics and states are final.

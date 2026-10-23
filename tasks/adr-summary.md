@@ -1,7 +1,7 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
-`adr/` are authoritative.
+Last updated: 2026-10-19 (Draft ADR-022 added; last accepted change: ADR-021).
+Keep this concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -98,3 +98,17 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
 - No code in Shady or Chargy from this repo, and no `unit` key and no `sum`
   aggregation in the published `sensors` list (ADR-021).
 - No setup check or repair issue about the recorder (ADR-017 retired, ADR-020).
+
+## Draft ADRs (not yet ground truth — do not implement from these)
+
+- **ADR-022 (Draft, 2026-10-19):** a history recalculation takes about 5 minutes
+  on a Raspberry Pi 5 and the code has no phase timing. Proposed: log the wall
+  time of the fetch, compute and write phases first (TASK-0010, done 2026-10-19,
+  with a separate parse probe); only if compute dominates (gate G-perf,
+  thresholds Q1) add an array-native compute path with numpy in a new pure
+  module `calculation_grid.py` next to `calculation.py` (TASK-0011 to
+  TASK-0013), tested against the pure-Python functions as oracle with an
+  explicit tolerance (`abs=1e-9`, slot keys exact); optionally run the compute
+  phase in an executor job (TASK-0014). Today: no runtime dependency beyond Home
+  Assistant, the compute phase runs on the event loop, and the TASK-0004 harness
+  compares with `pytest.approx` defaults.

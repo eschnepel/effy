@@ -142,8 +142,13 @@ Two recorder tables are populated for every recalculated slot:
 from __future__ import annotations
 
 import logging
+import time
+from collections import deque
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from itertools import chain
+from operator import itemgetter
+from typing import Any, TypeVar
 
 from homeassistant.components.recorder import get_instance as get_recorder
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
@@ -198,6 +203,149 @@ _LOGGER = logging.getLogger(__name__)
 
 # Type alias for a single statistics row returned by the recorder
 StatRow = dict[str, Any]
+
+_T = TypeVar("_T")
+
+# Wall clock of the recalculation timing. A module attribute, read at every use,
+# so tests can replace it with a fake that advances only where they say.
+_clock: Callable[[], float] = time.perf_counter
+
+
+class _PhaseTimings:
+    """Wall-clock accounting of one recalculation (TASK-0010, ADR-022 Decision 1).
+
+    Three phases (GLOSSARY: Recalculation phase), and the rest:
+
+    * ``fetch``: awaiting a recorder executor job (unit lookup, raw states,
+      offline-anchor lookbacks, power-family statistics) — database reads;
+    * ``compute``: Effy's own synchronous work on the event loop — jump windows,
+      the trapezoid, interpolation, the slot loop, and the scans the fetch
+      helper does between its jobs;
+    * ``write``: ``_write_recorder_statistics`` — database writes;
+    * ``other``: everything else in the call (total minus the phases).
+
+    A "current phase" stopwatch: ``enter(name)`` books the time since the last
+    switch to the phase that was current, so the phases and ``other`` always add
+    up to the total and the instrumented code needs only one-line calls.
+
+    ``parse_probe`` (history recalculation only) adds a separate measurement of
+    what parsing costs: ONE extra pass over every raw state held after the last
+    fetch, once converting the state strings (``_parse_energy_state``), once
+    converting the timestamps to epoch seconds (what an array-based compute path
+    would have to do; today's code does datetime arithmetic instead). It is
+    booked as its own ``probe`` phase, never as ``compute``, so it does not
+    disturb the compute figure. The code parses each state in
+    ``trapezoidal_slot_contributions`` and, when a reading cache is passed (the
+    coordinator always does), once more in the fetch helper — the probe is the
+    cost of one such pass.
+
+    A disabled instance (``_NO_TIMINGS``) does nothing and keeps no state; it is
+    the default for every caller that does not ask for timing.
+    """
+
+    def __init__(
+        self, kind: str, level: int, *, parse_probe: bool = False, enabled: bool = True
+    ) -> None:
+        self.kind = kind
+        self.level = level
+        self.enabled = enabled
+        self.parse_probe = parse_probe and enabled
+        self.seconds: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
+        self.queries = 0
+        self.raw_states = 0
+        self.slots = 0
+        self.rows = 0
+        self.parse_values = 0.0
+        self.parse_timestamps = 0.0
+        self._phase: str | None = None
+        self._started = self._since = _clock() if enabled else 0.0
+        self._ended: float | None = None
+
+    def enter(self, phase: str | None) -> None:
+        """Switch the current phase; ``None`` means no phase (time counts as other)."""
+        if not self.enabled:
+            return
+        now = _clock()
+        if self._phase is not None:
+            self.seconds[self._phase] += now - self._since
+        self._phase, self._since = phase, now
+
+    async def recorder_job(self, recorder: Any, func: Callable[..., _T], *args: Any) -> _T:
+        """Await ``recorder.async_add_executor_job(func, *args)`` as a ``fetch`` query."""
+        if not self.enabled:
+            plain: _T = await recorder.async_add_executor_job(func, *args)
+            return plain
+        self.queries += 1
+        previous = self._phase
+        self.enter("fetch")
+        try:
+            result: _T = await recorder.async_add_executor_job(func, *args)
+        finally:
+            self.enter(previous)
+        return result
+
+    def note_raw_states(self, energy_raw: dict[str, list[tuple[datetime, str]]]) -> None:
+        if self.enabled:
+            self.raw_states = sum(len(raw) for raw in energy_raw.values())
+
+    def probe_parse(self, energy_raw: dict[str, list[tuple[datetime, str]]]) -> None:
+        """One extra parse pass over all held raw states (see the class docstring)."""
+        if not self.parse_probe:
+            return
+        previous = self._phase
+        self.enter("probe")
+        entries = chain.from_iterable(energy_raw.values())
+        began = _clock()
+        deque(map(_parse_energy_state, map(itemgetter(1), entries)), maxlen=0)
+        parsed = _clock()
+        self.parse_values = parsed - began
+        entries = chain.from_iterable(energy_raw.values())
+        try:
+            deque(map(datetime.timestamp, map(itemgetter(0), entries)), maxlen=0)
+        except (OverflowError, OSError, ValueError):
+            # A diagnostic must never break the recalculation it measures.
+            _LOGGER.debug("Effy: timestamp pass of the parse probe skipped", exc_info=True)
+        else:
+            self.parse_timestamps = _clock() - parsed
+        self.enter(previous)
+
+    def total(self) -> float:
+        end = self._ended if self._ended is not None else _clock()
+        return end - self._started
+
+    def other(self) -> float:
+        return max(0.0, self.total() - sum(self.seconds.values()))
+
+    def finish(self, rows: int) -> None:
+        """Close the record and log it (one line, meant to be pasted into a report)."""
+        if not self.enabled:
+            return
+        self.enter(None)
+        self._ended = _clock()
+        self.rows = rows
+        if not _LOGGER.isEnabledFor(self.level):
+            return
+        sec = self.seconds
+        parts = [
+            f"Effy recalculation timing ({self.kind}): total {self.total():.2f} s"
+            f" = fetch {sec['fetch']:.2f} s + compute {sec['compute']:.2f} s"
+            f" + write {sec['write']:.2f} s"
+        ]
+        if self.parse_probe:
+            parts.append(f" + parse probe {sec['probe']:.2f} s")
+        parts.append(
+            f" + other {self.other():.2f} s; recorder queries {self.queries},"
+            f" raw states {self.raw_states}, slots {self.slots}, rows written {self.rows}"
+        )
+        if self.parse_probe:
+            parts.append(
+                "; parse probe (one extra pass over all raw states, not part of compute):"
+                f" values {self.parse_values:.2f} s, timestamps {self.parse_timestamps:.2f} s"
+            )
+        _LOGGER.log(self.level, "%s", "".join(parts))
+
+
+_NO_TIMINGS = _PhaseTimings("", logging.NOTSET, enabled=False)
 
 # Fallback only used if the recorder instance somehow has no usable
 # keep_days value (should not normally happen) – matches HA's own default.
@@ -641,6 +789,7 @@ async def _fetch_energy_raw_with_anchor(
     end: datetime,
     max_history_days: int,
     energy_reading_cache: dict[str, tuple[datetime, str]] | None,
+    phases: _PhaseTimings = _NO_TIMINGS,
 ) -> list[tuple[datetime, str]]:
     """Raw state history for one energy-family sensor over
     [raw_history_start, end], with the offline-anchor lookback applied and
@@ -652,8 +801,8 @@ async def _fetch_energy_raw_with_anchor(
     2026-10-05) — an offline-recovery jump's pre-outage reading must be
     visible in *both*.
     """
-    raw_states: list[tuple[datetime, str]] = await recorder.async_add_executor_job(
-        _fetch_raw_energy_states, hass, eid, raw_history_start, end
+    raw_states: list[tuple[datetime, str]] = await phases.recorder_job(
+        recorder, _fetch_raw_energy_states, hass, eid, raw_history_start, end
     )
     # RECENT_RECALC_WINDOW is deliberately small (ADR-013) — if the
     # sensor was already offline when this window's own fetch starts,
@@ -692,8 +841,13 @@ async def _fetch_energy_raw_with_anchor(
         anchor = (
             cached
             if cached is not None and cached[0] < raw_history_start
-            else await recorder.async_add_executor_job(
-                _fetch_last_valid_state_before, hass, eid, raw_history_start, max_history_days
+            else await phases.recorder_job(
+                recorder,
+                _fetch_last_valid_state_before,
+                hass,
+                eid,
+                raw_history_start,
+                max_history_days,
             )
         )
         if anchor is not None:
@@ -724,6 +878,7 @@ async def _compute_effective_slots(
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
     extend_for_jumps: bool = False,
     trigger_since: datetime | None = None,
+    phases: _PhaseTimings = _NO_TIMINGS,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """Core computation shared by async_recalculate_history and async_recalculate_recent.
 
@@ -802,7 +957,11 @@ async def _compute_effective_slots(
         input above, exposed as its own statistic so the smoothing is
         visible, not just an invisible internal correction.
     All three are ready for _write_recorder_statistics. Nothing is written here.
+
+    ``phases`` (TASK-0010) books the time of this call to the fetch and compute
+    phases; the default does nothing.
     """
+    phases.enter("compute")
     input_ids: list[str] = all_input_ids(entry_options)
     output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
     all_ids: list[str] = input_ids + output_ids
@@ -820,8 +979,8 @@ async def _compute_effective_slots(
     # assuming it matches the live state, to avoid interpreting e.g. an
     # already-Wh value as if it were kWh (or vice versa), which would throw
     # off every downstream Wh/kWh → W conversion by a further factor of 1000.
-    stats_units: dict[str, str] = await recorder.async_add_executor_job(
-        _get_statistics_units, hass, all_ids
+    stats_units: dict[str, str] = await phases.recorder_job(
+        recorder, _get_statistics_units, hass, all_ids
     )
     units: dict[str, str] = {}
     for eid in all_ids:
@@ -863,7 +1022,14 @@ async def _compute_effective_slots(
     energy_raw: dict[str, list[tuple[datetime, str]]] = {}
     for eid in energy_ids:
         energy_raw[eid] = await _fetch_energy_raw_with_anchor(
-            hass, recorder, eid, raw_history_start, end, max_history_days, energy_reading_cache
+            hass,
+            recorder,
+            eid,
+            raw_history_start,
+            end,
+            max_history_days,
+            energy_reading_cache,
+            phases,
         )
 
     if extend_for_jumps and energy_ids:
@@ -895,8 +1061,10 @@ async def _compute_effective_slots(
                     end,
                     max_history_days,
                     energy_reading_cache,
+                    phases,
                 )
 
+    phases.note_raw_states(energy_raw)
     for eid in energy_ids:
         contributions = trapezoidal_slot_contributions(
             energy_raw[eid], slot_minutes=SLOT_MINUTES, now=end
@@ -906,13 +1074,14 @@ async def _compute_effective_slots(
             for slot, value in contributions.items()
             if start <= slot < end
         }
+    phases.probe_parse(energy_raw)
 
     # ---- Power-family sensors: unchanged, statistics `mean` per slot ----
     # Fetched from the (possibly jump-extended) `start`, so every sensor
     # covers the same range.
     if power_ids:
-        raw_stats: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-            _fetch_statistics, hass, power_ids, start, end
+        raw_stats: dict[str, list[StatRow]] = await phases.recorder_job(
+            recorder, _fetch_statistics, hass, power_ids, start, end
         )
         for eid, rows in raw_stats.items():
             indexed[eid] = {row["start"]: row for row in rows}
@@ -945,8 +1114,10 @@ async def _compute_effective_slots(
     for entity_rows in indexed.values():
         slot_set.update(entity_rows.keys())
     slots: list[datetime] = sorted(slot_set)
+    phases.slots = len(slots)
 
     if not slots:
+        phases.enter(None)
         return {}, {}, {}
 
     # results: effective (post-waterfall) values per slot, input sensors only
@@ -1013,6 +1184,7 @@ async def _compute_effective_slots(
             "slot_values": slot_values,
         }
 
+    phases.enter(None)
     return per_sensor, per_sensor_power, per_sensor_smoothed
 
 
@@ -1128,6 +1300,7 @@ async def async_recalculate_history(
     when a lookback is actually needed) — callers without access to a
     coordinator (e.g. tests) don't need to provide one.
     """
+    phases = _PhaseTimings("history", logging.INFO, parse_probe=True)
     max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
     end = datetime.now(tz=timezone.utc)
     start = end - timedelta(days=max_days)
@@ -1135,7 +1308,7 @@ async def async_recalculate_history(
     short_term_cutoff = end - timedelta(days=short_term_retention_days)
 
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
-        hass, entry_options, start, end, energy_reading_cache=energy_reading_cache
+        hass, entry_options, start, end, energy_reading_cache=energy_reading_cache, phases=phases
     )
     # No statistic for the open slot (ADR-016 Amendment 2026-10-16): the
     # recorder inserts that row itself; the live push below is then the last
@@ -1145,9 +1318,11 @@ async def async_recalculate_history(
     per_sensor_smoothed = _drop_open_slot(per_sensor_smoothed, end)
     if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
+        phases.finish(0)
         return 0, None, set(), {}
 
     short_term_written = 0
+    phases.enter("write")
     if per_sensor:
         short_term_written += await _write_recorder_statistics(
             hass, per_sensor, short_term_cutoff=short_term_cutoff, include_long_term=True
@@ -1160,6 +1335,7 @@ async def async_recalculate_history(
         short_term_written += await _write_recorder_statistics(
             hass, per_sensor_smoothed, short_term_cutoff=short_term_cutoff, include_long_term=True
         )
+    phases.enter(None)
 
     touched_entity_ids: set[str] = (
         set(per_sensor) | set(per_sensor_power) | set(per_sensor_smoothed)
@@ -1174,6 +1350,7 @@ async def async_recalculate_history(
         len(per_sensor_power),
         len(per_sensor_smoothed),
     )
+    phases.finish(short_term_written)
     return short_term_written, start, touched_entity_ids, last_values
 
 
@@ -1268,6 +1445,7 @@ async def async_recalculate_recent(
     single recorder query. Safe to omit (defaults to None); the slot timer
     always provides one in practice.
     """
+    phases = _PhaseTimings("recent", logging.DEBUG)
     start = now - RECENT_RECALC_WINDOW
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
         hass,
@@ -1277,6 +1455,7 @@ async def async_recalculate_recent(
         energy_reading_cache=energy_reading_cache,
         extend_for_jumps=True,
         trigger_since=trigger_since,
+        phases=phases,
     )
     # No statistic for the open slot (ADR-016 Amendment 2026-10-16): the
     # recorder inserts that row itself, Effy only updates it afterwards.
@@ -1289,6 +1468,7 @@ async def async_recalculate_recent(
             RECENT_RECALC_WINDOW,
             now,
         )
+        phases.finish(0)
         return 0, None, set(), {}
 
     written = 0
@@ -1296,7 +1476,9 @@ async def async_recalculate_recent(
     for series in (per_sensor, per_sensor_power, per_sensor_smoothed):
         if not series:
             continue
+        phases.enter("write")
         written += await _write_recorder_statistics(hass, series, include_long_term=False)
+        phases.enter(None)
         for info in series.values():
             for slot, _value in info["slot_values"]:
                 if earliest is None or slot < earliest:
@@ -1316,6 +1498,7 @@ async def async_recalculate_recent(
         len(per_sensor_smoothed),
         earliest,
     )
+    phases.finish(written)
     return written, earliest, touched_entity_ids, last_values
 
 

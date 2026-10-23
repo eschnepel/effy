@@ -102,3 +102,26 @@ order (ADR-012 Amendment 2026-10-18), the restore, README and glossary, tests.
 
 **Scope (out):** any change in Shady or Chargy (owned by those projects); any
 change to the loss model or to what Effy writes into statistics.
+
+## CAP-6 — A history recalculation whose time is known, and short enough *(proposed 2026-10-19; Gate 1 pending, except that the human approved starting TASK-0010 on 2026-10-19; human request: a history recalculation takes about 5 minutes on a Raspberry Pi 5; design Draft ADR-022)*
+
+**What the user sees:** after pressing the recalculation button, the log says
+where the time went (reading the recorder, computing, writing statistics). If
+the computing turns out to be the cause, the history recalculation with the
+default 28 history days is several times faster, and the event loop is not held
+while it computes. Every `effy_*` value stays as before (within the tolerance of
+ADR-022); nothing is configured differently.
+
+**End-to-end demonstration:** the Pi's own log line of a history recalculation
+(TASK-0010), the human's reading of it against the thresholds of ADR-022 (gate
+G-perf), and — only if the gate opens — the same line again after the change,
+with the slot-timer equivalence harness (CAP-1, TASK-0004) green.
+
+**Scope (in):** timing of the three phases of a recalculation; the gate; if
+released, an executor job for the compute phase and an array-native compute path
+with numpy.
+
+**Scope (out, not decided):** a remedy for slow recorder reads or writes (a new
+ADR if the measurement points there); cheaper parsing of the raw states without
+numpy (untested); any change to the loss model, to what Effy writes into
+statistics, to the rewrite range, or to anything Shady and Chargy see.

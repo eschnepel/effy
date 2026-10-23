@@ -291,6 +291,48 @@ The same loss-distribution algorithm is applied to each 5-minute slot. Existing
 statistics for the `effy_*` sensors are **overwritten**, which is useful after
 first installation or after changing the sensor list.
 
+### How long did a recalculation take?
+
+Every history recalculation writes one line to the Home Assistant log (logger
+`custom_components.effy.history`, level INFO). If it does not show up, raise the
+level:
+
+```yaml
+logger:
+  logs:
+    custom_components.effy.history: info
+```
+
+The line has this shape (numbers made up):
+
+```text
+Effy recalculation timing (history): total 301.20 s = fetch 40.10 s + compute 250.40 s + write 9.90 s + parse probe 0.60 s + other 0.20 s; recorder queries 23, raw states 1204331, slots 8064, rows written 24192; parse probe (one extra pass over all raw states, not part of compute): values 0.35 s, timestamps 0.25 s
+```
+
+| Part | What it measures |
+| -- | -- |
+| `fetch` | waiting for the recorder to read raw states, units and statistics |
+| `compute` | Effy's own calculation on the event loop (trapezoid, interpolation, the slot loop, and the scans between the recorder reads) |
+| `write` | importing the statistics into the recorder |
+| `parse probe` | the extra pass below, kept out of `compute` |
+| `other` | everything else in the call |
+| `recorder queries` | recorder jobs issued (units, one raw read per energy sensor, offline-anchor lookbacks, power statistics) |
+| `raw states` | raw state entries held for the calculation |
+| `slots`, `rows written` | 5-minute slots calculated, short-term rows written |
+
+The **parse probe** measures what parsing the raw states costs, separately: one
+extra pass over all raw states, converting the state strings to numbers
+(`values`) and the timestamps to epoch seconds (`timestamps`). Effy parses every
+state at least once in the trapezoid and, when called from the button or the
+slot timer, once more while reading the history, so the real parsing time is the
+probe's `values` times the number of those passes. The probe adds roughly its
+own time to the recalculation and is a diagnostic, not a feature.
+
+The 5-minute recalculation writes the same line at level DEBUG, without the
+probe. When reporting a slow recalculation, send that one line, the
+`max_history_days` setting, the number of configured sensors and your Home
+Assistant version.
+
 ### State-class handling during history recalculation
 
 | Source state class | Field read | Wh→W conversion | Written as |

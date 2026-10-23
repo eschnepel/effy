@@ -14,6 +14,12 @@
 | TASK-0007b-retire-recorder-exclusion | Retire the recorder exclusion of ADR-017 (CAP-3; needed by TASK-0005 Stage 2; approved 2026-10-16) | done | TASK-0007a-effy-writes-after-the-recorder | worker-inline + reviewer-inline |
 | TASK-0008-split-input-sensors-by-role | Split the input sensors into PV and BMS inputs (CAP-4, ADR-019 Accepted; silent migration of the old key; needed by TASK-0005 Stage 2) | done | TASK-0006-recorder-synchronized-slot-trigger | worker-inline + reviewer-inline |
 | TASK-0009-config-attributes-on-recalculated-from | Publish Effy's configuration (every Effy sensor with its metadata, the history days) as attributes of `sensor.effy_recalculated_from` (CAP-5, approved; human request 2026-10-18; ADR-021 accepted) | done | TASK-0008-split-input-sensors-by-role, TASK-0005-standby-power-sensor (review; artifacts only) | — |
+| TASK-0010-recalculation-phase-timing | Log the wall time of fetch, compute and write of every recalculation, with the data sizes (CAP-6, ADR-022 Decision 1; the 5-minute history recalculation on the Pi is unexplained) | done | — | — |
+| TASK-0011-array-native-trapezoid | Array-native trapezoid plus the numpy dependency; investigation and formulation spike first (CAP-6, ADR-022) | todo (draft; blocked by gate G-perf and Gate 2) | TASK-0010-recalculation-phase-timing | — |
+| TASK-0012-array-native-waterfall-and-interpolation | Array-native waterfall, unit conversion and gap interpolation on one slot grid (CAP-6, ADR-022) | todo (draft; blocked by gate G-perf and Gate 2) | TASK-0011-array-native-trapezoid | — |
+| TASK-0013-wire-array-native-compute-path | Wire the array path into `_compute_effective_slots`; harness tolerance made explicit (CAP-6, ADR-022 Q3/Q4) | todo (draft; blocked by gate G-perf, Gate 2 and Q3/Q4) | TASK-0011-array-native-trapezoid, TASK-0012-array-native-waterfall-and-interpolation | — |
+| TASK-0014-compute-phase-off-the-event-loop | Run the compute phase as an executor job on plain data; independent of numpy (CAP-6, ADR-022 Decision 3, Q2/Q5) | todo (draft; blocked by gate G-perf, Q2 and Gate 2) | TASK-0010-recalculation-phase-timing | — |
+| TASK-0015-retire-pure-python-stages | Move production-unused pure-Python stage functions to `tests/` as the oracle (CAP-6, only if ADR-022 Q3 = A) | todo (draft; blocked by Q3 = A) | TASK-0013-wire-array-native-compute-path | — |
 
 Execution order: strictly sequential. 0001 and 0002 both edit `calculation.py` /
 `tests/test_calculation.py` (shared files → sequential, Phase 3); 0003 consumes
@@ -24,6 +30,17 @@ runs first; 0008 follows it (both edit `coordinator.py` and
 `tests/test_coordinator_slot.py` → sequential, Phase 3). 0007 stays deferred
 until 0006 is `done` and the human has decided the open-slot question; TASK-0005
 Stage 2 needs 0007 and 0008.
+
+CAP-6 (2026-10-19, proposed): TASK-0010 is the only task releasable at Gate 2;
+it changes no behaviour. TASK-0011 to TASK-0015 are drafts and stay `todo` until
+the human has seen TASK-0010's measurement from the Pi and ADR-022's gate G-perf
+has opened (amendment in ADR-022's text). Order if released, strictly
+sequential: TASK-0010; then, per ADR-022 Q5, either TASK-0014 first (it edits
+`history.py` like TASK-0013) or TASK-0011 → TASK-0012 → TASK-0013 with the
+executor decision taken afterwards; TASK-0015 last and only with Q3 = A.
+TASK-0011 and TASK-0012 share `calculation_grid.py`; TASK-0013 and TASK-0014
+share `history.py`; TASK-0015 shares `calculation.py` and its tests → no
+parallelism.
 
 Process notes (no structural change): TASK-0007b (2026-10-16), same inline flow:
 tests first (5 failed against the pre-change code), removal, separate review —
@@ -100,6 +117,9 @@ changed.
 | 2026-10-18 | TASK-0009 | human review of Draft ADR-021 and TASK-0009: standby power listed as `direction: output`; restore extended from the recalculated-from sensor to every Effy sensor (effective, derived power, smoothed now restore too) | the human's corrections after reading the drafts; widens the `sensor.py` footprint, no new task |
 | 2026-10-18 | TASK-0009 | Gate 1 (CAP-5) and Gate 2 (TASK-0009, ADR-021 Draft → Accepted) approved by the human; docs committed as baseline; implementation started inline (no sub-agent tool available) | the human's approval |
 | 2026-10-18 | TASK-0009 | implemented inline as worker, then reviewed as reviewer: FAIL once (no test of the full six-sensor fixture, of the missing standby entry, nor that a restore writes nothing), fixed, PASS; ADR-021 got two amendments (verification; `restored_as_of` after a second reboot, confirmed by the human) | review checklist; Home Assistant source read for the unverified points |
+| 2026-10-19 | (external) human request | added Draft ADR-022 (measure the history recalculation, then a gated array-native compute path with numpy), CAP-6 proposal in `tasks/adr-capability.md` (pending Gate 1), TASK-0010 (releasable at Gate 2) and drafts TASK-0011 to TASK-0015 blocked by gate G-perf | the human reports a history recalculation of about 5 minutes on a Raspberry Pi 5; a sandbox benchmark (numpy 4–9× on the compute phase) cannot explain that figure, because the code has no phase timing and the compute phase measured 0.8 s on synthetic data; so measurement comes first |
+| 2026-10-19 | TASK-0010 | Gate 2 for TASK-0010 approved by the human ("Proceed with instrumentalisation. Measure parsing separate if possible."); the other CAP-6 tasks and Gate 1 of CAP-6 as a whole stay pending | human go-ahead; the request to measure parsing separately added a parse probe to the task |
+| 2026-10-19 | TASK-0010 | implemented inline as worker, then reviewed as reviewer: PASS. Parse probe added (one extra pass over the raw states, separate from `compute`; parsing sits in `calculation.py` and cannot be timed inline without changing it); probe hardened against timestamp errors and a missing jump-refetch test added during the review. Draft ADR-022 Decision 1 and the draft section of `adr-summary.md` updated in the text | 440 tests pass (427 before); `ruff` clean; `mypy` shows only the 3 errors that already exist on the untouched tree. First reading on 28 synthetic days: one parse pass is about 2–3 % (strings) and 4 % (timestamps) of the pure-Python compute phase. Next step is the human's: one history recalculation on the Pi with the `history` logger at INFO, then gate G-perf |
 
 ## Audit Groups
 
