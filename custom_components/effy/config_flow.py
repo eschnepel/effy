@@ -10,24 +10,35 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
-    CONF_INPUT_SENSORS,
+    CONF_BMS_INPUT_SENSORS,
     CONF_MAX_HISTORY_DAYS,
     CONF_OUTPUT_SENSORS,
+    CONF_PV_INPUT_SENSORS,
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
 )
 
 
 def _build_schema(
-    input_sensors: list[str] | None = None,
+    pv_input_sensors: list[str] | None = None,
+    bms_input_sensors: list[str] | None = None,
     output_sensors: list[str] | None = None,
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
 ) -> vol.Schema:
+    # The two input lists (ADR-019) are optional keys with a *suggested* value
+    # rather than a default: a default would bring a cleared list back (the
+    # frontend omits an emptied optional field), and either list must be
+    # clearable — a PV-only system has no BMS input, a BMS-only one no PV
+    # input. "At least one input in total" is checked in _validate_user_input.
     return vol.Schema(
         {
-            vol.Required(
-                CONF_INPUT_SENSORS,
-                default=input_sensors or [],
+            vol.Optional(
+                CONF_PV_INPUT_SENSORS,
+                description={"suggested_value": pv_input_sensors or []},
+            ): selector.selector({"entity": {"multiple": True, "domain": ["sensor"]}}),
+            vol.Optional(
+                CONF_BMS_INPUT_SENSORS,
+                description={"suggested_value": bms_input_sensors or []},
             ): selector.selector({"entity": {"multiple": True, "domain": ["sensor"]}}),
             vol.Required(
                 CONF_OUTPUT_SENSORS,
@@ -86,6 +97,38 @@ def _outputs_missing_device_class(hass: Any, output_ids: list[str]) -> bool:
     return False
 
 
+def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
+    """Validate one submit of the config or the options flow (ADR-019).
+
+    Returns translatable error keys (resolved via translations/*.json), never
+    raw text — ADR-000 §8. The first failing check wins, in this order: at
+    least one input in total; no sensor in both input lists; at least one
+    output; every output has a device class. No BMS input is required.
+    """
+    pv = user_input.get(CONF_PV_INPUT_SENSORS, [])
+    bms = user_input.get(CONF_BMS_INPUT_SENSORS, [])
+    outputs = user_input.get(CONF_OUTPUT_SENSORS, [])
+    errors: dict[str, str] = {}
+    if len(pv) + len(bms) < 1:
+        errors[CONF_PV_INPUT_SENSORS] = "at_least_one_input"
+    elif set(pv) & set(bms):
+        errors[CONF_BMS_INPUT_SENSORS] = "sensor_in_both_input_lists"
+    elif len(outputs) < 1:
+        errors[CONF_OUTPUT_SENSORS] = "at_least_one_output"
+    elif _outputs_missing_device_class(hass, outputs):
+        errors[CONF_OUTPUT_SENSORS] = "output_needs_device_class"
+    return errors
+
+
+def _normalised(user_input: dict[str, Any]) -> dict[str, Any]:
+    """The submitted options with both input lists always present (possibly empty)."""
+    return {
+        **user_input,
+        CONF_PV_INPUT_SENSORS: list(user_input.get(CONF_PV_INPUT_SENSORS, [])),
+        CONF_BMS_INPUT_SENSORS: list(user_input.get(CONF_BMS_INPUT_SENSORS, [])),
+    }
+
+
 class EffyConfigFlow(
     config_entries.ConfigFlow,  # type: ignore[misc]
     domain=DOMAIN,
@@ -106,17 +149,12 @@ class EffyConfigFlow(
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            if len(user_input.get(CONF_INPUT_SENSORS, [])) < 1:
-                errors[CONF_INPUT_SENSORS] = "at_least_one_input"
-            elif len(user_input.get(CONF_OUTPUT_SENSORS, [])) < 1:
-                errors[CONF_OUTPUT_SENSORS] = "at_least_one_output"
-            elif _outputs_missing_device_class(self.hass, user_input.get(CONF_OUTPUT_SENSORS, [])):
-                errors[CONF_OUTPUT_SENSORS] = "output_needs_device_class"
-            else:
+            errors = _validate_user_input(self.hass, user_input)
+            if not errors:
                 return self.async_create_entry(
                     title="Effy",
                     data={},
-                    options=user_input,
+                    options=_normalised(user_input),
                 )
 
         return self.async_show_form(
@@ -148,20 +186,16 @@ class EffyOptionsFlow(config_entries.OptionsFlow):  # type: ignore[misc]
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            if len(user_input.get(CONF_INPUT_SENSORS, [])) < 1:
-                errors[CONF_INPUT_SENSORS] = "at_least_one_input"
-            elif len(user_input.get(CONF_OUTPUT_SENSORS, [])) < 1:
-                errors[CONF_OUTPUT_SENSORS] = "at_least_one_output"
-            elif _outputs_missing_device_class(self.hass, user_input.get(CONF_OUTPUT_SENSORS, [])):
-                errors[CONF_OUTPUT_SENSORS] = "output_needs_device_class"
-            else:
-                return self.async_create_entry(title="", data=user_input)
+            errors = _validate_user_input(self.hass, user_input)
+            if not errors:
+                return self.async_create_entry(title="", data=_normalised(user_input))
 
         current = self._config_entry.options
         return self.async_show_form(
             step_id="init",
             data_schema=_build_schema(
-                input_sensors=current.get(CONF_INPUT_SENSORS, []),
+                pv_input_sensors=current.get(CONF_PV_INPUT_SENSORS, []),
+                bms_input_sensors=current.get(CONF_BMS_INPUT_SENSORS, []),
                 output_sensors=current.get(CONF_OUTPUT_SENSORS, []),
                 max_history_days=current.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS),
             ),

@@ -4,7 +4,7 @@
 - **Related ADRs:** \[ADR-000, ADR-001, ADR-002, ADR-003, ADR-005, ADR-008,
   ADR-012, ADR-013, ADR-017, ADR-018 (Draft), ADR-019 (Draft)\]
 - **Dependencies:** Stage 1: none. Stage 2:
-  [TASK-0007-retire-recorder-exclusion, TASK-0008-split-input-sensors-by-role]
+  [TASK-0007b-retire-recorder-exclusion, TASK-0008-split-input-sensors-by-role]
 
 ## Goal
 
@@ -171,7 +171,7 @@ This task has two stages with a human decision between them:
     the test file, **not** production code, **not** imported by anything).
   - Related, same session: `GLOSSARY.md` (new), deferred
     `TASK-0006-recorder-synchronized-slot-trigger.md`, deferred
-    `TASK-0007-retire-recorder-exclusion.md`,
+    `TASK-0007b-retire-recorder-exclusion.md`,
     `TASK-0008-split-input-sensors-by-role.md`, CAP-3 and CAP-4 in
     `tasks/adr-capability.md`, `tasks/INDEX.md`.
   - Verification: `pytest` 198 passed (167 existing + 31 new); `ruff check`,
@@ -214,7 +214,7 @@ This task has two stages with a human decision between them:
 - Decisions taken as suggested: validation delay 125 min; the arming and re-read
   rules (◇); one estimate for all drain sources; restored state with a 24 h
   replay lookback; standby stays inside the loss; TASK-0006 split from
-  TASK-0007; README housekeeping in Stage 2; TASK-0006 parameters as Shady.
+  TASK-0007b; README housekeeping in Stage 2; TASK-0006 parameters as Shady.
 - Round 4, all agreed: the resolution is learned (smallest positive peak height
   seen per sensor; for power sensors the smallest step between distinct peak
   readings); a drain peak is exactly one step; the 125 min validation delay
@@ -337,7 +337,7 @@ None. ADR-018 and ADR-019 are Draft only until the human confirms them.
 ### Proposed Stage 2 acceptance criteria (if ADR-018 is confirmed as drafted)
 
 The provisional Stage 2 criteria above are shaped for Option A (SoC) and are
-replaced by these if ADR-018 is confirmed (after TASK-0007 and TASK-0008):
+replaced by these if ADR-018 is confirmed (after TASK-0007b and TASK-0008):
 
 - Given raw readings of an energy-family BMS input, then a pure adapter yields
   its peaks with their heights and power equivalents; given a power-family BMS

@@ -139,3 +139,27 @@ of closed slots plus the open slot.
 **Decided by:** human (AUDIT-0002, Issue 2, new option c: "assume the next slot
 has the same value as the last slot"); scope and the adjacency/offline details
 by Lead Agent — pending human confirmation.
+
+## Amendment — 2026-10-16
+
+**Reason:** TASK-0007a. With `sensor.effy_*` recorded (ADR-017 superseded by
+TASK-0007b) the recorder inserts its own short-term row for every slot when the
+slot ends, with a plain insert. A row Effy had already inserted for the
+still-open slot makes that insert fail with a UNIQUE constraint error (ADR-017's
+root cause). The provisional value of the 2026-10-06 amendment is such a row.
+
+**Decision:** Effy writes **no statistic for the open slot**, in the slot job
+and in the history recalculation alike (`calculation.drop_open_slot` replaces
+`carry_forward_open_slot`, which is removed). The live push of this ADR is
+unchanged: the last slot written is now the last *completed* slot, which has the
+same value the provisional row carried, so the live state is "better than
+nothing" as before. At the next slot the recorder inserts the row for the slot
+that just ended, natively, from the live states, and Effy updates it with the
+calculated values after the recorder-synchronized trigger (ADR-011 Amendment
+2026-10-16) has seen it compiled. The history recalculation no longer pushes the
+≈ 0 sliver of the open slot either. The statistics graph ends at the last
+completed slot. The unaligned base start `now − RECENT_RECALC_WINDOW` stays as
+it is.
+
+**Decided by:** human (2026-10-16, option A of the recorder question); wording
+by Lead Agent.

@@ -42,7 +42,7 @@ trapezoidal_slot_contributions = _calculation.trapezoidal_slot_contributions
 trapezoidal_jump_windows = _calculation.trapezoidal_jump_windows
 recent_rewrite_start = _calculation.recent_rewrite_start
 recent_trigger_from = _calculation.recent_trigger_from
-carry_forward_open_slot = _calculation.carry_forward_open_slot
+drop_open_slot = _calculation.drop_open_slot
 _parse_energy_state = _calculation._parse_energy_state
 TRAPEZOID_MAX_MINUTES = _calculation.TRAPEZOID_MAX_MINUTES
 interpolate_slot_gaps = _calculation.interpolate_slot_gaps
@@ -624,56 +624,41 @@ class TestRecentTriggerWindow:
         assert result == _ts(12, 0) - self.LOOKBACK
 
 
-class TestCarryForwardOpenSlot:
-    """ADR-016 Amendment 2026-10-06: the open slot has the previous slot's value."""
+class TestDropOpenSlot:
+    """ADR-016 Amendment 2026-10-16 (TASK-0007a): Effy writes no statistic for the
+    slot that contains ``now``; the recorder inserts that row itself."""
 
-    NOW = _ts(12, 0, 5)  # open slot 12:00, last closed slot 11:55
+    NOW = _ts(12, 0, 10)  # open slot 12:00, last completed slot 11:55
 
-    def test_open_slot_gets_the_previous_slots_value(self) -> None:
+    def test_the_open_slot_is_removed(self) -> None:
         values = [(_ts(11, 50), 3.0), (_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
-        assert carry_forward_open_slot(values, self.NOW) == [
-            (_ts(11, 50), 3.0),
-            (_ts(11, 55), 7.0),
-            (_ts(12, 0), 7.0),
-        ]
+        assert drop_open_slot(values, self.NOW) == [(_ts(11, 50), 3.0), (_ts(11, 55), 7.0)]
 
     def test_input_is_not_mutated(self) -> None:
         values = [(_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
-        carry_forward_open_slot(values, self.NOW)
+        drop_open_slot(values, self.NOW)
         assert values == [(_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
 
-    def test_no_entry_for_the_open_slot_means_nothing_is_invented(self) -> None:
-        """e.g. a sensor that is offline right now."""
-        values = [(_ts(11, 50), 3.0), (_ts(11, 55), 7.0)]
-        assert carry_forward_open_slot(values, self.NOW) == values
+    def test_closed_slots_are_kept_untouched(self) -> None:
+        values = [(_ts(11, 45), 1.0), (_ts(11, 50), 3.0), (_ts(11, 55), 7.0)]
+        assert drop_open_slot(values, self.NOW) == values
 
-    def test_no_previous_slot_means_nothing_to_carry(self) -> None:
-        values = [(_ts(12, 0), 0.01)]
-        assert carry_forward_open_slot(values, self.NOW) == values
+    def test_now_exactly_on_a_boundary_opens_that_slot(self) -> None:
+        values = [(_ts(11, 55), 7.0), (_ts(12, 0), 0.0)]
+        assert drop_open_slot(values, _ts(12, 0)) == [(_ts(11, 55), 7.0)]
 
-    def test_previous_slot_must_be_the_adjacent_one(self) -> None:
-        """A stale value from 10 minutes ago is not 'the last slot'."""
-        values = [(_ts(11, 50), 3.0), (_ts(12, 0), 0.01)]
-        assert carry_forward_open_slot(values, self.NOW) == values
+    def test_nothing_is_carried_or_invented(self) -> None:
+        assert drop_open_slot([(_ts(12, 0), 0.01)], self.NOW) == []
+        assert drop_open_slot([], self.NOW) == []
 
-    def test_only_the_open_slot_changes(self) -> None:
-        values = [(_ts(11, 50), 3.0), (_ts(11, 55), 7.0), (_ts(12, 0), 0.01)]
-        out = carry_forward_open_slot(values, self.NOW)
-        assert out[:2] == values[:2]
-
-    def test_now_exactly_on_a_boundary_has_no_open_slot_in_range(self) -> None:
-        values = [(_ts(11, 55), 7.0)]
-        assert carry_forward_open_slot(values, _ts(12, 0)) == values
+    def test_slots_after_the_open_one_are_kept(self) -> None:
+        """Only the slot containing ``now`` is removed (a future slot cannot exist)."""
+        values = [(_ts(11, 55), 7.0), (_ts(12, 0), 0.01), (_ts(12, 5), 9.0)]
+        assert drop_open_slot(values, self.NOW) == [(_ts(11, 55), 7.0), (_ts(12, 5), 9.0)]
 
     def test_slot_minutes_is_respected(self) -> None:
         values = [(_ts(11, 45), 7.0), (_ts(12, 0), 0.01)]
-        assert carry_forward_open_slot(values, self.NOW, slot_minutes=15) == [
-            (_ts(11, 45), 7.0),
-            (_ts(12, 0), 7.0),
-        ]
-
-    def test_empty_series(self) -> None:
-        assert carry_forward_open_slot([], self.NOW) == []
+        assert drop_open_slot(values, self.NOW, slot_minutes=15) == [(_ts(11, 45), 7.0)]
 
 
 _SimRule = Callable[[list[tuple[datetime, datetime]], datetime], datetime]

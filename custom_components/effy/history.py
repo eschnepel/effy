@@ -169,7 +169,7 @@ from .calculation import (
     SensorReading,
     TRAPEZOID_MAX_MINUTES,
     _parse_energy_state,
-    carry_forward_open_slot,
+    drop_open_slot,
     distribute_loss,
     effective_in_original_unit,
     interpolate_slot_gaps,
@@ -179,11 +179,11 @@ from .calculation import (
     trapezoidal_slot_contributions,
 )
 from .const import (
-    CONF_INPUT_SENSORS,
     CONF_MAX_HISTORY_DAYS,
     CONF_OUTPUT_SENSORS,
     DEFAULT_MAX_HISTORY_DAYS,
 )
+from .inputs import all_input_ids
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -794,7 +794,7 @@ async def _compute_effective_slots(
         visible, not just an invisible internal correction.
     All three are ready for _write_recorder_statistics. Nothing is written here.
     """
-    input_ids: list[str] = entry_options.get(CONF_INPUT_SENSORS, [])
+    input_ids: list[str] = all_input_ids(entry_options)
     output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
     all_ids: list[str] = input_ids + output_ids
     max_history_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
@@ -1007,21 +1007,20 @@ async def _compute_effective_slots(
     return per_sensor, per_sensor_power, per_sensor_smoothed
 
 
-def _carry_forward_open_slot(
+def _drop_open_slot(
     series: dict[str, dict[str, Any]],
     now: datetime,
 ) -> dict[str, dict[str, Any]]:
-    """Apply ``calculation.carry_forward_open_slot`` to every entity of one
-    per-sensor series (ADR-016 Amendment 2026-10-06). Returns a new dict;
-    entities whose series has nothing to carry forward are passed through
-    unchanged."""
-    return {
-        statistic_id: {
-            **info,
-            "slot_values": carry_forward_open_slot(info["slot_values"], now, SLOT_MINUTES),
-        }
-        for statistic_id, info in series.items()
-    }
+    """Apply ``calculation.drop_open_slot`` to every entity of one per-sensor
+    series (ADR-016 Amendment 2026-10-16). Returns a new dict; an entity that
+    has nothing left afterwards is left out, so it is neither written nor
+    reported as touched."""
+    result: dict[str, dict[str, Any]] = {}
+    for statistic_id, info in series.items():
+        slot_values = drop_open_slot(info["slot_values"], now, SLOT_MINUTES)
+        if slot_values:
+            result[statistic_id] = {**info, "slot_values": slot_values}
+    return result
 
 
 def _last_slot_values(
@@ -1107,9 +1106,8 @@ async def async_recalculate_history(
     written for it this run (``_last_slot_values``, ADR-016) — pushed as
     that entity's live state so a dashboard shows a real number instead
     of "unknown" between recalculations, even though the live path itself
-    stays disabled; see ADR-016 for why this is safe (it's attributed to
-    the wrong, currently-open slot, but gets corrected the next time that
-    slot is itself recalculated). See the module WARNING docstring above
+    stays disabled; see ADR-016 (the open slot is never written, so this is
+    the last completed slot's value). See the module WARNING docstring above
     for how (and why) this writes to internal recorder tables instead of
     using the public statistics import API.
 
@@ -1130,6 +1128,12 @@ async def async_recalculate_history(
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
         hass, entry_options, start, end, energy_reading_cache=energy_reading_cache
     )
+    # No statistic for the open slot (ADR-016 Amendment 2026-10-16): the
+    # recorder inserts that row itself; the live push below is then the last
+    # completed slot's value, not a ~0 sliver.
+    per_sensor = _drop_open_slot(per_sensor, end)
+    per_sensor_power = _drop_open_slot(per_sensor_power, end)
+    per_sensor_smoothed = _drop_open_slot(per_sensor_smoothed, end)
     if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
         return 0, None, set(), {}
@@ -1238,13 +1242,13 @@ async def async_recalculate_recent(
     pre-amendment trigger window of exactly RECENT_RECALC_WINDOW.
 
     The slot that contains ``now`` is still open — only seconds of data
-    stand behind it, so its computed value is ≈ 0. It is written with a
-    *provisional* value instead: the previous (closed) slot's, for the
-    effective and derived-power series (``calculation.carry_forward_open_slot``,
-    ADR-016 Amendment 2026-10-06). The next cycle overwrites it with the
-    real value once the slot has closed, and ADR-016's live push (the last
-    slot written) therefore carries that guess rather than ≈ 0. The full
-    history recalc is unchanged in this respect.
+    stand behind it. **No statistic is written for it** in any series
+    (``calculation.drop_open_slot``, ADR-016 Amendment 2026-10-16, TASK-0007a;
+    supersedes the provisional value of the 2026-10-06 amendment): the
+    recorder inserts that row itself when the slot ends, and Effy updates it
+    in the next cycle. ADR-016's live push (the last slot written) therefore
+    carries the last *completed* slot's value, as the provisional value did.
+    The full history recalc does the same.
 
     ``energy_reading_cache``, if given, is EffyCoordinator's volatile
     last-known-valid-reading cache (ADR-015) — passed straight through to
@@ -1265,8 +1269,11 @@ async def async_recalculate_recent(
         extend_for_jumps=True,
         trigger_since=trigger_since,
     )
-    per_sensor = _carry_forward_open_slot(per_sensor, now)
-    per_sensor_power = _carry_forward_open_slot(per_sensor_power, now)
+    # No statistic for the open slot (ADR-016 Amendment 2026-10-16): the
+    # recorder inserts that row itself, Effy only updates it afterwards.
+    per_sensor = _drop_open_slot(per_sensor, now)
+    per_sensor_power = _drop_open_slot(per_sensor_power, now)
+    per_sensor_smoothed = _drop_open_slot(per_sensor_smoothed, now)
     if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.debug(
             "Effy recent recalc: nothing to recompute in the %s before %s",
@@ -1301,6 +1308,104 @@ async def async_recalculate_recent(
         earliest,
     )
     return written, earliest, touched_entity_ids, last_values
+
+
+async def async_rewrite_hourly(
+    hass: HomeAssistant,
+    units: dict[str, str],
+    hour_start: datetime,
+) -> int:
+    """Rewrite one hour's long-term statistic from its 12 short-term rows (TASK-0007a).
+
+    The recorder rolls an hour up in the same compile that inserts the hour's
+    last slot, before the 5-minute event fires, so that slot enters the roll-up
+    with the recorder's native value and Effy's update of it comes too late
+    (ADR-011 Amendment 2026-10-16). The slot job calls this once, after its
+    recent recalculation (so the just-updated last slot is included), when the
+    last completed slot is the last of its hour.
+
+    ``units`` maps every statistic_id to rewrite to its unit (the recent
+    recalculation's ``last_values`` carry both). Reads the short-term ``mean``
+    rows in ``[hour_start, hour_start + 1 hour)`` in one call and writes the
+    hourly rows with the same writer, and so the same mean/state semantics, as
+    the full history recalculation (``include_short_term=False``). A statistic
+    without any row in the hour is skipped. Returns the number of statistics
+    rewritten. Exceptions propagate; the caller logs them and does not retry —
+    the next history recalculation corrects the hour.
+    """
+    statistic_ids = sorted(units)
+    if not statistic_ids:
+        return 0
+    recorder = get_recorder(hass)
+    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
+        _fetch_statistics, hass, statistic_ids, hour_start, hour_start + timedelta(hours=1)
+    )
+    series: dict[str, dict[str, Any]] = {}
+    for statistic_id in statistic_ids:
+        slot_values = sorted(
+            (row["start"], float(row["mean"]))
+            for row in rows.get(statistic_id, [])
+            if row.get("mean") is not None
+        )
+        if slot_values:
+            series[statistic_id] = {"unit": units[statistic_id], "slot_values": slot_values}
+    if not series:
+        return 0
+    await _write_recorder_statistics(hass, series, include_long_term=True, include_short_term=False)
+    return len(series)
+
+
+async def async_probe_last_slot_ready(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    now: datetime,
+) -> bool:
+    """Whether the recorder has compiled the last completed slot (TASK-0006).
+
+    The slot job's probe. The recorder fires its 5-minute statistics event from
+    *inside* the compile, before the session commits, so right after the event
+    the last completed slot's power-family ``mean`` may not be readable yet.
+    Returns ``False`` only while some power-family sensor (input or output) is
+    demonstrably still being compiled: the slot *before* the last completed one
+    has a ``mean`` and the last completed one has none. A sensor with no data
+    at all, or that had no value in the slot before, is not pending — so it
+    never delays the job. Energy-family sensors are not probed: their values
+    come from raw states (ADR-012/013), not from the compiled slot.
+
+    One two-slot ``statistics_during_period`` read for all power-family
+    sensors; nothing is read when there are none.
+    """
+    input_ids: list[str] = all_input_ids(entry_options)
+    output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
+    all_ids: list[str] = input_ids + output_ids
+    recorder = get_recorder(hass)
+    stats_units: dict[str, str] = await recorder.async_add_executor_job(
+        _get_statistics_units, hass, all_ids
+    )
+    power_ids = [
+        eid
+        for eid in all_ids
+        if _stat_field_for(
+            _get_state_class(hass, eid), stats_units.get(eid) or _get_unit(hass, eid)
+        )
+        == "mean"
+    ]
+    if not power_ids:
+        return True
+
+    slot_seconds = SLOT_MINUTES * 60
+    epoch = now.timestamp()
+    last = datetime.fromtimestamp(epoch - (epoch % slot_seconds) - slot_seconds, tz=timezone.utc)
+    previous = last - timedelta(seconds=slot_seconds)
+    end = last + timedelta(seconds=slot_seconds)
+    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
+        _fetch_statistics, hass, power_ids, previous, end
+    )
+    for eid in power_ids:
+        means = {row["start"]: row.get("mean") for row in rows.get(eid, [])}
+        if means.get(previous) is not None and means.get(last) is None:
+            return False
+    return True
 
 
 def _fetch_statistics(
@@ -1343,6 +1448,7 @@ async def _write_recorder_statistics(
     per_sensor: dict[str, dict[str, Any]],
     short_term_cutoff: datetime | None = None,
     include_long_term: bool = True,
+    include_short_term: bool = True,
 ) -> int:
     """Write 5-min (+ optionally hourly) statistics into the recorder DB.
 
@@ -1376,6 +1482,15 @@ async def _write_recorder_statistics(
     overwrite the correct multi-slot hourly mean with that one slot's value,
     silently degrading long-term data every time it runs.
 
+    ``include_short_term=False`` writes only the hourly rows (the slot job's
+    hourly rewrite, ``async_rewrite_hourly``, whose slot values were just read
+    back from the short-term table); it then returns 0.
+
+    Every row carries exactly ``start``, ``mean`` and ``state``, never
+    ``min``/``max``/``sum``: the recorder's update of an existing row replaces
+    every column, so an update of a row the recorder inserted natively leaves
+    ``min``/``max`` NULL (TASK-0007a).
+
     Because ``async_import_statistics`` only schedules the work
     (fire-and-forget), this function awaits
     ``instance.async_block_till_done()`` once at the end so every queued
@@ -1402,7 +1517,7 @@ async def _write_recorder_statistics(
             if short_term_cutoff is not None
             else slot_values
         )
-        if short_term_slots:
+        if include_short_term and short_term_slots:
             short_term_stats: list[StatisticData] = [
                 {"start": ts, "mean": val, "state": val} for ts, val in short_term_slots
             ]

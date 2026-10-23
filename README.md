@@ -26,9 +26,17 @@ model.
 
 ---
 
-## Required: exclude Effy's own entities from the recorder
+## Recorder
 
-Add this to `configuration.yaml` and restart Home Assistant:
+Effy's `sensor.effy_*` entities are recorded like any other sensor; nothing
+needs to be excluded from the recorder. Effy writes statistics for these
+entities itself, but never inserts a row the recorder is about to insert: it
+starts its work from the recorder's own 5-minute statistics event, never writes
+a statistic for the slot that is still open, and only updates a row after the
+recorder has compiled it (ADR-011, ADR-016, ADR-020).
+
+If you added this to `configuration.yaml` for an earlier version, you may remove
+it and restart Home Assistant:
 
 ```yaml
 recorder:
@@ -37,20 +45,10 @@ recorder:
       - sensor.effy_*
 ```
 
-Effy writes 5-minute statistics for its own `sensor.effy_*` entities directly
-into the recorder database (see ADR-003/ADR-017 — there is no public HA API for
-this). If these entities are *not* also excluded from the recorder's own
-state/statistics tracking, Home Assistant's built-in recorder independently
-tries to compile statistics for them too, from their normal state history —
-racing Effy's own writes for the same 5-minute slot and occasionally raising a
-database error (`UNIQUE constraint failed: statistics_short_term...`) from HA
-core itself. Excluding the glob only stops that redundant native tracking;
-Effy's own statistics writes are unaffected, and history/energy-dashboard graphs
-for `effy_*` entities continue to populate normally. If you forget this step,
-Effy raises a Repair issue in **Settings → System → Repairs** telling you to add
-it.
-
----
+Because the entities are recorded, a slot for which Effy has no data (for
+example during an outage of your source sensors) keeps the recorder's own row
+for the first slot of the outage, which holds the last value Effy reported; the
+following slots stay empty. Effy requires Home Assistant 2026.3 or newer.
 
 ## Configuration
 
@@ -58,9 +56,18 @@ All parameters are set via the UI (Config Flow + Options Flow).
 
 | Parameter | Description | Default |
 | -- | -- | -- |
-| **Input sensors** | PV strings, BMS import-from-battery, BMS import-from-grid | – |
+| **PV input sensors** | PV strings | – |
+| **BMS input sensors** | BMS import-from-battery, BMS import-from-grid (optional) | – |
 | **Output sensors** | BMS export-to-battery, BMS export-to-grid | – |
 | **Max history days** | How many days of 5-min statistics to reprocess | 28 |
+
+At least one input sensor is required in total (PV or BMS); a sensor cannot be
+in both lists. The loss calculation treats both lists as one pool of inputs —
+the split only tells Effy which inputs belong to the battery system.
+
+**Upgrading from a version with one input list:** the old list is moved into the
+PV input list automatically when Effy starts, and every value stays as it was.
+Open Effy's options once and move the BMS sensors to the BMS input list.
 
 Sensors may be in **W, kW, Wh, or kWh**. Effy converts all values to
 W-equivalent average power internally. Output sensors are written in W (or kW),

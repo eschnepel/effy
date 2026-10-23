@@ -1,6 +1,6 @@
 # ADR-017 – Require Recorder Exclusion for `sensor.effy_*` Entities
 
-**Date:** 2026-07-17 **Status:** Accepted
+**Date:** 2026-07-17 **Status:** Superseded by ADR-020 (Draft)
 
 ---
 
@@ -170,3 +170,14 @@ apply it.
   misses `_power`/`_smoothed` suffixes) — the probe only checks the literal glob
   this ADR asks users to add; a differently-shaped exclude block that happens to
   still leave some `effy_*` entities recorded would not be caught.
+
+## Amendment — 2026-10-16
+
+**Reason:** TASK-0007b. The human decided (2026-10-13) that the exclusion is no
+longer needed once the trigger is recorder-synchronized; TASK-0006 and
+TASK-0007a build the guarantees that make that so.
+
+**Decision:** Superseded by ADR-020 (Draft until confirmed by the human). The
+requirement, the setup check and the repair issue are removed.
+
+**Decided by:** human (2026-10-13, confirmed 2026-10-16).

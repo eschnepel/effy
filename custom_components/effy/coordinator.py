@@ -44,15 +44,28 @@ It owns:
     cards show something other than "unknown" between recalculations,
     and so a state_changed event fires either way for cards that only
     refresh on that event (e.g. history/statistics graph cards).
-  - A slot-aligned timer that fires SLOT_TIMER_LAG_SECONDS *after* every
-    SLOT_MINUTES wall-clock boundary and calls
-    history.async_recalculate_recent (ADR-011, ADR-012). Firing after
-    (not before) the boundary trades off some of the recorder-compile
-    safety margin ADR-010 originally used for fresher data — see ADR-011
-    for the reasoning and its limits. The recomputed range is dynamic,
-    not a fixed single slot — see async_recalculate_recent's docstring
-    (a trapezoidal-redistributed energy jump, ADR-012, can touch more
-    than one slot).
+  - The recorder-synchronized slot trigger (TASK-0006, as Shady's
+    TASK-0041; supersedes the wall-clock trigger of ADR-010/ADR-011
+    Decision 3): the recorder's own EVENT_RECORDER_5MIN_STATISTICS_GENERATED,
+    fired from inside its 5-minute compile, starts a *slot job*. The job
+    probes (history.async_probe_last_slot_ready, one await-and-retry loop on
+    the event loop, at most MAX_PROBES retries, PROBE_INTERVAL apart) until
+    the last completed slot's power-family statistics are readable — the
+    event fires *before* the recorder commits — and then runs
+    history.async_recalculate_recent (ADR-011, ADR-012) once. The former
+    wall-clock timer (SLOT_TIMER_LAG_SECONDS after every SLOT_MINUTES
+    boundary) stays only as a watchdog: it starts a job when none was
+    started for WATCHDOG, so a silently missing event cannot stop the
+    recalculation (it also starts the first job after a restart). The
+    recomputed range is dynamic, not a fixed single slot — see
+    async_recalculate_recent's docstring (a trapezoidal-redistributed
+    energy jump, ADR-012, can touch more than one slot).
+  - TASK-0007a: the first job after a restart is held until the first
+    recorder event (the watchdog counts from setup before any job), and when
+    the last completed slot is the last of its hour the slot job rewrites that
+    hour's long-term row after its recent recalculation, under the lock.
+  - One lock that serializes the recent recalculation and the history
+    recalculation (button), see "Thread safety".
   - A small, volatile, in-memory cache of each energy-family entity's
     last known valid reading (last_valid_energy_readings, ADR-015) — not
     the disabled live path's LiveReading cache below, a much lighter
@@ -65,36 +78,60 @@ for that implementation, including the full accumulator formulas.
 
 Thread safety
 -------------
-HA dispatches async_call_later callbacks on the event loop thread.  No
-concurrent access is possible, so no locks are needed.
+HA dispatches async_call_later callbacks and bus listeners on the event loop
+thread, so the coordinator's own state needs no thread lock. What can overlap
+is *work*: a slot job's recent recalculation and the button's history
+recalculation each await recorder reads and writes, and the older snapshot of
+a long history job could overwrite a slot the recent job just wrote correctly.
+Both therefore run under one asyncio.Lock (``_recorder_job_lock``); the second
+waits, it is not skipped (human decision 2026-10-16, as Shady's
+``async_run_cache_job``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 
 from .calculation import LossDistribution
-from .const import CONF_INPUT_SENSORS, CONF_OUTPUT_SENSORS
-from .history import async_recalculate_recent, recent_trigger_since
+from .const import CONF_OUTPUT_SENSORS
+from .inputs import all_input_ids, bms_input_ids, pv_input_ids
+from .history import (
+    async_probe_last_slot_ready,
+    async_recalculate_history,
+    async_recalculate_recent,
+    async_rewrite_hourly,
+    recent_trigger_since,
+)
 from .sensor_utils import SLOT_MINUTES
 
 _LOGGER = logging.getLogger(__name__)
 
 # How long after every SLOT_MINUTES wall-clock boundary the slot-aligned
 # timer fires (see EffyCoordinator._schedule_next_slot_timer, ADR-010,
-# ADR-011). Deliberately short: it trades off recorder-compile safety
-# margin for fresher data — see ADR-011 for why 5s was chosen and what
-# happens if the recorder hasn't compiled the relevant slot(s) yet
-# (async_recalculate_recent finds nothing and simply logs a debug
-# message; nothing is written that cycle).
+# ADR-011). Since TASK-0006 this timer is only the watchdog of the
+# recorder-synchronized trigger (see the module banner): the job it starts
+# probes until the recorder has compiled the slot, so the short lag no
+# longer risks reading a slot that is not there yet.
 SLOT_TIMER_LAG_SECONDS = 5
+
+# Recorder-synchronized slot job (TASK-0006, as Shady's TASK-0041): the
+# recorder fires EVENT_RECORDER_5MIN_STATISTICS_GENERATED from inside its
+# compile, *before* the session commits, so a slot job first probes — one
+# first read plus up to MAX_PROBES retries, PROBE_INTERVAL apart, with an
+# ``await`` on the event loop — until the last completed slot is readable.
+# The wall-clock timer starts a job only if none was started for WATCHDOG.
+PROBE_INTERVAL = timedelta(seconds=1)
+MAX_PROBES = 5
+WATCHDOG = timedelta(minutes=6)
 
 # Type alias for a subscriber callback.
 SubscriberCallback = Callable[[LossDistribution], None]
@@ -145,7 +182,12 @@ class EffyCoordinator:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self._hass = hass
         self._entry = entry
-        self._input_ids: list[str] = entry.options.get(CONF_INPUT_SENSORS, [])
+        # Input sensors by role (ADR-019). ``_input_ids`` is the mixed pool the
+        # waterfall works on; the two roles are exposed separately for the
+        # standby power sensor (ADR-018, TASK-0005 Stage 2).
+        self._pv_input_ids: list[str] = pv_input_ids(entry.options)
+        self._bms_input_ids: list[str] = bms_input_ids(entry.options)
+        self._input_ids: list[str] = all_input_ids(entry.options)
         self._output_ids: list[str] = entry.options.get(CONF_OUTPUT_SENSORS, [])
 
         # Subscriber registry: entity_id → callback
@@ -197,26 +239,62 @@ class EffyCoordinator:
         # computation (ADR-011). Self-reschedules after every firing.
         self._unsub_slot_timer: Callable[[], None] | None = None
 
+        # Recorder-synchronized slot job (TASK-0006). The three parameters
+        # are attributes so tests can shorten them.
+        self._probe_interval: timedelta = PROBE_INTERVAL
+        self._max_probes: int = MAX_PROBES
+        self._watchdog: timedelta = WATCHDOG
+        self._unsub_recorder_event: Callable[[], None] | None = None
+        self._slot_job_task: asyncio.Task[None] | None = None
+        self._slot_job_slot: datetime | None = None  # start of the slot it serves
+        self._slot_job_probing: bool = False
+        self._last_slot_job_at: datetime | None = None
+        self._setup_at: datetime | None = None  # the watchdog's reference before any job
+
+        # See _recorder_job_lock.
+        self._lock_state: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
+
+    @property
+    def pv_input_ids(self) -> list[str]:
+        """Source entity IDs of the PV inputs (ADR-019)."""
+        return list(self._pv_input_ids)
+
+    @property
+    def bms_input_ids(self) -> list[str]:
+        """Source entity IDs of the BMS inputs (ADR-019); the drain sources of ADR-018."""
+        return list(self._bms_input_ids)
+
     # ------------------------------------------------------------------
     # Setup / teardown
     # ------------------------------------------------------------------
 
     @callback  # type: ignore[untyped-decorator]
     def async_setup(self) -> None:
-        """Start the slot-aligned timer.
+        """Subscribe to the recorder's statistics event and start the watchdog timer.
 
         Live-path disabled: no state-change listeners are registered and no
         LiveReading cache is seeded — see module banner and
         disabled/coordinator_live.py.
         """
+        self._setup_at = self._now()
+        self._unsub_recorder_event = self._hass.bus.async_listen(
+            EVENT_RECORDER_5MIN_STATISTICS_GENERATED, self._on_recorder_statistics
+        )
         self._schedule_next_slot_timer()
 
     @callback  # type: ignore[untyped-decorator]
     def async_shutdown(self) -> None:
-        """Cancel the slot timer."""
+        """Remove the event listener, cancel the watchdog timer and any in-flight slot job."""
+        if self._unsub_recorder_event is not None:
+            self._unsub_recorder_event()
+            self._unsub_recorder_event = None
         if self._unsub_slot_timer is not None:
             self._unsub_slot_timer()
             self._unsub_slot_timer = None
+        task = self._slot_job_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._slot_job_task = None
 
     # ------------------------------------------------------------------
     # Subscriber management
@@ -341,50 +419,184 @@ class EffyCoordinator:
     # history-path logic (ADR-011)
     # ------------------------------------------------------------------
 
+    def _now(self) -> datetime:
+        """The current time (a method so tests can control it)."""
+        return datetime.now(tz=timezone.utc)
+
     @callback  # type: ignore[untyped-decorator]
-    def _on_slot_timer(self, _now: Any) -> None:
-        """Slot-aligned timer fired: recalculate recent slots via the history path.
+    def _on_recorder_statistics(self, _event: Any) -> None:
+        """The recorder compiled (and is about to commit) a 5-minute slot.
 
-        Fires SLOT_TIMER_LAG_SECONDS after a slot boundary (ADR-011).
-        Delegates the actual range calculation to
-        history.async_recalculate_recent (ADR-012) — it now dynamically
-        determines how far back to look (a trapezoidal-redistributed
-        energy jump can touch more than one slot), rather than always
-        recomputing exactly one fixed slot.
-
-        Schedules the recalculation as a background task rather than
-        awaiting it directly — this callback itself must stay synchronous
-        (HA's @callback contract), and the timer must still reschedule
-        itself promptly regardless of how long the recalculation takes.
+        Only schedules the slot job: no recorder access, nothing blocking —
+        this runs inside the recorder's compile and must stay a plain
+        ``@callback`` (TASK-0006).
         """
-        self._hass.async_create_task(self._async_recalculate_recent_and_report())
+        self._start_slot_job(self._now())
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_slot_timer(self, now: Any) -> None:
+        """Watchdog: the wall-clock timer fired SLOT_TIMER_LAG_SECONDS after a boundary.
+
+        Starts a slot job only if none was started for ``self._watchdog`` — and
+        before the first job, only once that long has passed since setup
+        (TASK-0007a): the first job after a restart is held until the first
+        recorder event, because HA's catch-up compile of the slots missed
+        during downtime may not have reached a slot yet, and a row Effy
+        inserted first would make the recorder's insert fail. A silently
+        missing event still cannot stop the recalculation. In normal operation
+        the recorder event keeps arriving and this never starts one. Always
+        reschedules itself, whatever the outcome.
+        """
+        if not isinstance(now, datetime):
+            now = self._now()
+        reference = self._last_slot_job_at or self._setup_at
+        if reference is None or now - reference >= self._watchdog:
+            self._start_slot_job(now)
         self._schedule_next_slot_timer()
 
-    async def _async_recalculate_recent_and_report(self) -> None:
+    @staticmethod
+    def _last_completed_slot(now: datetime) -> datetime:
+        """Start of the last completed slot as of ``now`` (never the current one)."""
+        slot_seconds = SLOT_MINUTES * 60
+        epoch = now.timestamp()
+        return datetime.fromtimestamp(
+            epoch - (epoch % slot_seconds) - slot_seconds, tz=timezone.utc
+        )
+
+    def _start_slot_job(self, now: datetime) -> None:
+        """Start one slot job for the last completed slot as of ``now``.
+
+        Unless one was already started for that slot (a duplicate event, or
+        the watchdog right after an event). A job still *probing* for an
+        older slot is cancelled first and never runs its body; one that has
+        already started its body is left to finish (a newer job queues
+        behind it on the lock).
+        """
+        slot = self._last_completed_slot(now)
+        if slot == self._slot_job_slot:
+            return
+        previous = self._slot_job_task
+        if previous is not None and not previous.done() and self._slot_job_probing:
+            previous.cancel()
+        # All state before ``async_create_task``: the task may start eagerly.
+        self._slot_job_slot = slot
+        self._slot_job_probing = True
+        self._last_slot_job_at = now
+        self._slot_job_task = self._hass.async_create_task(self._async_slot_job(now, slot))
+
+    async def _async_slot_job(self, now: datetime, slot: datetime) -> None:
+        """One slot job: probe until the last completed slot is readable, then run the body once.
+
+        Retries after ``self._probe_interval`` with an ``await`` on the loop,
+        at most ``self._max_probes`` times. A sensor that never delivers
+        does not block the job: after the bounded retries the body runs
+        anyway (a failing probe likewise, ADR-000 §8).
+        """
+        try:
+            try:
+                ready = await async_probe_last_slot_ready(self._hass, self._entry.options, now)
+                retries = 0
+                while not ready and retries < self._max_probes:
+                    await asyncio.sleep(self._probe_interval.total_seconds())
+                    retries += 1
+                    ready = await async_probe_last_slot_ready(self._hass, self._entry.options, now)
+            except asyncio.CancelledError:
+                if self._slot_job_slot != slot:
+                    return  # superseded by a newer slot's job: end quietly
+                raise  # shutdown: a real cancellation
+            except Exception:
+                _LOGGER.exception("Effy: slot probe failed — running the slot job without waiting")
+            self._slot_job_probing = False
+            await self._async_recalculate_recent_and_report(slot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Effy: slot job failed (slot %s)", slot)
+
+    def _recorder_job_lock(self) -> asyncio.Lock:
+        """The one lock of the recent and the history recalculation.
+
+        Created for the running loop: an ``asyncio.Lock`` binds to the loop
+        it first has to wait on, and only tests reuse a coordinator across
+        loops.
+        """
+        loop = asyncio.get_running_loop()
+        state = self._lock_state
+        if state is None or state[0] is not loop:
+            state = (loop, asyncio.Lock())
+            self._lock_state = state
+        return state[1]
+
+    async def _async_recalculate_recent_and_report(self, slot: datetime | None = None) -> None:
         """Run async_recalculate_recent and forward its results (ADR-012,
         gap-interpolation feature, and the "push unknown" UX fix).
 
-        Split out from _on_slot_timer so the recalculation can be awaited
-        (needed to get its return value) while _on_slot_timer itself stays
-        a synchronous @callback, per HA's contract.
+        The body of a slot job. Holds the recalculation lock for the whole
+        run — ``now`` is taken only once the lock is held, so a job that
+        waited behind a history recalculation reads current data.
+
+        ``slot`` is the last completed slot the job serves. When it is the last
+        slot of its hour, the hour's long-term row is rewritten afterwards,
+        still under the lock (TASK-0007a, ADR-011 Amendment 2026-10-16): the
+        recorder rolls the hour up before Effy can update that last slot.
         """
-        now = datetime.now(tz=timezone.utc)
-        _written, earliest, touched, last_values = await async_recalculate_recent(
-            self._hass,
-            self._entry.options,
-            now,
-            energy_reading_cache=self.last_valid_energy_readings,
-            trigger_since=recent_trigger_since(self._last_recent_run, now),
-        )
-        # Only reached when the cycle completed (an exception above leaves
-        # the marker alone, so the next cycle's trigger window covers this
-        # one too). max(): cycles may overlap and finish out of order.
-        if self._last_recent_run is None or now > self._last_recent_run:
-            self._last_recent_run = now
-        if earliest is not None:
-            self.set_recalculated_from(earliest)
-        if touched:
-            self.notify_updated(touched, last_values)
+        async with self._recorder_job_lock():
+            now = self._now()
+            _written, earliest, touched, last_values = await async_recalculate_recent(
+                self._hass,
+                self._entry.options,
+                now,
+                energy_reading_cache=self.last_valid_energy_readings,
+                trigger_since=recent_trigger_since(self._last_recent_run, now),
+            )
+            # Only reached when the cycle completed (an exception above leaves
+            # the marker alone, so the next cycle's trigger window covers this
+            # one too). max(): cycles may overlap and finish out of order.
+            if self._last_recent_run is None or now > self._last_recent_run:
+                self._last_recent_run = now
+            if earliest is not None:
+                self.set_recalculated_from(earliest)
+            if touched:
+                self.notify_updated(touched, last_values)
+            if slot is not None and (slot + timedelta(minutes=SLOT_MINUTES)).minute == 0:
+                await self._async_rewrite_hour(slot, last_values)
+
+    async def _async_rewrite_hour(
+        self, slot: datetime, last_values: dict[str, tuple[float, str]]
+    ) -> None:
+        """Rewrite the long-term row of the hour that ``slot`` completes.
+
+        Called with the recalculation lock held. A failure is logged and not
+        retried: the next history recalculation corrects the hour, and it must
+        never fail the slot job (ADR-000 §8).
+        """
+        units = {entity_id: unit for entity_id, (_value, unit) in last_values.items()}
+        if not units:
+            return
+        hour_start = slot.replace(minute=0, second=0, microsecond=0)
+        try:
+            await async_rewrite_hourly(self._hass, units, hour_start)
+        except Exception:
+            _LOGGER.exception("Effy: rewriting the hourly statistics of %s failed", hour_start)
+
+    async def async_recalculate_history_and_report(self) -> int:
+        """Run the full history recalculation (button) under the same lock.
+
+        Reports the earliest touched slot and pushes the last values exactly
+        as the button did before TASK-0006 (ADR-012, ADR-016). Returns the
+        number of slots written. Exceptions propagate to the caller.
+        """
+        async with self._recorder_job_lock():
+            written, recalculated_from, touched, last_values = await async_recalculate_history(
+                self._hass,
+                self._entry.options,
+                energy_reading_cache=self.last_valid_energy_readings,
+            )
+            if recalculated_from is not None:
+                self.set_recalculated_from(recalculated_from)
+            if touched:
+                self.notify_updated(touched, last_values)
+            return written
 
     def _schedule_next_slot_timer(self) -> None:
         """(Re)schedule the slot-aligned timer for its next trigger point."""

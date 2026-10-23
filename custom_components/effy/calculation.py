@@ -486,39 +486,29 @@ def recent_rewrite_start(
     return max(start, floor)
 
 
-def carry_forward_open_slot(
+def drop_open_slot(
     slot_values: list[tuple[datetime, float]],
     now: datetime,
     slot_minutes: int = 5,
 ) -> list[tuple[datetime, float]]:
-    """Give the still-open slot a provisional value: the previous slot's.
+    """Remove the still-open slot: Effy writes no statistic for it.
 
-    The slot-timer path runs seconds after a boundary, so the slot that
-    contains ``now`` has only a few seconds of data behind it and its
-    computed value is ≈ 0 — which draws a spurious drop to 0 at the right
-    edge of the statistics graph and makes ADR-016's live push (the last
-    slot written) almost always 0. Amendment 2026-10-06 (ADR-016): assume
-    the open slot has the same value as the last closed slot instead. That
-    is a guess, and the next cycle replaces it with the real value once
-    the slot has closed — but a guess is closer than 0.
+    ADR-016 Amendment 2026-10-16 (TASK-0007a; supersedes the provisional value
+    of the 2026-10-06 amendment). The slot that contains ``now`` has only
+    seconds of data behind it, and the recorder inserts its own row for every
+    slot when the slot ends (``sensor.effy_*`` is recorded, ADR-017
+    superseded). A row Effy inserted first would make that insert fail with
+    a UNIQUE constraint error. Effy therefore only ever *updates* a row after
+    the recorder's compile. The live state keeps carrying the last completed
+    slot's value, because the live push uses the last slot written.
 
-    ``slot_values`` is one entity's ``(slot_start, value)`` list in
-    ascending slot order. The value of the slot containing ``now`` is
-    replaced by the value of the slot immediately before it, and only if
-    *both* are present: a series that has no entry for the open slot (a
-    sensor that is offline right now, a power-family sensor with nothing
-    compiled yet) is not extended, and a series without a preceding slot
-    has nothing to carry forward and is returned unchanged. Returns a new
-    list; the input is never mutated.
+    ``slot_values`` is one entity's ``(slot_start, value)`` list in ascending
+    slot order; the entry of the slot containing ``now`` is dropped, every
+    other entry is kept as it is. Returns a new list; the input is never
+    mutated.
     """
-    slot_width = timedelta(minutes=slot_minutes)
-    open_slot = _slot_aligned(now, slot_width)
-    previous_slot = open_slot - slot_width
-    values = dict(slot_values)
-    if open_slot not in values or previous_slot not in values:
-        return list(slot_values)
-    carried = values[previous_slot]
-    return [(slot, carried if slot == open_slot else value) for slot, value in slot_values]
+    open_slot = _slot_aligned(now, timedelta(minutes=slot_minutes))
+    return [(slot, value) for slot, value in slot_values if slot != open_slot]
 
 
 # Maximum number of consecutive missing slots that get bridged by linear

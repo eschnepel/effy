@@ -193,10 +193,10 @@ standby, not an error.
 - **Recorder.** The sensor is **not** excluded from the recorder (human): it has
   a state history and, with state class measurement, long-term statistics. Its
   entity ID is `sensor.effy_standby_power`. ADR-017's exclusion glob
-  `sensor.effy_*` is retired by TASK-0007 (the human: no longer needed once the
-  slot trigger is recorder-synchronized, TASK-0006). TASK-0005 Stage 2 therefore
-  depends on TASK-0007 and TASK-0008, so the sensor is born recorded with no
-  interim workaround.
+  `sensor.effy_*` is retired by TASK-0007a and TASK-0007b (the human: no longer
+  needed once the slot trigger is recorder-synchronized, TASK-0006). TASK-0005
+  Stage 2 therefore depends on TASK-0007b and TASK-0008, so the sensor is born
+  recorded with no interim workaround.
 
 ### 6. Structure (ADR-000 §3/§6)
 
@@ -239,7 +239,7 @@ inputs that share the standby.
   two distinct non-zero readings) validates nothing and gives no estimate.
 - The estimate is one value for all drain sources; the source of the last value
   is an attribute.
-- It depends on ADR-019 (BMS inputs apart from PV), TASK-0007 (recorded sensor)
+- It depends on ADR-019 (BMS inputs apart from PV), TASK-0007b (recorded sensor)
   and A1, which the human confirms.
 - The sensor is the first Effy sensor with a real live state and a state machine
   that survives restarts; the replay cost must be bounded in Stage 2.

@@ -1,8 +1,8 @@
 # ADR-019 – Input Sensors Split by Role (PV / BMS)
 
-**Date:** 2026-10-13 **Status:** Draft — every open decision was taken by the
-human on 2026-10-13; awaiting the human's confirmation. Terms follow
-`GLOSSARY.md`.
+**Date:** 2026-10-13 **Status:** Accepted 2026-10-16 (human) — every open
+decision was taken by the human on 2026-10-13; the migration of decision 4 was
+decided and the ADR confirmed on 2026-10-16. Terms follow `GLOSSARY.md`.
 
 ---
 
@@ -17,7 +17,7 @@ evidence which is which (human), whereas a BMS input active alone shows the
 BMS's own draw. Only BMS inputs can be a drain source, and Effy cannot tell them
 apart from PV strings.
 
-## Decision (proposed)
+## Decision
 
 1. **Two config keys replace one.** `CONF_PV_INPUT_SENSORS` (`pv_input_sensors`)
    and `CONF_BMS_INPUT_SENSORS` (`bms_input_sensors`) replace
@@ -31,20 +31,35 @@ apart from PV strings.
 1. **Validation.** At least one input sensor in total (error
    `at_least_one_input` as today); a sensor may not be in both lists (new error
    key); no BMS input is required, so PV-only systems stay possible.
-1. **No migration (human: it is the only installation).** No `VERSION` bump, no
-   `async_migrate_entry`, no special error: the old key is not read anywhere, an
-   old entry fails at setup, and the human sets the integration up again.
+1. **Silent migration of the old key (human, 2026-10-16).** No `VERSION` bump
+   and no `async_migrate_entry`. At the start of `async_setup_entry`, before
+   `add_update_listener` is registered (so no reload is triggered), an entry
+   whose options still contain the old key `input_sensors` is rewritten once
+   with `async_update_entry`: the old list becomes `pv_input_sensors`,
+   `bms_input_sensors` is empty, and the old key is removed. If either new key
+   is already present, the new keys win and the old key is dropped unread. One
+   warning is logged saying that the inputs were moved to PV inputs and that BMS
+   inputs must be assigned in the options flow; no repair issue (a PV-only
+   system is valid). The old key survives only as a private literal used by this
+   migration; the public `CONF_INPUT_SENSORS` is removed.
 1. **The role is exposed** to the rest of the integration as two collections of
    source entity IDs, so ADR-018's state machine can restrict drain sources to
    BMS inputs.
 
 ## Consequences
 
-- A breaking configuration change; README, translations (en, de) and the tests
-  that name the old key change.
+- A configuration change with a silent migration: entry ID, unique IDs and
+  entity IDs stay the same, so nothing is deleted or set up again and the
+  recorder statistics continue. After the migration every former input is a PV
+  input and the results do not change; the human reassigns the BMS sensors in
+  the options flow. Until then no BMS input exists and ADR-018's standby sensor
+  does not exist. The old key is removed, so an older Effy version can no longer
+  read the entry (no version bump, so Home Assistant does not warn; accepted:
+  the only installation).
+- README, translations (en, de) and the tests that name the old key change.
 - A PV-only system stays possible; it simply has no standby sensor (ADR-018).
-- Setting the integration up again must give the same `sensor.effy_*` entity IDs
-  as before, so the recorder statistics continue; Stage 2 verifies this.
+- Tests assert: the migration writes the list once, removes the old key, does
+  not reload the entry, and leaves new keys untouched when present.
 - A regression test asserts that the same sources, split into the two lists,
   give identical results to the unsplit list.
 

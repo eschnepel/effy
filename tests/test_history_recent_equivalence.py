@@ -49,6 +49,14 @@ def _ts(h: int, m: int, s: int = 0, day: int = 1) -> datetime:
 # ---------------------------------------------------------------------------
 
 
+class _Statistics:
+    """Stand-in for the recorder's long-term table class (distinct from short-term)."""
+
+
+class _StatisticsShortTerm:
+    """Stand-in for the recorder's short-term table class."""
+
+
 class _SensorStateClass:
     TOTAL_INCREASING = "total_increasing"
     TOTAL = "total"
@@ -68,7 +76,9 @@ def _load_history() -> tuple[ModuleType, ModuleType]:
         "homeassistant.components.recorder.db_schema",
         "homeassistant.components.recorder.models",
     ]
-    module_names = [f"{_PKG}.{n}" for n in ("const", "calculation", "sensor_utils", "history")]
+    module_names = [
+        f"{_PKG}.{n}" for n in ("const", "inputs", "calculation", "sensor_utils", "history")
+    ]
     touched = [*stub_names, _PKG, *module_names]
     saved: dict[str, ModuleType | None] = {name: sys.modules.get(name) for name in touched}
 
@@ -87,8 +97,8 @@ def _load_history() -> tuple[ModuleType, ModuleType]:
         stub("homeassistant.components.recorder", get_instance=lambda hass: None)
         stub(
             "homeassistant.components.recorder.db_schema",
-            Statistics=object,
-            StatisticsShortTerm=object,
+            Statistics=_Statistics,
+            StatisticsShortTerm=_StatisticsShortTerm,
         )
         # No StatisticMeanType here on purpose: history.py's defensive
         # ImportError branch handles it (older-HA code path).
@@ -100,7 +110,7 @@ def _load_history() -> tuple[ModuleType, ModuleType]:
         sys.modules[_PKG] = pkg
 
         loaded: dict[str, ModuleType] = {}
-        for name in ("const", "calculation", "sensor_utils", "history"):
+        for name in ("const", "inputs", "calculation", "sensor_utils", "history"):
             spec = importlib.util.spec_from_file_location(f"{_PKG}.{name}", _BASE / f"{name}.py")
             assert spec and spec.loader
             mod = importlib.util.module_from_spec(spec)
@@ -141,6 +151,10 @@ class _World:
     stats_calls: list[tuple[datetime, datetime]] = field(default_factory=list)
     # include_long_term flag of every statistics write, in call order (ADR-011 D2)
     write_flags: list[bool] = field(default_factory=list)
+    # (include_long_term, include_short_term, {statistic_id: slot_values}) of every write
+    write_calls: list[tuple[bool, bool, dict[str, list[tuple[datetime, float]]]]] = field(
+        default_factory=list
+    )
     # one record per timer cycle run by _run_timer_cycles
     cycles: list[_Cycle] = field(default_factory=list)
 
@@ -217,10 +231,20 @@ def _install(monkeypatch: pytest.MonkeyPatch, world: _World) -> None:
         per_sensor: dict[str, dict[str, Any]],
         short_term_cutoff: datetime | None = None,
         include_long_term: bool = True,
+        include_short_term: bool = True,
     ) -> int:
         world.write_flags.append(include_long_term)
+        world.write_calls.append(
+            (
+                include_long_term,
+                include_short_term,
+                {eid: list(info["slot_values"]) for eid, info in per_sensor.items()},
+            )
+        )
         written = 0
         for eid, info in per_sensor.items():
+            if not include_short_term:
+                continue
             for slot, value in info["slot_values"]:
                 world.store.setdefault(eid, {})[slot] = value
                 written += 1
@@ -238,9 +262,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, world: _World) -> None:
     monkeypatch.setattr(h, "datetime", _FrozenDatetime)
 
 
-def _options(inputs: list[str], outputs: list[str] | None = None) -> dict[str, Any]:
+def _options(
+    inputs: list[str], outputs: list[str] | None = None, bms: list[str] | None = None
+) -> dict[str, Any]:
+    """``inputs`` are the PV inputs, ``bms`` the BMS inputs (ADR-019)."""
     return {
-        _const.CONF_INPUT_SENSORS: inputs,
+        _const.CONF_PV_INPUT_SENSORS: inputs,
+        _const.CONF_BMS_INPUT_SENSORS: bms or [],
         _const.CONF_OUTPUT_SENSORS: outputs or [],
         _const.CONF_MAX_HISTORY_DAYS: 5,
     }
@@ -682,8 +710,8 @@ class TestCatchUpAfterPause:
 
 
 # ---------------------------------------------------------------------------
-# AUDIT-0002, Issue 2 — the open slot gets the previous slot's value
-# (ADR-016 Amendment 2026-10-06)
+# TASK-0007a — Effy writes no statistic for the open slot
+# (ADR-016 Amendment 2026-10-16; supersedes the 2026-10-06 provisional value)
 # ---------------------------------------------------------------------------
 
 
@@ -702,7 +730,7 @@ def _steady_then_faster_readings(step: float = 0.002) -> list[tuple[datetime, st
 OUT = "sensor.bms_out"
 
 
-class TestOpenSlotProvisionalValue:
+class TestNoOpenSlotStatistic:
     def _world(self, monkeypatch: pytest.MonkeyPatch) -> _World:
         """Input 0.12 kW (0.24 kW from 12:00) and an output counter at half
         that, so the *effective* value (the output's share) is non-zero too."""
@@ -715,7 +743,7 @@ class TestOpenSlotProvisionalValue:
         _install(monkeypatch, world)
         return world
 
-    async def test_open_slot_carries_the_previous_slots_value_and_is_pushed(
+    async def test_slot_job_writes_no_row_for_the_open_slot_and_pushes_the_last_completed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         world = self._world(monkeypatch)
@@ -723,47 +751,54 @@ class TestOpenSlotProvisionalValue:
         effective_id = _history._effy_entity_id(SENSOR)
 
         timer = await _run_timer_cycles(
-            world, _options([SENSOR], [OUT]), _ts(12, 0, 5), _ts(12, 0, 5)
+            world, _options([SENSOR], [OUT]), _ts(12, 0, 10), _ts(12, 0, 10)
         )
 
         power, effective = timer[power_id], timer[effective_id]
         assert power[_ts(11, 55)] == pytest.approx(0.12)  # 0.002 kWh/min = 0.12 kW
-        assert power[_ts(12, 0)] == power[_ts(11, 55)]  # the open slot: carried, not ~0
         assert effective[_ts(11, 55)] == pytest.approx(0.06)
-        assert effective[_ts(12, 0)] == effective[_ts(11, 55)]
+        for eid, series in timer.items():  # no series has a row for the open slot
+            assert max(series) <= _ts(11, 55), eid
         cycle = world.cycles[0]
-        assert cycle.last_values[power_id] == (cycle.last_values[power_id][0], "kW")
+        # the live value is the last completed slot's calculated value
         assert cycle.last_values[power_id][0] == pytest.approx(0.12)
-        assert cycle.last_values[effective_id] == (cycle.last_values[effective_id][0], "kW")
+        assert cycle.last_values[power_id][1] == "kW"
         assert cycle.last_values[effective_id][0] == pytest.approx(0.06)
+        assert cycle.last_values[effective_id][1] == "kW"
         assert {power_id, effective_id} <= cycle.touched
 
-    async def test_the_next_cycle_replaces_the_guess_with_the_real_value(
+    async def test_the_next_cycle_updates_the_completed_slot_with_its_real_value(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         world = self._world(monkeypatch)
         power_id = _history._effy_power_entity_id(SENSOR)
 
         timer = await _run_timer_cycles(
-            world, _options([SENSOR], [OUT]), _ts(12, 0, 5), _ts(12, 5, 5)
+            world, _options([SENSOR], [OUT]), _ts(12, 0, 10), _ts(12, 5, 10)
         )
 
-        # slot 12:00 was 0.12 (guess) after the first cycle; the second one
-        # saw the real 0.004 kWh/min = 0.24 kW, and the new open slot 12:05
-        # carries *that*.
+        # 12:00 was never written while open; the second cycle writes it once,
+        # closed, with the real 0.004 kWh/min = 0.24 kW; 12:05 is not written.
         assert timer[power_id][_ts(12, 0)] == pytest.approx(0.24)
-        assert timer[power_id][_ts(12, 5)] == pytest.approx(0.24)
+        assert _ts(12, 5) not in timer[power_id]
 
-    async def test_full_history_recalc_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Scope: only the slot-timer path carries a guess forward."""
+    async def test_full_history_recalc_writes_no_open_slot_and_pushes_the_last_completed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         world = self._world(monkeypatch)
         power_id = _history._effy_power_entity_id(SENSOR)
+        _FrozenDatetime.frozen = _ts(12, 0, 10)
 
-        full = await _run_full_recalc(world, _options([SENSOR], [OUT]), _ts(12, 0, 5))
+        _written, _start, touched, last_values = await _history.async_recalculate_history(
+            object(), _options([SENSOR], [OUT])
+        )
 
-        assert full[power_id][_ts(12, 0)] < 0.01  # still the 5-second sliver, ~0
+        assert max(world.store[power_id]) == _ts(11, 55)  # no ~0 sliver for 12:00
+        assert last_values[power_id][0] == pytest.approx(0.12)  # not the ~0 sliver
+        assert last_values[power_id][1] == "kW"
+        assert power_id in touched
 
-    async def test_sensor_that_is_offline_right_now_gets_no_guess(
+    async def test_sensor_that_is_offline_right_now_still_has_nothing_to_write(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         readings = [(_ts(11, 0), "5.00"), (_ts(11, 30), "5.01"), (_ts(11, 58), "unavailable")]
@@ -771,15 +806,12 @@ class TestOpenSlotProvisionalValue:
         _install(monkeypatch, world)
         power_id = _history._effy_power_entity_id(SENSOR)
 
-        timer = await _run_timer_cycles(world, _options([SENSOR]), _ts(12, 0, 5), _ts(12, 0, 5))
+        timer = await _run_timer_cycles(world, _options([SENSOR]), _ts(12, 0, 10), _ts(12, 0, 10))
 
         assert _ts(12, 0) not in timer.get(power_id, {})
 
-    async def test_smoothed_series_is_not_extended_into_the_open_slot(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Power-family inputs only ever have compiled (closed) slots; there
-        is no drop to 0 to fix, and nothing is invented for them."""
+    async def test_smoothed_series_is_unaffected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Power-family inputs only ever have compiled (closed) slots."""
         c = "sensor.c_in"
         world = _energy_world(**{SENSOR: _steady_then_faster_readings()})
         world.units[c] = "W"
@@ -787,10 +819,125 @@ class TestOpenSlotProvisionalValue:
         world.power_means[c] = {_ts(11, 0) + timedelta(minutes=5 * i): 80.0 for i in range(12)}
         _install(monkeypatch, world)
 
-        timer = await _run_timer_cycles(world, _options([SENSOR, c]), _ts(12, 0, 5), _ts(12, 0, 5))
+        timer = await _run_timer_cycles(
+            world, _options([SENSOR, c]), _ts(12, 0, 10), _ts(12, 0, 10)
+        )
 
-        smoothed = timer[_history._effy_smoothed_entity_id(c)]
-        assert max(smoothed) == _ts(11, 55)
+        assert max(timer[_history._effy_smoothed_entity_id(c)]) == _ts(11, 55)
+
+
+class TestEffyWritesMeanAndStateOnly:
+    """HA's ``_update_statistics`` replaces every column of an updated row, so an
+    Effy update of a row the recorder inserted leaves ``min``/``max`` NULL (the
+    recorder's native values are replaced). Effy therefore must never send
+    ``min``/``max``/``sum`` (TASK-0007a)."""
+
+    async def test_every_written_statistic_has_exactly_start_mean_and_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorded: list[tuple[Any, list[dict[str, Any]], Any]] = []
+
+        class _Instance:
+            def async_import_statistics(
+                self, metadata: Any, stats: list[dict[str, Any]], table: Any
+            ) -> None:
+                recorded.append((metadata, stats, table))
+
+            async def async_block_till_done(self) -> None:
+                return None
+
+        real_write = _history._write_recorder_statistics
+        monkeypatch.setattr(_history, "get_recorder", lambda _hass: _Instance())
+        series = {
+            "sensor.effy_x": {
+                "unit": "kW",
+                "slot_values": [(_ts(11, 50), 1.0), (_ts(11, 55), 2.0)],
+            }
+        }
+        await real_write(object(), series, include_long_term=True)
+        assert recorded
+        for _meta, stats, _table in recorded:
+            for row in stats:
+                assert set(row) == {"start", "mean", "state"}
+
+    async def test_short_term_can_be_left_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorded: list[Any] = []
+
+        class _Instance:
+            def async_import_statistics(self, metadata: Any, stats: Any, table: Any) -> None:
+                recorded.append(table)
+
+            async def async_block_till_done(self) -> None:
+                return None
+
+        real_write = _history._write_recorder_statistics
+        monkeypatch.setattr(_history, "get_recorder", lambda _hass: _Instance())
+        series = {"sensor.effy_x": {"unit": "kW", "slot_values": [(_ts(11, 55), 2.0)]}}
+        await real_write(object(), series, include_long_term=True, include_short_term=False)
+        assert recorded == [_history.Statistics]  # only the long-term table
+
+        recorded.clear()
+        await real_write(object(), series, include_long_term=True)
+        assert recorded == [_history.StatisticsShortTerm, _history.Statistics]
+
+
+class TestRewriteHourly:
+    """``async_rewrite_hourly``: the hour's long-term mean from the 12 short-term
+    rows read back, written once (TASK-0007a, ADR-011 Amendment 2026-10-16)."""
+
+    X = "sensor.effy_x"
+    Y = "sensor.effy_y"
+    HOUR = _ts(11, 0)
+
+    def _world(self) -> _World:
+        world = _World()
+        world.power_means[self.X] = {_ts(11, 5 * i): float(i) for i in range(12)}
+        world.power_means[self.Y] = {_ts(11, 5 * i): 10.0 for i in range(12)}
+        return world
+
+    async def test_writes_the_mean_of_the_twelve_slots_for_every_statistic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = self._world()
+        _install(monkeypatch, world)
+        count = await _history.async_rewrite_hourly(
+            object(), {self.X: "kW", self.Y: "W"}, self.HOUR
+        )
+        assert count == 2
+        assert len(world.write_calls) == 1
+        long_term, short_term, series = world.write_calls[0]
+        assert long_term is True and short_term is False  # hourly only
+        assert [v for _s, v in series[self.X]] == [float(i) for i in range(12)]
+        assert len(series[self.Y]) == 12
+
+    async def test_reads_exactly_the_hour(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = self._world()
+        _install(monkeypatch, world)
+        await _history.async_rewrite_hourly(object(), {self.X: "kW"}, self.HOUR)
+        assert world.stats_calls == [(_ts(11, 0), _ts(12, 0))]
+
+    async def test_a_statistic_without_rows_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = self._world()
+        _install(monkeypatch, world)
+        count = await _history.async_rewrite_hourly(
+            object(), {self.X: "kW", "sensor.effy_none": "kW"}, self.HOUR
+        )
+        assert count == 1
+        assert set(world.write_calls[0][2]) == {self.X}
+
+    async def test_nothing_is_written_when_there_is_nothing_to_rewrite(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = self._world()
+        _install(monkeypatch, world)
+        assert await _history.async_rewrite_hourly(object(), {}, self.HOUR) == 0
+        assert (
+            await _history.async_rewrite_hourly(object(), {"sensor.effy_none": "kW"}, self.HOUR)
+            == 0
+        )
+        assert world.write_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -882,3 +1029,157 @@ class TestAuditCoverageGaps:
         assert cycle.last_values[effective_id] == (cycle.last_values[effective_id][0], "kW")
         assert cycle.last_values[effective_id][0] == pytest.approx(effective[max(effective)])
         assert cycle.touched == {power_id, effective_id}
+
+
+# ---------------------------------------------------------------------------
+# Recorder-synchronized trigger (TASK-0006): the probe of the slot job
+# ---------------------------------------------------------------------------
+
+
+def _power_world(**sensors: dict[datetime, float]) -> _World:
+    world = _World()
+    for eid, means in sensors.items():
+        world.power_means[eid] = means
+        world.units[eid] = "W"
+        world.state_classes[eid] = _SensorStateClass.MEASUREMENT
+    return world
+
+
+class TestProbeLastSlotReady:
+    """``async_probe_last_slot_ready`` is False only while a power-family sensor
+    is demonstrably still being compiled: the slot before the last completed one
+    has a ``mean`` and the last completed one has none."""
+
+    NOW = _ts(10, 0, 10)  # the recorder event of the 10:00 boundary
+    PREV = _ts(9, 50)
+    LAST = _ts(9, 55)
+
+    async def _probe(
+        self, monkeypatch: pytest.MonkeyPatch, world: _World, inputs: list[str], outputs: list[str]
+    ) -> bool:
+        _install(monkeypatch, world)
+        return bool(
+            await _history.async_probe_last_slot_ready(
+                object(), _options(inputs, outputs), self.NOW
+            )
+        )
+
+    async def test_pending_when_the_previous_slot_has_a_value_and_the_last_has_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = _power_world(**{"sensor.pv": {self.PREV: 100.0}})
+        assert await self._probe(monkeypatch, world, ["sensor.pv"], []) is False
+
+    async def test_ready_when_both_slots_have_a_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = _power_world(**{"sensor.pv": {self.PREV: 100.0, self.LAST: 120.0}})
+        assert await self._probe(monkeypatch, world, ["sensor.pv"], []) is True
+
+    async def test_a_sensor_with_no_data_never_delays_the_job(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = _power_world(**{"sensor.pv": {}})
+        assert await self._probe(monkeypatch, world, ["sensor.pv"], []) is True
+
+    async def test_one_pending_sensor_among_ready_ones_is_enough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = _power_world(
+            **{
+                "sensor.pv_a": {self.PREV: 1.0, self.LAST: 2.0},
+                "sensor.grid_export": {self.PREV: 3.0},  # an output counts too
+            }
+        )
+        assert (
+            await self._probe(monkeypatch, world, ["sensor.pv_a"], ["sensor.grid_export"]) is False
+        )
+
+    async def test_energy_family_sensors_are_not_probed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Energy-family values come from raw states, not from the compiled slot.
+        world = _energy_world(**{"sensor.bms_kwh": [(_ts(9, 0), "1.00")]})
+        assert await self._probe(monkeypatch, world, ["sensor.bms_kwh"], []) is True
+        assert world.stats_calls == []  # nothing was read from the recorder
+
+    async def test_reads_only_the_two_slots_before_now(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = _power_world(**{"sensor.pv": {self.PREV: 1.0, self.LAST: 2.0}})
+        await self._probe(monkeypatch, world, ["sensor.pv"], [])
+        assert world.stats_calls == [(self.PREV, self.NOW.replace(second=0))]
+
+
+# ---------------------------------------------------------------------------
+# TASK-0008 / ADR-019: the two input lists are one mixed pool for the waterfall
+# ---------------------------------------------------------------------------
+
+
+class TestSplitInputsAreOnePool:
+    """The same sources, split into PV and BMS inputs in any way and in any order
+    within a list, give results identical to the unsplit list."""
+
+    A, B, C = "sensor.a_in", "sensor.b_out", "sensor.c_in"
+
+    def _world(self) -> _World:
+        world = _energy_world(
+            **{
+                self.A: _screenshot_readings(),
+                self.B: [(_ts(7, 0), "1.00"), (_ts(9, 40), "1.01")]
+                + [
+                    (_ts(10, 0) + timedelta(minutes=8 * i), f"{1.01 + 0.01 * (i + 1):.2f}")
+                    for i in range(22)
+                ],
+            }
+        )
+        world.units[self.C] = "W"
+        world.state_classes[self.C] = _SensorStateClass.MEASUREMENT
+        slot = _ts(9, 0)
+        while slot < _ts(13, 30):
+            world.power_means[self.C] = {**world.power_means.get(self.C, {}), slot: 90.0}
+            slot += timedelta(minutes=5)
+        return world
+
+    async def test_full_recalculation_is_identical_for_every_split(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        a, b, c = self.A, self.B, self.C
+        world = self._world()
+        _install(monkeypatch, world)
+        unsplit = await _run_full_recalc(world, _options([a, c], [b]), _ts(13, 5, 5))
+        assert len(unsplit) >= 3
+        splits = {
+            "pv a / bms c": _options([a], [b], bms=[c]),
+            "pv c / bms a": _options([c], [b], bms=[a]),
+            "all bms": _options([], [b], bms=[a, c]),
+            "all bms, reversed": _options([], [b], bms=[c, a]),
+            "pv reversed": _options([c, a], [b]),
+        }
+        for label, options in splits.items():
+            result = await _run_full_recalc(world, options, _ts(13, 5, 5))
+            assert result == unsplit, label
+
+    async def test_slot_timer_path_is_identical_for_a_split(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        a, b, c = self.A, self.B, self.C
+        world = self._world()
+        _install(monkeypatch, world)
+        unsplit = await _run_timer_cycles(
+            world, _options([a, c], [b]), _ts(10, 0, 5), _ts(13, 5, 5)
+        )
+        split = await _run_timer_cycles(
+            world, _options([a], [b], bms=[c]), _ts(10, 0, 5), _ts(13, 5, 5)
+        )
+        assert split == unsplit
+
+    async def test_the_probe_sees_a_bms_only_power_sensor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = _power_world(**{"sensor.bms_power": {_ts(9, 50): 100.0}})
+        _install(monkeypatch, world)
+        ready = await _history.async_probe_last_slot_ready(
+            object(), _options([], bms=["sensor.bms_power"]), _ts(10, 0, 10)
+        )
+        assert ready is False  # the BMS list is part of the probed pool

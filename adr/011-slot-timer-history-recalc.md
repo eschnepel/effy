@@ -162,3 +162,59 @@ is written with a provisional value — see ADR-016 Amendment 2026-10-06.
 
 **Decided by:** human (AUDIT-0002, Issue 1, Option A); Lead Agent (signature) —
 pending human confirmation.
+
+## Amendment — 2026-10-16
+
+**Reason:** TASK-0006 (human release 2026-10-16; same change as Shady's
+TASK-0041). Decision 3 fires the recent recalculation on the wall clock, 5 s
+after the boundary. The recorder compiles each slot about 10 s after its
+boundary and fires `EVENT_RECORDER_5MIN_STATISTICS_GENERATED` from inside the
+compile, before its session commits, so the last completed slot's power-family
+`mean` is not yet readable at boundary + 5 s.
+
+**Decision:** Decision 3 is superseded. The recent recalculation is started by a
+*slot job*, triggered by the recorder's own event. The job probes
+(`history.async_probe_last_slot_ready`: the slot before the last completed one
+has a `mean` and the last completed one has none, for any power-family sensor)
+every `PROBE_INTERVAL` = 1 s, at most `MAX_PROBES` = 5 times, with an `await` on
+the event loop, and then runs the former timer body once; a sensor with no data
+never delays it, a failing probe does not stop it. Two triggers for the same
+last completed slot run the body once; a newer event ends a still-probing job
+without its body. The wall-clock timer of Decision 3 stays as a watchdog: it
+starts a job only if none was started for `WATCHDOG` = 6 min (this also starts
+the first job after a restart). The Home Assistant minimum is raised to 2026.3
+(`hacs.json`). Decisions 1, 2 and 4 are unaffected. Additionally, one
+`asyncio.Lock` serializes the recent recalculation and the history recalculation
+(button); the second waits, it is not skipped.
+
+**Decided by:** human (2026-10-13: parameters as Shady, minimum 2026.3;
+2026-10-16: serialization).
+
+## Amendment — 2026-10-16 (TASK-0007a)
+
+**Reason:** Once `sensor.effy_*` is recorded (ADR-017 superseded by TASK-0007b),
+two things follow from how the recorder compiles (verified against Home
+Assistant 2025.1.4; re-verified on the pinned version in TASK-0007b). First, a
+restart: HA queues its catch-up compile of the slots missed during downtime at
+recorder start and may re-queue it in chunks, so a job that starts at the next
+boundary could insert a slot's row before the compile reaches it. Second, the
+hourly long-term row: the recorder rolls an hour up in the same compile call
+that inserts the hour's last slot (the one starting at minute 55, compiled at
+boundary + 10 s), before the 5-minute event fires. That slot therefore enters
+the roll-up with the recorder's own value, and the roll-up's `min`/`max` come
+from that one native row, because HA's update of an existing row replaces every
+column and Effy's rows carry no `min`/`max`.
+
+**Decision:** (1) The first slot job after a restart is held until the first
+recorder event; the watchdog counts from setup before any job and starts one
+only after `WATCHDOG` (6 min) without an event. (2) Decision 2 gets one
+exception: when the last completed slot is the last of its hour, the slot job
+rewrites that hour's long-term row after its recent recalculation, under the
+same lock, from the 12 short-term rows read back
+(`history.async_rewrite_hourly`; `mean` and `state` as the full history
+recalculation writes them, no `min`/`max`). It is written once per hour; a
+failure is logged and not retried, and the next history recalculation corrects
+the hour. No second event subscription: the recorder's hourly event fires in the
+same compile call, before the commit, together with the 5-minute event.
+
+**Decided by:** human (2026-10-16).

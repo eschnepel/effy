@@ -200,3 +200,13 @@ recalculation *computes*, not whether one *happens*.
   a single debounce timer as the only trigger for `_do_refresh`. The
   slot-aligned timer is a second, independent trigger for the same underlying
   recalculation.
+
+## Amendment — 2026-10-16
+
+**Reason:** TASK-0006. The wall-clock slot timer is no longer the trigger.
+
+**Decision:** The slot-aligned timer described here is only the watchdog of the
+recorder-synchronized trigger now; see ADR-011 Amendment 2026-10-16. Nothing
+else in this ADR changes.
+
+**Decided by:** human (TASK-0006 release, 2026-10-16).

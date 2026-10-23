@@ -5,16 +5,18 @@
     "step": {
       "user": {
         "title": "Configure Effy",
-        "description": "Set up effective PV loss distribution. Select your input sources (PV, battery import, grid import) and output sinks (battery export, grid export).",
+        "description": "Set up effective PV loss distribution. Select your PV input sources and your BMS input sources (battery import, grid import) and output sinks (battery export, grid export).",
         "data": {
-          "input_sensors": "Input sensors (PV, BMS import from battery/grid)",
+          "pv_input_sensors": "PV input sensors (PV strings)",
+          "bms_input_sensors": "BMS input sensors (BMS import from battery/grid)",
           "output_sensors": "Output sensors (BMS export to battery/grid)",
           "max_history_days": "Maximum history (days)"
         }
       }
     },
     "error": {
-      "at_least_one_input": "Please select at least one input sensor.",
+      "at_least_one_input": "Please select at least one input sensor (PV or BMS).",
+      "sensor_in_both_input_lists": "A sensor cannot be both a PV input and a BMS input. Please remove it from one of the two lists.",
       "at_least_one_output": "Please select at least one output sensor.",
       "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first."
     }
@@ -24,22 +26,18 @@
       "init": {
         "title": "Effy Options",
         "data": {
-          "input_sensors": "Input sensors (PV, BMS import from battery/grid)",
+          "pv_input_sensors": "PV input sensors (PV strings)",
+          "bms_input_sensors": "BMS input sensors (BMS import from battery/grid)",
           "output_sensors": "Output sensors (BMS export to battery/grid)",
           "max_history_days": "Maximum history (days)"
         }
       }
     },
     "error": {
-      "at_least_one_input": "Please select at least one input sensor.",
+      "at_least_one_input": "Please select at least one input sensor (PV or BMS).",
+      "sensor_in_both_input_lists": "A sensor cannot be both a PV input and a BMS input. Please remove it from one of the two lists.",
       "at_least_one_output": "Please select at least one output sensor.",
       "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first."
-    }
-  },
-  "issues": {
-    "recorder_not_excluded": {
-      "title": "Effy entities are not excluded from the recorder",
-      "description": "Effy writes 5-minute statistics for its `sensor.effy_*` entities directly into the recorder database. Home Assistant's own recorder also tries to compile statistics for these entities automatically, because they are still tracked like ordinary sensors — the two can write to the same slot at the same time and occasionally fail with a database error (`UNIQUE constraint failed: statistics_short_term...`).\n\nTo fix this, add the following to your `configuration.yaml` and restart Home Assistant:\n\n```yaml\nrecorder:\n  exclude:\n    entity_globs:\n      - sensor.effy_*\n```\n\nThis only stops Home Assistant's own recorder from separately tracking these entities — Effy's own statistics writes are unaffected and continue to populate history/energy-dashboard graphs normally."
     }
   },
   "entity": {

@@ -30,9 +30,14 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
 - Per energy sensor: `effy_*` (effective, inputs only), `effy_*_power` (derived,
   all), power-family inputs: `effy_*_smoothed` (gap interpolation ≤2 slots)
   (ADR-012/013).
-- Live accumulation path is **disabled** (`disabled/`); `EffyCoordinator` runs a
-  slot timer (5 s after every 5-min boundary) calling `async_recalculate_recent`
-  (ADR-010/011/012).
+- Live accumulation path is **disabled** (`disabled/`); Input sensors are
+  configured by role, PV and BMS inputs (ADR-019); the waterfall sees one mixed
+  pool, and an old single-list entry is migrated silently into the PV list.
+  `EffyCoordinator` runs a recorder-synchronized slot job (the recorder's
+  5-minute statistics event, a probe until the last completed slot is readable,
+  a 6-min wall-clock watchdog; HA minimum 2026.3) calling
+  `async_recalculate_recent` (ADR-010/011/012). One lock serializes it with the
+  history recalculation (ADR-011 Amendment 2026-10-16).
 - Slot-timer path writes **short-term only**; hourly long-term only from full
   recalc (ADR-011 D2). Full recalc = button/service (`max_history_days`, default
   28).
@@ -42,15 +47,17 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
   delta, ADR-014 Amendment 2026-10-06)** that arrived inside the trigger window
   (default that window; reaches back to the last *completed* cycle, one-off
   catch-up of 1 day on the first cycle after start-up — ADR-014 Amendment
-  2026-10-06). The still-open slot is written with the previous slot's value as
-  a provisional guess (ADR-016 Amendment 2026-10-06; full recalc unchanged).
-  Invariant: after each cycle, written closed slots == full recalc at the same
-  time.
+  2026-10-06). No statistic is written for the still-open slot, in the slot job
+  or the full recalc (ADR-016 Amendment 2026-10-16): the recorder inserts that
+  row, Effy updates it after the recorder-synchronized trigger. The first job
+  after a restart waits for the recorder, and the slot job rewrites an hour's
+  long-term row when it completes the hour's last slot (ADR-011 Amendment
+  2026-10-16). Invariant: after each cycle, written closed slots == full recalc
+  at the same time.
 - Offline-anchor lookback is staged 30 min → 1 day → full history, with
   in-memory last-valid cache (ADR-014/015).
 - Dashboard refresh: `notify_updated` pushes last-written slot value as live
-  state (ADR-013 D3, ADR-016) — on the timer path that is the provisional open
-  slot (= previous slot's value).
+  state (ADR-013 D3, ADR-016) — that is the last completed slot's value.
 
 ## Non-functional requirements
 
@@ -58,8 +65,9 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
   not time out — ADR-014).
 - Statistics must be correct for graph/energy-dashboard cards; live state is
   best-effort (ADR-011 D4, ADR-016).
-- Required user config: recorder excludes `sensor.effy_*`; runtime warning if
-  missing (ADR-017).
+- No recorder exclusion is required: `sensor.effy_*` is recorded, and Effy only
+  updates rows the recorder inserted (ADR-020 Draft, supersedes ADR-017; the
+  README says an old exclusion may be removed).
 - `calculation.py` tested with zero mocking, loaded via file-path import
   (ADR-000 §6).
 
@@ -71,4 +79,4 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
   rows — ADR-014 amendment).
 - No hourly long-term write from the slot-timer path (ADR-011 D2).
 - No backdating of live states into closed slots (no public API; ADR-011 D4).
-- Integration cannot set recorder exclusions itself (ADR-017).
+- No setup check or repair issue about the recorder (ADR-017 retired, ADR-020).

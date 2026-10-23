@@ -146,8 +146,16 @@ _Avoid_: Open slot
 **Last completed slot**: The most recently finished slot. It is never the
 current slot. _Avoid_: Closed slot, last complete slot
 
-**Slot timer**: The wall-clock trigger that starts a recent recalculation
-shortly after each slot ends. _Avoid_: Timer path
+**Slot timer**: The trigger that starts a recent recalculation after each slot
+ends: the recorder's own 5-minute statistics event starts a slot job, which
+waits until the last completed slot is readable and then runs the recent
+recalculation. A wall-clock timer remains only as a watchdog. _Avoid_: Timer
+path
+
+**Open slot**: The slot that contains the current time. Effy writes no statistic
+for it, because the recorder inserts that row itself when the slot ends; the
+live state carries the last completed slot's value meanwhile. _Avoid_:
+Provisional slot, current slot
 
 **Recent recalculation**: The recalculation the slot timer starts, which
 rewrites only the slots near now. _Avoid_: Slot recalc

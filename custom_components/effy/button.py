@@ -12,7 +12,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import EffyCoordinator
-from .history import async_recalculate_history
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,16 +80,8 @@ class EffyRecalculateButton(ButtonEntity):  # type: ignore[misc]
         _LOGGER.info("Effy: starting history recalculation (triggered by button)")
         try:
             coordinator: EffyCoordinator = self.hass.data[DOMAIN][self._entry.entry_id]
-            written, recalculated_from, touched, last_values = await async_recalculate_history(
-                self.hass,
-                self._entry.options,
-                energy_reading_cache=coordinator.last_valid_energy_readings,
-            )
+            written = await coordinator.async_recalculate_history_and_report()
             _LOGGER.info("Effy: history recalculation complete – %d slots written", written)
-            if recalculated_from is not None:
-                coordinator.set_recalculated_from(recalculated_from)
-            if touched:
-                coordinator.notify_updated(touched, last_values)
         except Exception:
             # Broad catch is intentional: this runs outside a request/response
             # cycle (button press has no caller to propagate to) — log and

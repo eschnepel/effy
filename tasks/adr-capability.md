@@ -41,7 +41,7 @@ effective series (double counting).
 project); changing the existing loss model or the existing `effy_*` series
 unless the confirmed ADR says so.
 
-## CAP-3 — Slot trigger synchronized with the recorder *(proposed 2026-10-13, deferred, pending Gate 1)*
+## CAP-3 — Slot trigger synchronized with the recorder *(Gate 1 approved 2026-10-16 for TASK-0006 only; TASK-0007a/b pending Gate 2)*
 
 **What the user sees:** nothing new on a healthy system. The `effy_*` statistics
 of the last completed slot are never missing because the recent recalculation
@@ -55,23 +55,28 @@ last completed slot's statistics are present in the same cycle.
 **Scope (in):** how the recent recalculation is triggered (the recorder's
 5-minute statistics event, the wall-clock timer kept as a watchdog), as Shady
 did in its TASK-0041, with the Home Assistant minimum raised to Shady's
-(TASK-0006); then retiring the recorder exclusion requirement (TASK-0007).
+(TASK-0006), with the recent and the history recalculation serialized by one
+lock; then retiring the recorder exclusion requirement (TASK-0007a and
+TASK-0007b, decided 2026-10-16, pending Gate 2).
 
 **Scope (out, not decided):** anything in the loss model or the rewrite range
-(ADR-012/014). Deferred: not started until the human releases it.
+(ADR-012/014).
 
-## CAP-4 — Inputs configured by role *(proposed 2026-10-13, pending Gate 1)*
+## CAP-4 — Inputs configured by role *(Gate 1 approved 2026-10-16)*
 
 **What the user sees:** two input lists when setting Effy up, PV inputs and BMS
-inputs, instead of one mixed list. Nothing else changes: every `effy_*` value is
-as before.
+inputs, instead of one mixed list. An existing installation keeps working and
+shows its former inputs as PV inputs. Nothing else changes: every `effy_*` value
+is as before.
 
 **End-to-end demonstration:** the config and options flow accept the two lists
 with the validation of ADR-019, and the CAP-1 equivalence harness gives the same
 results with the same sources split by role (TASK-0008).
 
 **Scope (in):** the configuration split, its translations and README, exposing
-the two roles inside the integration; no migration path (human).
+the two roles inside the integration; a silent migration puts an existing input
+list into the PV list (human, 2026-10-16; the BMS sensors are reassigned in the
+options flow).
 
 **Scope (out):** any use of the role; it serves the standby power sensor
 (CAP-2).

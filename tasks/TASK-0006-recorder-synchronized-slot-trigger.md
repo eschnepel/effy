@@ -1,15 +1,15 @@
-# Task: Recorder-Synchronized Slot Trigger (Deferred — Same Change as Shady's TASK-0041)
+# Task: Recorder-Synchronized Slot Trigger (Same Change as Shady's TASK-0041)
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** \[ADR-010, ADR-011 (Decision 3 and Amendment 2026-10-06),
   ADR-014, ADR-016\]
 - **Dependencies:** []
 
 ## Goal
 
-**DEFERRED — do not start until the human releases it.** Recorded 2026-10-13 at
-the human's request so the idea is not lost; it is not part of CAP-1 or CAP-2
-and blocks nothing.
+**Released 2026-10-16 (Gate 2 approved by the human, with the serialization
+criterion below). Runs first, before TASK-0008.** Recorded 2026-10-13 at the
+human's request; it is not part of CAP-1 or CAP-2.
 
 Effy's slot timer fires `SLOT_TIMER_LAG_SECONDS` (5 s) after every slot boundary
 (ADR-011 Decision 3, `coordinator.py`), on the wall clock. Shady (the sibling
@@ -30,8 +30,14 @@ before the last completed slot's statistics can be read.
 - Parameters as Shady: probe every 1 s, at most 5 probes, watchdog 6 min; the
   wall-clock timer stays as a watchdog; the supersession of ADR-011 Decision 3
   and ADR-010 is recorded as Amendments once the human confirms.
-- Retiring the recorder exclusion of ADR-017 (no longer needed once this is
-  done) is its own task, TASK-0007.
+- Retiring the recorder exclusion of ADR-017 is its own task, TASK-0007b (after
+  TASK-0007a). It stays deferred (human, 2026-10-16: the open question on the
+  provisional open-slot statistic is decided after this task is done).
+- **Serialization (human, 2026-10-16, as Shady's `async_run_cache_job`):** Effy
+  has no lock today; the event-triggered recent recalculation can overlap the
+  button/service history recalculation, and the older snapshot of the history
+  job can overwrite a slot the recent job just wrote. One lock serializes them;
+  the second job waits, it is not skipped.
 
 **Facts carried over from Shady (re-verify against the pinned version):**
 
@@ -69,6 +75,10 @@ before the last completed slot's statistics can be read.
   running its body.
 - Given the existing wall-clock timer, then it stays as a watchdog that starts a
   job only if none was started for `WATCHDOG`.
+- Given the recent recalculation and the history recalculation (button and
+  service) dispatched at the same time, then they never overlap: one
+  `asyncio.Lock` on the event loop makes the second wait for the first, and both
+  complete. This test is written first and fails against the pre-change code.
 - Given the CAP-1 equivalence harness (TASK-0004), then it is unchanged and
   green: slot-timer output still equals a history recalculation at the same
   time.
@@ -79,9 +89,10 @@ before the last completed slot's statistics can be read.
 
 - `custom_components/effy/coordinator.py` (`async_setup`, `async_shutdown`,
   `_on_slot_timer`, `_schedule_next_slot_timer`, `_next_slot_trigger_delay`,
-  `SLOT_TIMER_LAG_SECONDS`, new slot-job state, module banner text);
-  `hacs.json`; `tests/test_coordinator_slot.py` and a new test for the compile
-  timing; ADR-010/011 text.
+  `SLOT_TIMER_LAG_SECONDS`, new slot-job state, the shared lock and the history
+  recalculation entry points, module banner text); `hacs.json`;
+  `tests/test_coordinator_slot.py` and a new test for the compile timing;
+  ADR-010/011 text.
 
 ## Definition of Done
 
@@ -115,4 +126,41 @@ before the last completed slot's statistics can be read.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. -->
+- `custom_components/effy/coordinator.py`
+  - new constants `PROBE_INTERVAL = timedelta(seconds=1)`, `MAX_PROBES = 5`,
+    `WATCHDOG = timedelta(minutes=6)`; `SLOT_TIMER_LAG_SECONDS` and
+    `_next_slot_trigger_delay` unchanged (the timer is now the watchdog).
+  - `EffyCoordinator` new attributes `_probe_interval`, `_max_probes`,
+    `_watchdog`, `_unsub_recorder_event`, `_slot_job_task`, `_slot_job_slot`,
+    `_slot_job_probing`, `_last_slot_job_at`, `_lock_state`.
+  - new methods `_now() -> datetime`,
+    `_on_recorder_statistics(self, _event) -> None` (`@callback`),
+    `_last_completed_slot(now) -> datetime` (static),
+    `_start_slot_job(now) -> None`, `async _async_slot_job(now, slot) -> None`,
+    `_recorder_job_lock() -> asyncio.Lock`,
+    `async async_recalculate_history_and_report() -> int` (slots written; holds
+    the lock; reports `set_recalculated_from` / `notify_updated` as the button
+    did).
+  - changed: `async_setup` (subscribes to
+    `EVENT_RECORDER_5MIN_STATISTICS_GENERATED` with `hass.bus.async_listen`,
+    keeps the unsubscribe, starts the watchdog timer), `async_shutdown` (removes
+    the listener, the timer and cancels the in-flight job),
+    `_on_slot_timer(self, now)` (watchdog: starts a job only if none was started
+    for `WATCHDOG`, always reschedules),
+    `_async_recalculate_recent_and_report()` (now holds the lock for the whole
+    run and takes `now` after acquiring it; behaviour otherwise unchanged).
+- `custom_components/effy/history.py` →
+  `async_probe_last_slot_ready(hass, entry_options, now) -> bool`.
+- `custom_components/effy/button.py` → `EffyRecalculateButton.async_press` now
+  calls `coordinator.async_recalculate_history_and_report()`; the direct
+  `async_recalculate_history` import is gone.
+- `hacs.json` → `homeassistant` is `2026.3` (the README states no minimum).
+- Tests: `tests/test_coordinator_slot.py` (event subscription, slot job,
+  watchdog, simulated compile timing, serialization — 20 new tests, each shown
+  to fail against the pre-change code first; the two compile-timing tests fail
+  on behaviour: the old timer ran the body while the slot was not readable) and
+  `tests/test_history_recent_equivalence.py` (`TestProbeLastSlotReady`, 6 new).
+- Docs: ADR-010 and ADR-011 Amendments 2026-10-16; `tasks/adr-summary.md`;
+  `GLOSSARY.md` (*Slot timer*).
+- External dependencies added: none (`EVENT_RECORDER_5MIN_STATISTICS_GENERATED`
+  comes from `homeassistant.const`); `tasks/DEPENDENCIES.md` unchanged.

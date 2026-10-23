@@ -34,7 +34,8 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import slugify
 
 from .calculation import LossDistribution, effective_in_original_unit
-from .const import CONF_INPUT_SENSORS, CONF_OUTPUT_SENSORS, DOMAIN
+from .const import CONF_OUTPUT_SENSORS, DOMAIN
+from .inputs import all_input_ids
 from .coordinator import EffyCoordinator
 from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
 
@@ -56,7 +57,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up Effy sensor entities."""
     coordinator: EffyCoordinator = hass.data[DOMAIN][entry.entry_id]
-    input_ids: list[str] = entry.options.get(CONF_INPUT_SENSORS, [])
+    input_ids: list[str] = all_input_ids(entry.options)
     output_ids: list[str] = entry.options.get(CONF_OUTPUT_SENSORS, [])
 
     entities: list[SensorEntity] = [
