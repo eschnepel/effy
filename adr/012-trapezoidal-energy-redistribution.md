@@ -184,3 +184,24 @@ follows the last completed cycle). `recalculated_from` can accordingly read back
 up to the extended start on a cycle where a jump arrived.
 
 **Decided by:** Lead Agent (documentation only) — pending human confirmation.
+
+---
+
+## Amendment — 2026-10-18
+
+**Reason:** ADR-021 (Draft) makes `sensor.effy_recalculated_from` the signal
+that consumers subscribe to. The section "The recalculated from sensor" says the
+slot job calls `set_recalculated_from` "after a successful
+`async_recalculate_recent` run", and the code does so *before* the live-state
+pushes, the hour's long-term rewrite and the standby update, so a listener would
+be woken before the recalculation is finished.
+
+**Decision:** Both recalculation entry points call `set_recalculated_from` as
+their **last** step: the slot job after `notify_updated`, the hour rewrite
+(ADR-011 Amendment 2026-10-16) and the standby update (ADR-018); the manual
+history rewrite after `notify_updated`. The write also refreshes the sensor's
+attributes and sets `force_update` (ADR-021). Unchanged: a run that touches
+nothing neither pushes nor refreshes, and a recalculation that raises pushes
+nothing.
+
+**Decided by:** human (2026-10-18, grill rounds 3 and 4)

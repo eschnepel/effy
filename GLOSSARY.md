@@ -19,7 +19,8 @@ active alone is loss and drain mixed.
 grid import. Only a BMS input can be a drain source.
 
 **Output**: A source sensor for energy or power leaving the system: the
-battery's charge counter, the grid-export counter. _Avoid_: Sink, consumer
+battery's charge counter, the grid-export counter. Every output is a BMS
+reading. _Avoid_: Sink, consumer
 
 **Source sensor**: The user's original entity that an input or output is read
 from. _Avoid_: Source (unqualified), raw sensor
@@ -79,6 +80,10 @@ accumulate, so a low-resolution counter yields a smooth power instead of spikes.
 
 **Statistic**: A 5-minute value Effy writes into the recorder for an Effy
 sensor. _Avoid_: History value
+
+**Aggregation**: The way a statistic summarises the readings of its slot, as the
+recorder names it: `mean`, `min`, `max`, `sum` or `state`. Which aggregations a
+sensor's short-term statistics offer differs per sensor. _Avoid_: Statistic type
 
 **Live state**: An Effy sensor's current Home Assistant state, which is
 best-effort and not a statistic. _Avoid_: Value (unqualified)
@@ -163,6 +168,14 @@ rewrites only the slots near now. _Avoid_: Slot recalc
 **History recalculation**: The recalculation over the configured number of
 history days, started by the button or the service; the only writer of hourly
 (long-term) statistics. _Avoid_: Full recalc
+
+**Closing step**: The last action of a recalculation, the slot job or the
+history recalculation: the update of the recalculated-from sensor. It tells a
+listener that the recalculation's statistics and states are final.
+
+**History days**: The configured number of days, ending now, that the history
+recalculation covers. _Avoid_: History window (Chargy's own term for the days
+its measurements span)
 
 **Trigger window**: The span since the previous recent recalculation in which an
 arriving jump or recovery makes the rewrite range reach further back. _Avoid_:

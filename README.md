@@ -76,16 +76,16 @@ average power over the interval, which is the physically meaningful quantity.
 
 ---
 
-## Output entities
+## Effy sensors
 
-For every input sensor one output sensor is created:
+For every input sensor one effective sensor is created:
 
 | Source entity ID | Effy entity ID | Effy entity name |
 | -- | -- | -- |
 | `sensor.pv_south` | `sensor.effy_pv_south` | PV South (effective) |
 | `sensor.bms_bat_import` | `sensor.effy_bms_bat_import` | BMS bat import (effective) |
 
-Each output sensor exposes three extra attributes for diagnostics:
+Each effective sensor exposes three extra attributes for diagnostics:
 
 - `source_entity` – the original entity ID
 - `total_loss_w` – total system loss in W for the current reading
@@ -103,19 +103,19 @@ sensor does not exist.
 How it is read (ADR-018): a BMS counter that reports in coarse steps (for
 example 10 Wh) jumps once per step. When two consecutive jumps of the same BMS
 input are exactly one step each, and nothing else — no PV input, no output, no
-other BMS input — showed any flow from just before the first jump until just after
-the second, the time between them is a *drain interval*: the standby energy of
-one step divided by that time is one standby power value. An interval is
-confirmed 125 minutes after its second jump, so that a counter that reports a
+other BMS input — showed any flow from just before the first jump until just
+after the second, the time between them is a *drain interval*: the standby
+energy of one step divided by that time is one standby power value. An interval
+is confirmed 125 minutes after its second jump, so that a counter that reports a
 load late has redistributed it first. Each confirmed interval moves the state by
 5 %: `new = 0.95 · old + 0.05 · value`. A BMS fed from the grid is found the
 same way; no option names the drain source. A BMS input that reports power (W)
 works too: an isolated reading above 0 is a jump, two consecutive readings above
 0 are sustained power and break the chain.
 
-The sensor is **unavailable** (not unknown, and never an invented default)
-until the first interval has counted. It is rounded to 0.1 W and has these
-attributes: `last_counted_value`, `last_drain_interval_end`, `drain_source`,
+The sensor is **unavailable** (not unknown, and never an invented default) until
+the first interval has counted. It is rounded to 0.1 W and has these attributes:
+`last_counted_value`, `last_drain_interval_end`, `drain_source`,
 `counted_intervals` and `last_processed_slot`.
 
 After a restart the estimate and its counters come back from Home Assistant's
@@ -123,10 +123,62 @@ restored state; Effy then replays the last 24 hours of BMS jumps and slot
 statistics inside its first slot job (it never blocks Home Assistant's startup),
 which gives the same result as uninterrupted operation. A downtime longer than 3
 days loses the intervals that would have been confirmed in the gap. If your BMS
-reports in a unit that jumps rarely (hours between jumps), the estimate is
-slow to appear.
+reports in a unit that jumps rarely (hours between jumps), the estimate is slow
+to appear.
 
 ---
+
+## For other integrations
+
+`sensor.effy_recalculated_from` is the one Effy sensor with a fixed entity ID.
+Besides its state (the earliest slot touched by the latest recalculation) it
+publishes Effy's configuration as attributes, so another integration can find
+Effy's sensors and the history length by reading a single entity instead of
+asking the person to pick them (ADR-021):
+
+```yaml
+schema_version: 1
+max_history_days: 28
+sensors:
+  - entity_id: sensor.effy_pv_south
+    series: effective
+    source_entity_id: sensor.pv_south
+    direction: input
+    role: pv
+    aggregations: [mean, state]
+  - entity_id: sensor.effy_standby_power
+    series: standby_power
+    source_entity_id:
+    direction: output
+    role: bms
+    aggregations: [mean, min, max]
+```
+
+| Key | Meaning |
+| -- | -- |
+| `schema_version` | Raised only when an existing key or its meaning changes; new keys do not raise it |
+| `max_history_days` | The configured number of history days |
+| `series` | `effective`, `derived_power`, `smoothed` or `standby_power` |
+| `source_entity_id` | The configured source sensor; `null` for the standby sensor |
+| `direction` | `input` or `output`; the standby sensor is an `output` |
+| `role` | `pv` or `bms`; every output is `bms` |
+| `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's series have `mean` and `state` (never `sum`) |
+
+- **Which sensors are listed:** every Effy sensor that exists, except
+  `sensor.effy_recalculated_from` itself. A sensor that is created late (its
+  source had no state at startup) is listed from the next recalculation on.
+- **One signal:** the sensor is updated as the *last* step of every
+  recalculation (the 5-minute job and the manual history rewrite), after the
+  statistics and the sensors' states are final, and it fires a `state_changed`
+  event every time, even for an equal timestamp. Subscribing to this one entity
+  is enough; the attributes are refreshed in the same write.
+- **After a restart** every Effy sensor comes back with its last state. This
+  sensor also keeps its attributes and marks them with `restored_as_of` (when
+  the data was last written) and `restored_at` (when it was restored) until the
+  next recalculation, normally within five minutes. The very first start has no
+  `sensors` attribute: read its absence as "not ready yet".
+- **Size:** the attributes are recorded; Home Assistant stores no attribute set
+  above 16 KiB (roughly 35 sources).
 
 ## How the algorithm works
 
@@ -248,12 +300,13 @@ first installation or after changing the sensor list.
 | `TOTAL` (W/kW unit) | `mean` | none | `mean=val_W` |
 | `MEASUREMENT` | `mean` | none | `mean=val_W` |
 
-All output statistics are written with `mean` only – no `state`/`sum` field –
-using `{"has_mean": True, "has_sum": False}` metadata. The `mean` value is
-always in W (or kW), representing the average power over the 5-minute interval.
-For `TOTAL_INCREASING` and `TOTAL`-as-energy sources this is the energy delta
-divided by the slot duration; for `MEASUREMENT` and `TOTAL`-as-power sources it
-is the HA-computed 5-minute mean directly.
+All statistics Effy writes carry `mean` and `state` – never `min`, `max` or
+`sum` – using `{"has_mean": True, "has_sum": False}` metadata. In a 5-minute row
+`state` equals `mean`; in an hourly row `state` is the last 5-minute value. The
+`mean` value is always in W (or kW), representing the average power over the
+5-minute interval. For `TOTAL_INCREASING` and `TOTAL`-as-energy sources this is
+the energy delta divided by the slot duration; for `MEASUREMENT` and
+`TOTAL`-as-power sources it is the HA-computed 5-minute mean directly.
 
 ### ⚠️ Genuine 5-minute statistics via an internal recorder API
 
@@ -340,3 +393,4 @@ test suite runs against.
 | [018](adr/018-standby-power-sensor.md) | Standby power estimate from drain intervals |
 | [019](adr/019-input-sensors-split-by-role.md) | Input sensors split by role (PV / BMS) |
 | [020](adr/020-effy-entities-recorded-without-exclusion.md) | Effy entities are recorded; the exclusion requirement of ADR-017 is retired |
+| [021](adr/021-config-attributes-on-recalculated-from.md) | Effy's configuration published as attributes of the recalculated-from sensor |

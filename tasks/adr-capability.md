@@ -79,3 +79,26 @@ options flow).
 
 **Scope (out):** any use of the role; it serves the standby power sensor
 (CAP-2).
+
+## CAP-5 — Configuration published for dependent projects *(approved 2026-10-18, Gate 1)*
+
+**What the user sees:** `sensor.effy_recalculated_from` carries attributes that
+say which Effy sensors exist (each with direction, role, series, source and the
+aggregations its short-term statistics offer) and the configured
+`max_history_days`, so Shady and Chargy can offer or pre-select the right Effy
+sensors and a matching history setting. The sensor's update is the last step of
+every recalculation, and after a reboot it comes back with its previous state
+and attributes, marked as restored until the next recalculation.
+
+**End-to-end demonstration:** an entry with PV and BMS inputs and an output:
+after a recalculation the attributes list every `sensor.effy_*` with its
+metadata; a late-created sensor appears at the next recalculation; after a
+restart every Effy sensor is back with its previous state, and the
+recalculated-from sensor with its attributes plus `restored_as_of` and
+`restored_at`, gone after the next recalculation (TASK-0009, ADR-021).
+
+**Scope (in):** the attribute contract on the existing sensor, the closing-step
+order (ADR-012 Amendment 2026-10-18), the restore, README and glossary, tests.
+
+**Scope (out):** any change in Shady or Chargy (owned by those projects); any
+change to the loss model or to what Effy writes into statistics.

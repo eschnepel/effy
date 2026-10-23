@@ -63,6 +63,15 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
   at the same time.
 - Offline-anchor lookback is staged 30 min → 1 day → full history, with
   in-memory last-valid cache (ADR-014/015).
+- Effy publishes its configuration for sibling projects (Shady, Chargy) as
+  attributes of `sensor.effy_recalculated_from` — `schema_version`,
+  `max_history_days`, `sensors` (a list of dicts: entity, series, source,
+  direction, role, aggregations) — **ADR-021, accepted 2026-10-18**. The
+  sensor's update is the *last* step of every recalculation (ADR-012 Amendment
+  2026-10-18), it sets `force_update`, and every Effy sensor restores its state
+  after a reboot, and this sensor also its attributes, marked by
+  `restored_as_of` (kept across a second reboot) / `restored_at` until the next
+  recalculation. All attributes are recorded.
 - Dashboard refresh: `notify_updated` pushes last-written slot value as live
   state (ADR-013 D3, ADR-016) — that is the last completed slot's value.
 
@@ -86,4 +95,6 @@ Last updated: 2026-10-06 (after ADR-014 amendments). Keep this concise; ADRs in
   rows — ADR-014 amendment).
 - No hourly long-term write from the slot-timer path (ADR-011 D2).
 - No backdating of live states into closed slots (no public API; ADR-011 D4).
+- No code in Shady or Chargy from this repo, and no `unit` key and no `sum`
+  aggregation in the published `sensors` list (ADR-021).
 - No setup check or repair issue about the recorder (ADR-017 retired, ADR-020).

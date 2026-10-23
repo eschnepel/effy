@@ -860,6 +860,35 @@ class TestEffyWritesMeanAndStateOnly:
             for row in stats:
                 assert set(row) == {"start", "mean", "state"}
 
+    async def test_the_rows_carry_exactly_the_published_aggregations(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TASK-0009, ADR-021 §3: ``aggregations`` in the published list is one
+        constant; it must equal what the writer sends, short-term and long-term."""
+        recorded: list[list[dict[str, Any]]] = []
+
+        class _Instance:
+            def async_import_statistics(
+                self, metadata: Any, stats: list[dict[str, Any]], table: Any
+            ) -> None:
+                recorded.append(stats)
+
+            async def async_block_till_done(self) -> None:
+                return None
+
+        monkeypatch.setattr(_history, "get_recorder", lambda _hass: _Instance())
+        series = {
+            "sensor.effy_x": {
+                "unit": "kW",
+                "slot_values": [(_ts(11, 50), 1.0), (_ts(11, 55), 2.0)],
+            }
+        }
+        await _history._write_recorder_statistics(object(), series, include_long_term=True)
+        assert len(recorded) == 2  # the short-term and the long-term table
+        for stats in recorded:
+            for row in stats:
+                assert set(row) - {"start"} == set(_const.EFFY_AGGREGATIONS)
+
     async def test_short_term_can_be_left_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         recorded: list[Any] = []
 

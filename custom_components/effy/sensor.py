@@ -26,7 +26,7 @@ least one BMS input is configured.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -45,7 +45,21 @@ from .calculation import (
     drain_restore_data,
     effective_in_original_unit,
 )
-from .const import CONF_OUTPUT_SENSORS, DOMAIN
+from .catalog import (
+    SERIES_DERIVED_POWER,
+    SERIES_EFFECTIVE,
+    SERIES_SMOOTHED,
+    base_attributes,
+    describe_source_series,
+    describe_standby,
+    published_attributes,
+)
+from .const import (
+    CONF_MAX_HISTORY_DAYS,
+    CONF_OUTPUT_SENSORS,
+    DEFAULT_MAX_HISTORY_DAYS,
+    DOMAIN,
+)
 from .inputs import all_input_ids
 from .coordinator import EffyCoordinator
 from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
@@ -63,6 +77,61 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
         name="Effy",
         manufacturer="Effy",
         model="PV Loss Distributor",
+    )
+
+
+# Home Assistant's STATE_UNKNOWN / STATE_UNAVAILABLE: a last state with either one is
+# not restored (ADR-021 §6).
+_NO_STATE = frozenset({"unknown", "unavailable"})
+
+# The only extra attributes an EffySensor carries (``_on_distribution``).
+_EFFECTIVE_ATTRIBUTE_KEYS = ("source_entity", "total_loss_w", "loss_share_w")
+
+
+def _utcnow() -> datetime:
+    """The restoration time; a module function so a test can fix it."""
+    return datetime.now(timezone.utc)
+
+
+async def _async_restore_measurement(
+    entity: RestoreEntity,
+) -> tuple[float | None, str | None, dict[str, Any]]:
+    """The last state of a numeric Effy sensor: value, unit and attributes.
+
+    A missing last state, or one that was ``unknown``, ``unavailable`` or not a
+    number, restores nothing (ADR-021 §6): ``(None, None, {})``.
+    """
+    last = await entity.async_get_last_state()
+    if last is None or last.state in _NO_STATE:
+        return None, None, {}
+    try:
+        value = float(last.state)
+    except (TypeError, ValueError):
+        return None, None, {}
+    unit = last.attributes.get("unit_of_measurement")
+    return value, unit if isinstance(unit, str) else None, dict(last.attributes)
+
+
+def _max_history_days(entry: ConfigEntry) -> int:
+    """The configured history days, as published (ADR-021)."""
+    return int(entry.options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS))
+
+
+def _source_descriptor(
+    entry: ConfigEntry,
+    coordinator: EffyCoordinator,
+    entity_id: str,
+    series: str,
+    source_entity_id: str,
+) -> dict[str, Any]:
+    """The published description of an Effy sensor that is a series of a source."""
+    return describe_source_series(
+        entity_id,
+        series,
+        source_entity_id,
+        pv_input_ids=coordinator.pv_input_ids,
+        bms_input_ids=coordinator.bms_input_ids,
+        output_ids=entry.options.get(CONF_OUTPUT_SENSORS, []),
     )
 
 
@@ -209,7 +278,7 @@ def _add_late_derived_entities(
     entry.async_on_unload(unsub)
 
 
-class EffySensor(SensorEntity):  # type: ignore[misc]
+class EffySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     """Effective-power sensor for one input source.
 
     Always device_class POWER: ``_on_distribution`` labels its value via
@@ -242,9 +311,11 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._source_unit: str = "W"
+        self._attr_extra_state_attributes: dict[str, Any] = {}
 
         self._unsub_coordinator: Callable[[], None] | None = None
         self._unsub_updates: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -269,12 +340,36 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         return _device_info(self._entry)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to coordinator updates (ADR-006 Option C), plus the
-        "push unknown after recalculation" channel (see _on_updated)."""
+        """Restore the last state (ADR-021 §6), then subscribe to coordinator updates
+        (ADR-006 Option C) and the "push unknown after recalculation" channel (see
+        _on_updated), and register the published descriptor (ADR-021 §5).
+
+        The restored value is provisional like the live state ADR-016 pushes; the
+        first ``_on_updated`` replaces it. Restoring comes before subscribing, so a
+        push can never be overwritten by it."""
+        await super().async_added_to_hass()
+        value, unit, attrs = await _async_restore_measurement(self)
+        if value is not None:
+            self._attr_native_value = value
+            if unit is not None:
+                self._attr_native_unit_of_measurement = unit
+                self._source_unit = unit
+            kept = {k: attrs[k] for k in _EFFECTIVE_ATTRIBUTE_KEYS if k in attrs}
+            if kept:
+                self._attr_extra_state_attributes = kept
         self._unsub_coordinator = self._coordinator.subscribe(
             self._source_entity_id, self._on_distribution
         )
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+        self._unregister_published = self._coordinator.register_published(
+            _source_descriptor(
+                self._entry,
+                self._coordinator,
+                self.entity_id,
+                SERIES_EFFECTIVE,
+                self._source_entity_id,
+            )
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe from coordinator."""
@@ -284,6 +379,9 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         if self._unsub_updates is not None:
             self._unsub_updates()
             self._unsub_updates = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_updated(self, value: float | None, unit: str | None) -> None:
@@ -345,7 +443,7 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
             3,
         )
 
-        self._attr_extra_state_attributes: dict[str, Any] = {
+        self._attr_extra_state_attributes = {
             "source_entity": self._source_entity_id,
             "total_loss_w": round(distribution.total_loss_w, 3),
             "loss_share_w": round(distribution.shares.get(self._source_entity_id, 0.0), 3),
@@ -354,7 +452,7 @@ class EffySensor(SensorEntity):  # type: ignore[misc]
         self.async_write_ha_state()
 
 
-class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
+class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     """Raw, pre-loss-distribution derived-power sensor (ADR-012).
 
     One per energy-family (TOTAL_INCREASING / TOTAL-as-energy) sensor,
@@ -399,6 +497,7 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._unsub_updates: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -423,14 +522,33 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
         return _device_info(self._entry)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to the "push unknown after recalculation" channel
-        (see _on_updated)."""
+        """Restore the last state (ADR-021 §6), subscribe to the "push unknown after
+        recalculation" channel (see _on_updated) and register the published
+        descriptor (ADR-021 §5). The restored value is provisional (ADR-016)."""
+        await super().async_added_to_hass()
+        value, unit, _attrs = await _async_restore_measurement(self)
+        if value is not None:
+            self._attr_native_value = value
+            if unit is not None:
+                self._attr_native_unit_of_measurement = unit
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+        self._unregister_published = self._coordinator.register_published(
+            _source_descriptor(
+                self._entry,
+                self._coordinator,
+                self.entity_id,
+                SERIES_DERIVED_POWER,
+                self._source_entity_id,
+            )
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
             self._unsub_updates()
             self._unsub_updates = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_updated(self, value: float | None, unit: str | None) -> None:
@@ -445,7 +563,7 @@ class EffyDerivedPowerSensor(SensorEntity):  # type: ignore[misc]
         self.async_write_ha_state()
 
 
-class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
+class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     """Gap-interpolated power-family INPUT sensor.
 
     Home Assistant's compiled 5-minute statistics for a MEASUREMENT/
@@ -503,6 +621,7 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._unsub_updates: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -527,14 +646,33 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
         return _device_info(self._entry)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to the "push unknown after recalculation" channel
-        (see _on_updated)."""
+        """Restore the last state (ADR-021 §6), subscribe to the "push unknown after
+        recalculation" channel (see _on_updated) and register the published
+        descriptor (ADR-021 §5). The restored value is provisional (ADR-016)."""
+        await super().async_added_to_hass()
+        value, unit, _attrs = await _async_restore_measurement(self)
+        if value is not None:
+            self._attr_native_value = value
+            if unit is not None:
+                self._attr_native_unit_of_measurement = unit
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+        self._unregister_published = self._coordinator.register_published(
+            _source_descriptor(
+                self._entry,
+                self._coordinator,
+                self.entity_id,
+                SERIES_SMOOTHED,
+                self._source_entity_id,
+            )
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
             self._unsub_updates()
             self._unsub_updates = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_updated(self, value: float | None, unit: str | None) -> None:
@@ -549,21 +687,30 @@ class EffySmoothedSensor(SensorEntity):  # type: ignore[misc]
         self.async_write_ha_state()
 
 
-class EffyRecalculatedFromSensor(SensorEntity):  # type: ignore[misc]
+class EffyRecalculatedFromSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     """Global timestamp of the earliest slot touched by the most recent
-    recalculation (ADR-012).
+    recalculation (ADR-012), and the place where Effy publishes its
+    configuration for other integrations (ADR-021).
 
     Unlike EffySensor/EffyDerivedPowerSensor, this one *is* live-updated
-    even with the live path disabled: it subscribes to the coordinator's
-    ``subscribe_recalculated_from`` channel, which both the slot timer
-    (EffyCoordinator._on_slot_timer) and a manual history rewrite
-    (button.py, via ``coordinator.set_recalculated_from``) push to. One
-    per config entry — not tied to any single source sensor.
+    even with the live path off: it subscribes to the coordinator's
+    ``subscribe_recalculated_from`` channel, which both recalculation entry
+    points (the slot job and the manual history rewrite) push to as their
+    **closing step**, after their statistics and states are final. One per
+    config entry — not tied to any single source sensor.
+
+    Attributes (ADR-021): ``schema_version``, ``max_history_days`` and the
+    ``sensors`` list of the registered Effy sensors, refreshed only in the
+    closing step. ``force_update`` makes every closing step fire a
+    ``state_changed`` event, even for an equal timestamp and equal attributes.
+    After a reboot the state and the attributes come back as they were, marked
+    by ``restored_as_of`` and ``restored_at`` until the next closing step.
     """
 
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_force_update = True
     _attr_name = "Recalculated from"
 
     def __init__(
@@ -577,6 +724,9 @@ class EffyRecalculatedFromSensor(SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_recalculated_from"
         self._attr_native_value: datetime | None = None
+        # Until the first closing step (or a restore) ``sensors`` is absent: a
+        # consumer reads that as "not ready yet" (ADR-021 §6).
+        self._attrs: dict[str, Any] = base_attributes(_max_history_days(entry))
         self._unsub_coordinator: Callable[[], None] | None = None
 
     @property
@@ -595,19 +745,61 @@ class EffyRecalculatedFromSensor(SensorEntity):  # type: ignore[misc]
     def device_info(self) -> DeviceInfo:
         return _device_info(self._entry)
 
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to the coordinator's recalculated-from channel.
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._attrs
 
-        Seeds from whatever the coordinator already knows in case a
-        recalculation happened before this entity finished being added
-        (e.g. shortly after an HA restart, while platform setup is still
-        in progress).
+    async def async_added_to_hass(self) -> None:
+        """Restore the last state, then subscribe to the closing-step channel.
+
+        Restoring comes first, so a push can never be overwritten by it. If a
+        recalculation already finished before this entity was added (shortly
+        after a restart, while platform setup is still in progress), only the
+        timestamp is taken over: the descriptors of the other sensors may not be
+        registered yet, so the restored attributes stay until the next closing
+        step writes the complete list.
         """
+        await super().async_added_to_hass()
+        await self._async_restore()
         self._unsub_coordinator = self._coordinator.subscribe_recalculated_from(
             self._on_recalculated_from
         )
         if self._coordinator.recalculated_from is not None:
             self._attr_native_value = self._coordinator.recalculated_from
+
+    async def _async_restore(self) -> None:
+        """Take over the previous state and attributes, marked as restored (ADR-021 §6).
+
+        Everything is restored as it was, ``sensors`` included. A previous state
+        without usable attributes (the first start after the upgrade) keeps the
+        current scalars and has no ``sensors``. ``restored_as_of`` is the previous
+        state's own ``restored_as_of`` if it carried one, else its ``last_updated``.
+        No usable previous state (``unknown``, ``unavailable``, absent, not a
+        timestamp) restores nothing.
+        """
+        last = await self.async_get_last_state()
+        if last is None or last.state in _NO_STATE:
+            return
+        try:
+            restored = datetime.fromisoformat(last.state)
+        except ValueError:
+            return
+        attrs = self._attrs
+        schema_version = last.attributes.get("schema_version")
+        if isinstance(schema_version, int) and not isinstance(schema_version, bool):
+            attrs["schema_version"] = schema_version
+        max_history_days = last.attributes.get("max_history_days")
+        if isinstance(max_history_days, int) and not isinstance(max_history_days, bool):
+            attrs["max_history_days"] = max_history_days
+        sensors = last.attributes.get("sensors")
+        if isinstance(sensors, list) and all(isinstance(s, dict) for s in sensors):
+            attrs["sensors"] = [dict(s) for s in sensors]
+        # The data age: a state restored twice (a second reboot before any closing step)
+        # still says when the data was last written for real, not when it was restored.
+        as_of = last.attributes.get("restored_as_of")
+        attrs["restored_as_of"] = as_of if isinstance(as_of, str) else last.last_updated.isoformat()
+        attrs["restored_at"] = _utcnow().isoformat()
+        self._attr_native_value = restored
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_coordinator is not None:
@@ -616,7 +808,12 @@ class EffyRecalculatedFromSensor(SensorEntity):  # type: ignore[misc]
 
     @callback  # type: ignore[untyped-decorator]
     def _on_recalculated_from(self, ts: datetime) -> None:
+        """The closing step of a recalculation: new state, fresh attributes, no
+        ``restored_*`` (ADR-021 §4)."""
         self._attr_native_value = ts
+        self._attrs = published_attributes(
+            self._coordinator.published_descriptors(), _max_history_days(self._entry)
+        )
         self.async_write_ha_state()
 
 
@@ -662,6 +859,7 @@ class EffyStandbyPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._attr_unique_id = standby_unique_id(entry)
         self._drain: DrainState | None = None
         self._unsub_coordinator: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -724,11 +922,17 @@ class EffyStandbyPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         last = await self.async_get_last_extra_data()
         self._drain = self._coordinator.restore_standby(last.as_dict() if last else None)
         self._unsub_coordinator = self._coordinator.subscribe_standby(self._on_standby)
+        self._unregister_published = self._coordinator.register_published(
+            describe_standby(self.entity_id)
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_coordinator is not None:
             self._unsub_coordinator()
             self._unsub_coordinator = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_standby(self, state: DrainState) -> None:

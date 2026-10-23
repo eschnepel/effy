@@ -43,6 +43,11 @@ class _RestoreEntity(_Stub):
     async def async_added_to_hass(self) -> None:
         return None
 
+    last_state: Any = None
+
+    async def async_get_last_state(self) -> Any:
+        return self.last_state
+
     async def async_get_last_extra_data(self) -> Any:
         if self.restored is None:
             return None
@@ -82,7 +87,15 @@ def _load() -> tuple[ModuleType, ModuleType]:
     ]
     module_names = [
         f"{_PKG}.{n}"
-        for n in ("const", "inputs", "calculation", "sensor_utils", "coordinator", "sensor")
+        for n in (
+            "const",
+            "inputs",
+            "catalog",
+            "calculation",
+            "sensor_utils",
+            "coordinator",
+            "sensor",
+        )
     ]
     touched = [*stub_names, _PKG, *module_names]
     saved = {name: sys.modules.get(name) for name in touched}
@@ -140,7 +153,7 @@ def _load() -> tuple[ModuleType, ModuleType]:
         pkg.coordinator = fake_coordinator  # type: ignore[attr-defined]
 
         loaded: dict[str, ModuleType] = {}
-        for name in ("const", "inputs", "calculation", "sensor_utils", "sensor"):
+        for name in ("const", "inputs", "catalog", "calculation", "sensor_utils", "sensor"):
             spec = importlib.util.spec_from_file_location(f"{_PKG}.{name}", _BASE / f"{name}.py")
             assert spec and spec.loader
             mod = importlib.util.module_from_spec(spec)
@@ -171,6 +184,16 @@ class _FakeCoordinator:
         self.restore_calls: list[Any] = []
         self.subscribers: list[Callable[[Any], None]] = []
         self.unsubscribed = 0
+        self.published: list[dict[str, Any]] = []
+        self.unpublished = 0
+
+    def register_published(self, descriptor: dict[str, Any]) -> Callable[[], None]:
+        self.published.append(dict(descriptor))
+
+        def unregister() -> None:
+            self.unpublished += 1
+
+        return unregister
 
     def restore_standby(self, data: Any) -> Any:
         self.restore_calls.append(data)

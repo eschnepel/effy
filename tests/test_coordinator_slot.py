@@ -1231,3 +1231,141 @@ class TestStandbyInTheSlotJob(_SlotCoordinatorBase):
             results.append((calls, notified))
         assert results[0] == results[1]
         assert results[0][0] and results[0][1]
+
+
+class TestClosingStep(_SlotCoordinatorBase):
+    """TASK-0009, ADR-012 Amendment 2026-10-18, ADR-021 §4: the update of the
+    recalculated-from sensor is the *last* step of both recalculation entry
+    points, so a listener sees final statistics and states."""
+
+    def _bms(self) -> EffyCoordinator:
+        _reset_slot_job_fakes()
+        coord = EffyCoordinator(
+            _FakeHass(),
+            _FakeEntry(["sensor.pv"], ["sensor.grid_export"], ["sensor.bms_discharge"]),
+        )
+        coord._probe_interval = timedelta(milliseconds=1)
+        coord.restore_standby(None)
+        return coord
+
+    def _record_order(self, coord: EffyCoordinator) -> list[str]:
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        coord.subscribe_updates("sensor.effy_x", lambda _value, _unit: order.append("notify"))
+        coord.subscribe_recalculated_from(lambda _ts: order.append("closing"))
+        return order
+
+    @pytest.mark.asyncio
+    async def test_the_slot_job_closes_after_notify_hour_rewrite_and_standby(self) -> None:
+        coord = self._bms()
+        order = self._record_order(coord)
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]  # slot 11:55: hour ends
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert order == ["recent", "notify", "hourly", "standby", "closing"]
+        assert coord.recalculated_from == _ts(11, 55)
+
+    @pytest.mark.asyncio
+    async def test_the_manual_history_rewrite_closes_after_notify(self) -> None:
+        coord = self._bms()
+        order = self._record_order(coord)
+        _history_full_return_value[0] = (
+            3,
+            _ts(9, 0),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        assert await coord.async_recalculate_history_and_report() == 3
+        assert order == ["history", "notify", "closing"]
+        assert coord.recalculated_from == _ts(9, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_failing_hour_rewrite_or_standby_update_still_closes(self) -> None:
+        coord = self._bms()
+        order = self._record_order(coord)
+        _hourly_raise_next[0] = True
+        _standby_raise_next[0] = True
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert order == ["recent", "notify", "hourly", "standby", "closing"]
+
+    @pytest.mark.asyncio
+    async def test_a_recalculation_that_raises_does_not_close(self) -> None:
+        coord = self._bms()
+        order = self._record_order(coord)
+        _history_raise_next[0] = True
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert "closing" not in order
+        assert coord.recalculated_from is None
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_touches_nothing_does_not_close(self) -> None:
+        coord = self._bms()
+        order = self._record_order(coord)
+        _history_return_value[0] = (0, None, set(), {})
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert "closing" not in order
+        assert coord.recalculated_from is None
+
+
+class TestPublishedRegistry:
+    """TASK-0009, ADR-021 §5: Effy sensors register a descriptor of themselves."""
+
+    def _coordinator(self) -> EffyCoordinator:
+        return EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"]))
+
+    @staticmethod
+    def _descriptor(entity_id: str) -> dict[str, Any]:
+        return {"entity_id": entity_id, "series": "effective"}
+
+    def test_a_registered_descriptor_is_listed_and_unregistering_removes_it(self) -> None:
+        coord = self._coordinator()
+        assert coord.published_descriptors() == []
+        unregister = coord.register_published(self._descriptor("sensor.effy_a"))
+        assert coord.published_descriptors() == [self._descriptor("sensor.effy_a")]
+        unregister()
+        assert coord.published_descriptors() == []
+
+    def test_unregistering_twice_is_harmless(self) -> None:
+        coord = self._coordinator()
+        unregister = coord.register_published(self._descriptor("sensor.effy_a"))
+        unregister()
+        unregister()
+        assert coord.published_descriptors() == []
+
+    def test_a_stale_unregister_does_not_remove_a_re_registered_entity(self) -> None:
+        coord = self._coordinator()
+        stale = coord.register_published(self._descriptor("sensor.effy_a"))
+        coord.register_published(self._descriptor("sensor.effy_a"))  # removed and added again
+        stale()
+        assert coord.published_descriptors() == [self._descriptor("sensor.effy_a")]
+
+    def test_descriptors_are_copies(self) -> None:
+        coord = self._coordinator()
+        source = self._descriptor("sensor.effy_a")
+        coord.register_published(source)
+        source["series"] = "changed"  # the registered copy is unaffected
+        listed = coord.published_descriptors()
+        listed[0]["series"] = "changed too"
+        assert coord.published_descriptors() == [self._descriptor("sensor.effy_a")]

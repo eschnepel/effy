@@ -270,6 +270,10 @@ class EffyCoordinator:
         # would replay without the restored aggregates and count twice.
         self._standby_state: DrainState | None = None
         self._standby_subscribers: list[StandbyCallback] = []
+        # Descriptors of the Effy sensors that exist (ADR-021): each sensor registers
+        # itself when added and unregisters when removed; the recalculated-from
+        # sensor reads them when the closing step writes its state.
+        self._published: dict[str, dict[str, Any]] = {}
 
     @property
     def pv_input_ids(self) -> list[str]:
@@ -363,6 +367,27 @@ class EffyCoordinator:
             self._subscribers.pop(entity_id, None)
 
         return _unsubscribe
+
+    def register_published(self, descriptor: Mapping[str, Any]) -> Callable[[], None]:
+        """Register an Effy sensor's descriptor (ADR-021); returns its unregister callable.
+
+        Keyed by ``entity_id``. The returned callable removes the entry only if it is
+        still the one registered here, so an entity that was removed and added again
+        under the same ID is not unregistered by the stale callable of its predecessor.
+        """
+        stored = dict(descriptor)
+        entity_id = str(stored["entity_id"])
+        self._published[entity_id] = stored
+
+        def _unregister() -> None:
+            if self._published.get(entity_id) is stored:
+                del self._published[entity_id]
+
+        return _unregister
+
+    def published_descriptors(self) -> list[dict[str, Any]]:
+        """Copies of the descriptors of every Effy sensor that exists right now."""
+        return [dict(d) for d in self._published.values()]
 
     def subscribe_recalculated_from(self, cb: RecalculatedFromCallback) -> Callable[[], None]:
         """Register EffyRecalculatedFromSensor's callback (ADR-012).
@@ -603,13 +628,17 @@ class EffyCoordinator:
             # one too). max(): cycles may overlap and finish out of order.
             if self._last_recent_run is None or now > self._last_recent_run:
                 self._last_recent_run = now
-            if earliest is not None:
-                self.set_recalculated_from(earliest)
             if touched:
                 self.notify_updated(touched, last_values)
             if slot is not None and (slot + timedelta(minutes=SLOT_MINUTES)).minute == 0:
                 await self._async_rewrite_hour(slot, last_values)
             await self._async_update_standby(now)
+            # The closing step (ADR-012 Amendment 2026-10-18, ADR-021): the update of
+            # the recalculated-from sensor tells a listener that the statistics and
+            # the states of this recalculation are final, so it comes last. The hour
+            # rewrite and the standby update log their own failures and cannot skip it.
+            if earliest is not None:
+                self.set_recalculated_from(earliest)
 
     async def _async_update_standby(self, now: datetime) -> None:
         """Feed the standby machine and tell its sensor (ADR-018).
@@ -665,10 +694,11 @@ class EffyCoordinator:
                 self._entry.options,
                 energy_reading_cache=self.last_valid_energy_readings,
             )
-            if recalculated_from is not None:
-                self.set_recalculated_from(recalculated_from)
             if touched:
                 self.notify_updated(touched, last_values)
+            # The closing step comes last (ADR-012 Amendment 2026-10-18, ADR-021).
+            if recalculated_from is not None:
+                self.set_recalculated_from(recalculated_from)
             return written
 
     def _schedule_next_slot_timer(self) -> None:
