@@ -63,8 +63,8 @@ class _SensorStateClass:
     MEASUREMENT = "measurement"
 
 
-def _load_history() -> tuple[ModuleType, ModuleType]:
-    """Return (history, const) loaded from the real files under a private
+def _load_history() -> tuple[ModuleType, ModuleType, ModuleType]:
+    """Return (history, const, effy_exports) loaded from the real files under a private
     package name, with HA stubbed only for the duration of the load."""
     stub_names = [
         "homeassistant",
@@ -77,7 +77,8 @@ def _load_history() -> tuple[ModuleType, ModuleType]:
         "homeassistant.components.recorder.models",
     ]
     module_names = [
-        f"{_PKG}.{n}" for n in ("const", "inputs", "calculation", "sensor_utils", "history")
+        f"{_PKG}.{n}"
+        for n in ("const", "effy_exports", "inputs", "calculation", "sensor_utils", "history")
     ]
     touched = [*stub_names, _PKG, *module_names]
     saved: dict[str, ModuleType | None] = {name: sys.modules.get(name) for name in touched}
@@ -110,7 +111,7 @@ def _load_history() -> tuple[ModuleType, ModuleType]:
         sys.modules[_PKG] = pkg
 
         loaded: dict[str, ModuleType] = {}
-        for name in ("const", "inputs", "calculation", "sensor_utils", "history"):
+        for name in ("const", "effy_exports", "inputs", "calculation", "sensor_utils", "history"):
             spec = importlib.util.spec_from_file_location(f"{_PKG}.{name}", _BASE / f"{name}.py")
             assert spec and spec.loader
             mod = importlib.util.module_from_spec(spec)
@@ -125,10 +126,10 @@ def _load_history() -> tuple[ModuleType, ModuleType]:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = previous
-    return loaded["history"], loaded["const"]
+    return loaded["history"], loaded["const"], loaded["effy_exports"]
 
 
-_history, _const = _load_history()
+_history, _const, _exports = _load_history()
 
 
 # ---------------------------------------------------------------------------
@@ -887,7 +888,7 @@ class TestEffyWritesMeanAndStateOnly:
         assert len(recorded) == 2  # the short-term and the long-term table
         for stats in recorded:
             for row in stats:
-                assert set(row) - {"start"} == set(_const.EFFY_AGGREGATIONS)
+                assert set(row) - {"start"} == set(_exports.EFFY_AGGREGATIONS)
 
     async def test_short_term_can_be_left_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         recorded: list[Any] = []

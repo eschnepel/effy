@@ -20,6 +20,7 @@
 | TASK-0013-wire-array-native-compute-path | Wire the array path into `_compute_effective_slots`; harness tolerance made explicit (CAP-6, ADR-022 Q3/Q4) | todo (draft; blocked by gate G-perf, Gate 2 and Q3/Q4) | TASK-0011-array-native-trapezoid, TASK-0012-array-native-waterfall-and-interpolation | — |
 | TASK-0014-compute-phase-off-the-event-loop | Run the compute phase as an executor job on plain data; independent of numpy (CAP-6, ADR-022 Decision 3, Q2/Q5) | todo (draft; blocked by gate G-perf, Q2 and Gate 2) | TASK-0010-recalculation-phase-timing | — |
 | TASK-0015-retire-pure-python-stages | Move production-unused pure-Python stage functions to `tests/` as the oracle (CAP-6, only if ADR-022 Q3 = A) | todo (draft; blocked by Q3 = A) | TASK-0013-wire-array-native-compute-path | — |
+| TASK-0016-effy-exports-contract-file | Publish the ADR-021 contract as one copyable symbol file `effy_exports.py` that Effy itself imports; every symbol prefixed `EFFY_` (CAP-5 extension; human request 2026-10-23) | review | TASK-0009-config-attributes-on-recalculated-from | worker-inline |
 
 Execution order: strictly sequential. 0001 and 0002 both edit `calculation.py` /
 `tests/test_calculation.py` (shared files → sequential, Phase 3); 0003 consumes
@@ -120,6 +121,7 @@ changed.
 | 2026-10-19 | (external) human request | added Draft ADR-022 (measure the history recalculation, then a gated array-native compute path with numpy), CAP-6 proposal in `tasks/adr-capability.md` (pending Gate 1), TASK-0010 (releasable at Gate 2) and drafts TASK-0011 to TASK-0015 blocked by gate G-perf | the human reports a history recalculation of about 5 minutes on a Raspberry Pi 5; a sandbox benchmark (numpy 4–9× on the compute phase) cannot explain that figure, because the code has no phase timing and the compute phase measured 0.8 s on synthetic data; so measurement comes first |
 | 2026-10-19 | TASK-0010 | Gate 2 for TASK-0010 approved by the human ("Proceed with instrumentalisation. Measure parsing separate if possible."); the other CAP-6 tasks and Gate 1 of CAP-6 as a whole stay pending | human go-ahead; the request to measure parsing separately added a parse probe to the task |
 | 2026-10-19 | TASK-0010 | implemented inline as worker, then reviewed as reviewer: PASS. Parse probe added (one extra pass over the raw states, separate from `compute`; parsing sits in `calculation.py` and cannot be timed inline without changing it); probe hardened against timestamp errors and a missing jump-refetch test added during the review. Draft ADR-022 Decision 1 and the draft section of `adr-summary.md` updated in the text | 440 tests pass (427 before); `ruff` clean; `mypy` shows only the 3 errors that already exist on the untouched tree. First reading on 28 synthetic days: one parse pass is about 2–3 % (strings) and 4 % (timestamps) of the pure-Python compute phase. Next step is the human's: one history recalculation on the Pi with the `history` logger at INFO, then gate G-perf |
+| 2026-10-23 | — | added TASK-0016-effy-exports-contract-file | human request: the ADR-021 contract as a copyable file Effy itself imports |
 
 ## Audit Groups
 

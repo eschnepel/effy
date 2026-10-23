@@ -46,9 +46,6 @@ from .calculation import (
     effective_in_original_unit,
 )
 from .catalog import (
-    SERIES_DERIVED_POWER,
-    SERIES_EFFECTIVE,
-    SERIES_SMOOTHED,
     base_attributes,
     describe_source_series,
     describe_standby,
@@ -59,6 +56,20 @@ from .const import (
     CONF_OUTPUT_SENSORS,
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
+)
+from .effy_exports import (
+    EFFY_ATTR_MAX_HISTORY_DAYS,
+    EFFY_ATTR_RESTORED_AS_OF,
+    EFFY_ATTR_RESTORED_AT,
+    EFFY_ATTR_SCHEMA_VERSION,
+    EFFY_ATTR_SENSORS,
+    EFFY_RECALCULATED_FROM_ENTITY_ID,
+    EFFY_SERIES_DERIVED_POWER,
+    EFFY_SERIES_EFFECTIVE,
+    EFFY_SERIES_SMOOTHED,
+    EFFY_STANDBY_POWER_ENTITY_ID,
+    EffyPublishedSensor,
+    EffySeries,
 )
 from .inputs import all_input_ids
 from .coordinator import EffyCoordinator
@@ -121,9 +132,9 @@ def _source_descriptor(
     entry: ConfigEntry,
     coordinator: EffyCoordinator,
     entity_id: str,
-    series: str,
+    series: EffySeries,
     source_entity_id: str,
-) -> dict[str, Any]:
+) -> EffyPublishedSensor:
     """The published description of an Effy sensor that is a series of a source."""
     return describe_source_series(
         entity_id,
@@ -366,7 +377,7 @@ class EffySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
                 self._entry,
                 self._coordinator,
                 self.entity_id,
-                SERIES_EFFECTIVE,
+                EFFY_SERIES_EFFECTIVE,
                 self._source_entity_id,
             )
         )
@@ -537,7 +548,7 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
                 self._entry,
                 self._coordinator,
                 self.entity_id,
-                SERIES_DERIVED_POWER,
+                EFFY_SERIES_DERIVED_POWER,
                 self._source_entity_id,
             )
         )
@@ -661,7 +672,7 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
                 self._entry,
                 self._coordinator,
                 self.entity_id,
-                SERIES_SMOOTHED,
+                EFFY_SERIES_SMOOTHED,
                 self._source_entity_id,
             )
         )
@@ -735,7 +746,7 @@ class EffyRecalculatedFromSensor(RestoreEntity, SensorEntity):  # type: ignore[m
 
     @property
     def entity_id(self) -> str:
-        return "sensor.effy_recalculated_from"
+        return EFFY_RECALCULATED_FROM_ENTITY_ID
 
     @entity_id.setter
     def entity_id(self, value: str) -> None:
@@ -785,20 +796,22 @@ class EffyRecalculatedFromSensor(RestoreEntity, SensorEntity):  # type: ignore[m
         except ValueError:
             return
         attrs = self._attrs
-        schema_version = last.attributes.get("schema_version")
+        schema_version = last.attributes.get(EFFY_ATTR_SCHEMA_VERSION)
         if isinstance(schema_version, int) and not isinstance(schema_version, bool):
-            attrs["schema_version"] = schema_version
-        max_history_days = last.attributes.get("max_history_days")
+            attrs[EFFY_ATTR_SCHEMA_VERSION] = schema_version
+        max_history_days = last.attributes.get(EFFY_ATTR_MAX_HISTORY_DAYS)
         if isinstance(max_history_days, int) and not isinstance(max_history_days, bool):
-            attrs["max_history_days"] = max_history_days
-        sensors = last.attributes.get("sensors")
+            attrs[EFFY_ATTR_MAX_HISTORY_DAYS] = max_history_days
+        sensors = last.attributes.get(EFFY_ATTR_SENSORS)
         if isinstance(sensors, list) and all(isinstance(s, dict) for s in sensors):
-            attrs["sensors"] = [dict(s) for s in sensors]
+            attrs[EFFY_ATTR_SENSORS] = [dict(s) for s in sensors]
         # The data age: a state restored twice (a second reboot before any closing step)
         # still says when the data was last written for real, not when it was restored.
-        as_of = last.attributes.get("restored_as_of")
-        attrs["restored_as_of"] = as_of if isinstance(as_of, str) else last.last_updated.isoformat()
-        attrs["restored_at"] = _utcnow().isoformat()
+        as_of = last.attributes.get(EFFY_ATTR_RESTORED_AS_OF)
+        attrs[EFFY_ATTR_RESTORED_AS_OF] = (
+            as_of if isinstance(as_of, str) else last.last_updated.isoformat()
+        )
+        attrs[EFFY_ATTR_RESTORED_AT] = _utcnow().isoformat()
         self._attr_native_value = restored
 
     async def async_will_remove_from_hass(self) -> None:
@@ -867,7 +880,7 @@ class EffyStandbyPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
 
     @property
     def entity_id(self) -> str:
-        return "sensor.effy_standby_power"
+        return EFFY_STANDBY_POWER_ENTITY_ID
 
     @entity_id.setter
     def entity_id(self, value: str) -> None:

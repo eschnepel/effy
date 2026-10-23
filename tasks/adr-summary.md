@@ -1,7 +1,8 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-10-19 (Draft ADR-022 added; last accepted change: ADR-021).
-Keep this concise; ADRs in `adr/` are authoritative.
+Last updated: 2026-10-23 (Draft ADR-023 added; ADR-019/021 amendments pending
+ADR-023; `effy_exports.py` added; last accepted change: ADR-021). Keep this
+concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -72,6 +73,13 @@ Keep this concise; ADRs in `adr/` are authoritative.
   after a reboot, and this sensor also its attributes, marked by
   `restored_as_of` (kept across a second reboot) / `restored_at` until the next
   recalculation. All attributes are recorded.
+- The published contract (ADR-021) is also **one standalone file**,
+  `custom_components/effy/effy_exports.py` (ADR-021 and ADR-000 Amendments
+  2026-10-23): standard library only, no import from Effy, symbols only, every
+  symbol prefixed `EFFY_` (types `Effy`). Downstream projects copy it verbatim;
+  Effy imports the same file (`catalog.py`, `sensor.py`), and a test pins every
+  value and fails if a contract literal is spelled out in another module. A
+  breaking change raises `EFFY_PUBLISHED_SCHEMA_VERSION` in the same commit.
 - Dashboard refresh: `notify_updated` pushes last-written slot value as live
   state (ADR-013 D3, ADR-016) — that is the last completed slot's value.
 
@@ -101,6 +109,12 @@ Keep this concise; ADRs in `adr/` are authoritative.
 
 ## Draft ADRs (not yet ground truth — do not implement from these)
 
+- **ADR-023 (Draft, 2026-10-23):** four efficiency sensors (charge, battery,
+  discharge, roundtrip) from the BMS counters configured by function (four
+  single pickers replace the BMS-input and output lists, no migration), SoC and
+  capacity pickers, pure runs of charge or discharge slots less standby energy,
+  valleys of the SoC between spans, decayed sums at 5 % per kWh. Not ground
+  truth.
 - **ADR-022 (Draft, 2026-10-19):** a history recalculation takes about 5 minutes
   on a Raspberry Pi 5 and the code has no phase timing. Proposed: log the wall
   time of the fetch, compute and write phases first (TASK-0010, done 2026-10-19,

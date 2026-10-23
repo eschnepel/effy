@@ -224,3 +224,29 @@ having to hunt down every comment that explained it.
 - **Con:** Strict mypy plus per-file suppression configuration is more upfront
   setup than "just ignore HA imports everywhere" — but it means type errors in
   actual business logic are never silently masked by a blanket ignore.
+
+---
+
+## Amendment — 2026-10-23 (`effy_exports.py`)
+
+**Reason:** ADR-021's contract became a file other projects copy
+(`custom_components/effy/effy_exports.py`), which the rules above do not cover.
+
+**Decision:**
+
+- **§3:** `effy_exports.py` is a second leaf next to `calculation.py`: standard
+  library only, imports no other Effy module, and is imported by `catalog.py`
+  and `sensor.py` (upward, as before). It must also work as a top-level module
+  of another project, so it uses no relative import.
+- **§4:** it omits `from __future__ import annotations`, the one module that
+  does: a `TypedDict` reads `NotRequired` at runtime, and stringified
+  annotations hide it from `__required_keys__`.
+- **§5:** its symbols are prefixed `EFFY_` (constants) or `Effy` (types), so a
+  copy cannot collide with a project's own names. The published contract is the
+  one case of cross-module constants that do not live in `const.py`.
+- **§6:** `tests/test_effy_exports.py` loads it by file path as a top-level
+  module, checks that it imports only `typing`, that every symbol carries the
+  prefix, and pins every symbol's value.
+
+**Decided by:** Lead Agent (confirmed by human, 2026-10-23: the file, and the
+`EFFY_` prefix on every export)

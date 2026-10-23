@@ -89,6 +89,7 @@ def _load() -> tuple[ModuleType, ModuleType]:
         f"{_PKG}.{n}"
         for n in (
             "const",
+            "effy_exports",
             "inputs",
             "catalog",
             "calculation",
@@ -153,7 +154,15 @@ def _load() -> tuple[ModuleType, ModuleType]:
         pkg.coordinator = fake_coordinator  # type: ignore[attr-defined]
 
         loaded: dict[str, ModuleType] = {}
-        for name in ("const", "inputs", "catalog", "calculation", "sensor_utils", "sensor"):
+        for name in (
+            "const",
+            "effy_exports",
+            "inputs",
+            "catalog",
+            "calculation",
+            "sensor_utils",
+            "sensor",
+        ):
             spec = importlib.util.spec_from_file_location(f"{_PKG}.{name}", _BASE / f"{name}.py")
             assert spec and spec.loader
             mod = importlib.util.module_from_spec(spec)

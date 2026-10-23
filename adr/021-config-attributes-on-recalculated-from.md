@@ -254,3 +254,63 @@ time of this restoration.
 
 **Decided by:** Lead Agent (confirmed by human, 2026-10-18: keep a carried
 `restored_as_of`, overwrite only `restored_at`)
+
+---
+
+## Amendment — 2026-10-23 (efficiency sensors and the `function` key; takes effect when ADR-023 is accepted)
+
+**Reason:** ADR-023 (Draft) adds four sensors and gives the BMS counters named
+roles; consumers such as Chargy should pick by function, not by guessing.
+
+**Decision:** Additive only, so `schema_version` stays 1 (decision 1).
+
+- `series` gains `charge_efficiency`, `battery_efficiency`,
+  `discharge_efficiency` and `roundtrip_efficiency`. Like the standby sensor
+  they have `direction: output`, `role: bms`, `source_entity_id: null` and the
+  recorder's own aggregations `[mean, min, max]`; each is listed only while the
+  sensor exists (ADR-023 decision 2).
+- Every entry whose `series` is a source series (`effective`, `derived_power`,
+  `smoothed`) gains `function`: `grid_import`, `discharge`, `charge` or
+  `grid_export`, and `null` for a PV input. The standby and efficiency entries
+  have no `function` key.
+- The closing step (decision 4) comes after the efficiency update as it does
+  after the standby update.
+
+**Decided by:** human (grill session 2026-10-23, Q17 and Q18 to Q23)
+
+---
+
+## Amendment — 2026-10-23 (the contract as a copyable file, `effy_exports.py`)
+
+**Reason:** Shady and Chargy depend on Effy only through entity state, so each
+spells out the entity IDs, attribute keys and values by hand, and a copy drifts
+silently when the contract changes.
+
+**Decision:** The symbols of this contract — the schema version, the two fixed
+entity IDs, the attribute keys, the keys of a `sensors` entry, the values of
+`series`, `direction`, `role` and the aggregations, and a `TypedDict` for each
+shape — live in one file, `custom_components/effy/effy_exports.py`. Other
+projects copy it verbatim into their own namespace, without a dependency on
+Effy. Effy imports the same file, so the contract is spelled out nowhere else
+inside Effy (a test fails when a quoted contract literal appears in another
+module).
+
+- Standard library only, no import from the Effy package, no relative import,
+  symbols only (no behaviour).
+- Every symbol is prefixed `EFFY_`; the types `Effy` (ADR-000 §5 names Effy's
+  classes that way).
+- A test pins every symbol and value. A change that breaks an existing key or
+  its meaning raises `EFFY_PUBLISHED_SCHEMA_VERSION` in the same commit
+  (decision 1); an additive key does not. A reader ignores keys it does not know
+  and treats a published `schema_version` larger than its copy's as a stale
+  copy.
+- `PUBLISHED_SCHEMA_VERSION`, `EFFY_AGGREGATIONS` and `STANDBY_AGGREGATIONS`
+  moved from `const.py` into the file (the latter two renamed with the prefix),
+  and the series, direction and role constants of `catalog.py` likewise.
+- What Effy publishes does not change; nothing in a running system differs.
+- The Draft ADR-023 symbols (the efficiency series, `function`) join the file
+  with ADR-023, in the same task.
+
+**Decided by:** human (request 2026-10-23: a symbol file "which other downstream
+projects can copy into their own namespace … Effy also uses the same file", and
+"each export definition should have an EFFY\_ prefix")

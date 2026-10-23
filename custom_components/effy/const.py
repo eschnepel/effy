@@ -13,17 +13,5 @@ CONF_MAX_HISTORY_DAYS = "max_history_days"
 
 DEFAULT_MAX_HISTORY_DAYS = 28
 
-# Configuration published as attributes of sensor.effy_recalculated_from
-# (ADR-021). Raised only for a change that breaks existing keys or meanings.
-PUBLISHED_SCHEMA_VERSION = 1
-
-# The aggregations offered by the short-term statistics Effy writes: every row
-# carries exactly ``start``, ``mean`` and ``state`` and never min/max/sum
-# (history._write_recorder_statistics, ADR-003, TASK-0007a). A test ties this
-# constant to the writer, so the two cannot drift.
-EFFY_AGGREGATIONS = ("mean", "state")
-
-# The standby power sensor is not written by Effy's statistics writer; its
-# short-term statistics are the recorder's own, compiled from a measurement
-# sensor (ADR-018, ADR-020).
-STANDBY_AGGREGATIONS = ("mean", "min", "max")
+# The published contract (schema version, aggregations, entity IDs, keys) lives in
+# effy_exports.py, a standalone file other projects copy (ADR-021 Amendment 2026-10-23).

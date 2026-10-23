@@ -67,3 +67,23 @@ apart from PV strings.
 
 None. Decided by the human on 2026-10-13: a sensor in both lists is an error,
 and no BMS input is required.
+
+---
+
+## Amendment — 2026-10-23 (BMS counters by function; takes effect when ADR-023 is accepted)
+
+**Reason:** ADR-023 (Draft, efficiency sensors) needs to know which BMS counter
+is the grid import, the discharge, the charge and the grid export counter. The
+two unnamed lists (BMS inputs here, outputs) cannot say.
+
+**Decision:** The `bms_input_sensors` list and the output list are replaced by
+four optional single sensor pickers: grid import counter and discharge counter
+(BMS inputs), charge counter and grid export counter (BMS outputs). The PV list
+and decisions 2, 3 (as to PV/BMS exclusivity) and 5 stand. There is no migration
+of the replaced lists: the old keys are ignored and drop at the next options
+save, and an entry without a charge or a grid export counter refuses to set up
+(ADR-023 decision 1). The migration of decision 4 (the old `input_sensors` key)
+stays as it is.
+
+**Decided by:** human (grill session 2026-10-23: "no migration path, silent drop
+is fine, I will reconfigure my system; it is the only installation yet")

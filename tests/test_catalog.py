@@ -1,6 +1,6 @@
 """Unit tests for the published description of the Effy sensors (TASK-0009, ADR-021).
 
-``catalog.py`` imports only ``const``, so no Home Assistant stubs are needed. Same
+``catalog.py`` imports only ``effy_exports``, so no Home Assistant stubs are needed. Same
 importlib-by-file-path pattern as the other test modules (ADR-000 §6).
 """
 
@@ -31,7 +31,7 @@ def _load(name: str) -> ModuleType:
     return mod
 
 
-const = _load("const")
+exports = _load("effy_exports")
 catalog = _load("catalog")
 
 PV = ["sensor.pv_south"]
@@ -84,17 +84,22 @@ class TestDescribeSourceSeries:
 
     def test_the_series_names_are_the_published_ones(self) -> None:
         assert (
-            catalog.SERIES_EFFECTIVE,
-            catalog.SERIES_DERIVED_POWER,
-            catalog.SERIES_SMOOTHED,
-            catalog.SERIES_STANDBY_POWER,
+            exports.EFFY_SERIES_EFFECTIVE,
+            exports.EFFY_SERIES_DERIVED_POWER,
+            exports.EFFY_SERIES_SMOOTHED,
+            exports.EFFY_SERIES_STANDBY_POWER,
         ) == ("effective", "derived_power", "smoothed", "standby_power")
+
+    def test_an_entry_has_exactly_the_contract_keys(self) -> None:
+        keys = set(exports.EffyPublishedSensor.__annotations__)
+        assert set(_describe("sensor.effy_pv_south", "effective", "sensor.pv_south")) == keys
+        assert set(catalog.describe_standby("sensor.effy_standby_power")) == keys
 
     def test_the_aggregations_are_a_copy_of_the_constant(self) -> None:
         entry = _describe("sensor.effy_pv_south", "effective", "sensor.pv_south")
         assert isinstance(entry["aggregations"], list)
         entry["aggregations"].append("sum")  # type: ignore[attr-defined]
-        assert const.EFFY_AGGREGATIONS == ("mean", "state")
+        assert exports.EFFY_AGGREGATIONS == ("mean", "state")
         assert _describe("sensor.effy_pv_south", "effective", "sensor.pv_south")[
             "aggregations"
         ] == [
@@ -137,4 +142,4 @@ class TestPublishedAttributes:
         assert source["series"] == "standby_power"
 
     def test_the_schema_version_is_one(self) -> None:
-        assert const.PUBLISHED_SCHEMA_VERSION == 1
+        assert exports.EFFY_PUBLISHED_SCHEMA_VERSION == 1

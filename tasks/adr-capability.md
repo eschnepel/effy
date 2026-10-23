@@ -103,6 +103,10 @@ order (ADR-012 Amendment 2026-10-18), the restore, README and glossary, tests.
 **Scope (out):** any change in Shady or Chargy (owned by those projects); any
 change to the loss model or to what Effy writes into statistics.
 
+**Extension 2026-10-23 (human request, TASK-0016):** the contract's symbols are
+one standalone file, `effy_exports.py`, that other projects copy and Effy
+imports; every symbol is prefixed `EFFY_`.
+
 ## CAP-6 — A history recalculation whose time is known, and short enough *(proposed 2026-10-19; Gate 1 pending, except that the human approved starting TASK-0010 on 2026-10-19; human request: a history recalculation takes about 5 minutes on a Raspberry Pi 5; design Draft ADR-022)*
 
 **What the user sees:** after pressing the recalculation button, the log says
@@ -125,3 +129,72 @@ with numpy.
 ADR if the measurement points there); cheaper parsing of the raw states without
 numpy (untested); any change to the loss model, to what Effy writes into
 statistics, to the rewrite range, or to anything Shady and Chargy see.
+
+## CAP-7 — The battery system's counters configured by function *(proposed 2026-10-23; Gate 1 pending; Draft ADR-023, amends ADR-019 and ADR-021)*
+
+**What the user sees:** the options show four sensor pickers (grid import,
+discharge, charge, grid export) where they showed a BMS-input list and an output
+list, and nothing that Effy calculates changes. An entry that still has the old
+lists does not set up and says in the log and UI to assign the four counters; no
+statistics are written meanwhile. Every source series in the published `sensors`
+list carries a `function` (`grid_import`, `discharge`, `charge`, `grid_export`,
+or null for a PV input).
+
+**End-to-end demonstration:** config and options flow tests with the validation
+of ADR-023 decision 1 (an output is required, no sensor in two roles, a sensor
+in no list twice); the CAP-1 equivalence harness gives identical results with
+the same sources assigned by function; an entry with the old keys refuses setup
+and writes nothing; the published entries carry `function`.
+
+**Scope (in):** the four pickers and their validation, translations (en, de),
+README, the roles inside the integration (the BMS inputs and outputs the
+waterfall and the standby sensor use), the refusal of an unconfigured entry, the
+`function` key and its symbols in `effy_exports.py`.
+
+**Scope (out):** any efficiency; SoC, capacity and valley hysteresis (CAP-9);
+any migration of the old lists (decided: none).
+
+## CAP-8 — Charge and discharge efficiency *(proposed 2026-10-23; Gate 1 pending; Draft ADR-023; needs CAP-7 and the standby sensor of CAP-2)*
+
+**What the user sees:** `sensor.effy_charge_efficiency` (grid import to charge)
+and `sensor.effy_discharge_efficiency` (discharge to grid export) in %, each the
+battery system's own measured value less the standby energy, adapting at 5 % per
+kWh. Both are unavailable until a first pure run was measured and the standby
+sensor has a value; both survive a restart; the history recalculation fills them
+from the recorder's 5-minute statistics.
+
+**End-to-end demonstration:** a simulator drives the pure machine with counters
+from a battery of known efficiencies and a known standby and the estimates
+converge to them; replay and live operation agree; a pure run of two slots
+counts nothing; a slot whose import is not larger than its standby energy does
+not count; a restart is caught up from the last processed slot; the published
+`sensors` list shows both sensors.
+
+**Scope (in):** the pure-slot classification and pure runs, the decayed sums,
+the two sensors, restore and catch-up, the history rebuild, the published series
+and their symbols.
+
+**Scope (out):** battery and roundtrip efficiency, SoC and capacity (CAP-9);
+mixed flows with PV; any change to the loss model.
+
+## CAP-9 — Battery and roundtrip efficiency *(proposed 2026-10-23; Gate 1 pending; Draft ADR-023; battery efficiency needs CAP-7, roundtrip also CAP-8)*
+
+**What the user sees:** two more pickers (state of charge, battery capacity) and
+a valley hysteresis number in the options, and two sensors:
+`sensor.effy_battery_efficiency` (discharge over charge less the change in
+stored energy between two valleys of the state of charge, no standby) and
+`sensor.effy_roundtrip_efficiency` (the product of the three, unavailable until
+all three have a value).
+
+**End-to-end demonstration:** a simulator of a battery of known efficiency over
+several days converges; a dip below the hysteresis widens a valley instead of
+splitting it; a capacity change inside a span drops that span only; a missing
+SoC slot resets the detection; the roundtrip equals the product; replay and live
+operation agree; the published `sensors` list shows both sensors.
+
+**Scope (in):** the SoC and capacity options and their validation, the valley
+machine and spans, the battery sensor, the roundtrip sensor, restore and
+catch-up, the history rebuild, the published series and their symbols.
+
+**Scope (out):** a reset of the estimates on a stack upgrade; correcting the
+BMS's state of charge; more than one battery system per entry.

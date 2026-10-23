@@ -180,6 +180,21 @@ sensors:
 - **Size:** the attributes are recorded; Home Assistant stores no attribute set
   above 16 KiB (roughly 35 sources).
 
+### The contract as a file you can copy
+
+`custom_components/effy/effy_exports.py` holds every fixed entity ID, attribute
+key and value above as importable symbols, plus a `TypedDict` for each of the
+two shapes. It uses only the standard library and imports nothing from Effy, so
+another project can copy it verbatim into its own package and still not depend
+on Effy: no import of Effy, no version pin. Effy imports the very same file, so
+the copy is what Effy publishes with. Every symbol starts with `EFFY_` (the
+types with `Effy`), so a copy cannot collide with your own names. It needs
+Python 3.11 or newer.
+
+Read `sensors` tolerantly: ignore keys you do not know. Compare the published
+`schema_version` with `EFFY_PUBLISHED_SCHEMA_VERSION` in your copy; a larger
+published value means your copy is stale and should be copied again.
+
 ## How the algorithm works
 
 ### 1 – Total loss
