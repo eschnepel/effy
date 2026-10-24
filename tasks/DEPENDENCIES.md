@@ -3,8 +3,10 @@
 > Maintained by the Lead Agent. Workers append entries; never edit existing ones
 > without Lead approval. One entry per library — no duplicates.
 
-This change set adds **no new external dependencies**. Entries below record what
-already exists so workers don't add redundant installs.
+This change set adds **no new external dependencies** (nor do TASK-0017 to
+TASK-0027: the efficiency machines are pure Python on the standard library).
+Entries below record what already exists so workers don't add redundant
+installs.
 
 ## homeassistant (runtime-provided)
 

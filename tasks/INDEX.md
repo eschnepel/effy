@@ -20,7 +20,38 @@
 | TASK-0013-wire-array-native-compute-path | Wire the array path into `_compute_effective_slots`; harness tolerance made explicit (CAP-6, ADR-022 Q3/Q4) | todo (draft; blocked by gate G-perf, Gate 2 and Q3/Q4) | TASK-0011-array-native-trapezoid, TASK-0012-array-native-waterfall-and-interpolation | — |
 | TASK-0014-compute-phase-off-the-event-loop | Run the compute phase as an executor job on plain data; independent of numpy (CAP-6, ADR-022 Decision 3, Q2/Q5) | todo (draft; blocked by gate G-perf, Q2 and Gate 2) | TASK-0010-recalculation-phase-timing | — |
 | TASK-0015-retire-pure-python-stages | Move production-unused pure-Python stage functions to `tests/` as the oracle (CAP-6, only if ADR-022 Q3 = A) | todo (draft; blocked by Q3 = A) | TASK-0013-wire-array-native-compute-path | — |
-| TASK-0016-effy-exports-contract-file | Publish the ADR-021 contract as one copyable symbol file `effy_exports.py` that Effy itself imports; every symbol prefixed `EFFY_` (CAP-5 extension; human request 2026-10-23) | review | TASK-0009-config-attributes-on-recalculated-from | worker-inline |
+| TASK-0016-effy-exports-contract-file | Publish the ADR-021 contract as one copyable symbol file `effy_exports.py` that Effy itself imports; every symbol prefixed `EFFY_` (CAP-5 extension; human request 2026-10-23) | done | TASK-0009-config-attributes-on-recalculated-from | worker-inline; closed by the human 2026-10-24 |
+| TASK-0017-counter-roles-in-config | The four battery counters configured by function; old lists dropped, an unconfigured entry refuses setup (CAP-7, Draft ADR-023; Stage 0 verifies Home Assistant 2026.3) | todo | — | — |
+| TASK-0018-function-key-on-source-series | Publish the `function` of every source series (CAP-7) | todo | TASK-0017-counter-roles-in-config | — |
+| TASK-0019-efficiency-pure-run-machine | Pure machine for charge and discharge efficiency in `calculation.py`: pure runs, standby energy, decayed sums, simulator (CAP-8) | todo | — | — |
+| TASK-0020-efficiency-slot-feed-and-restore | Feed that machine from the recorder after standby, restore and catch up 3 days (CAP-8) | todo | TASK-0017-counter-roles-in-config, TASK-0019-efficiency-pure-run-machine | — |
+| TASK-0021-charge-and-discharge-efficiency-sensors | `sensor.effy_charge_efficiency` and `sensor.effy_discharge_efficiency`, published (CAP-8) | todo | TASK-0018-function-key-on-source-series, TASK-0020-efficiency-slot-feed-and-restore | — |
+| TASK-0022-efficiency-history-rebuild | History recalculation rebuilds charge and discharge efficiency, hooked at the call site (CAP-8) | todo | TASK-0021-charge-and-discharge-efficiency-sensors | — |
+| TASK-0023-soc-capacity-and-hysteresis-options | Options for SoC, battery capacity and valley hysteresis (CAP-9) | todo | TASK-0017-counter-roles-in-config | — |
+| TASK-0024-valley-span-machine | Pure valley and span machine for battery efficiency; settles the boundary convention by simulation (CAP-9) | todo | TASK-0019-efficiency-pure-run-machine | — |
+| TASK-0025-battery-slot-feed-and-restore | Feed the valley machine from SoC statistics and capacity history, restore and catch up (CAP-9) | todo | TASK-0020-efficiency-slot-feed-and-restore, TASK-0023-soc-capacity-and-hysteresis-options, TASK-0024-valley-span-machine | — |
+| TASK-0026-battery-and-roundtrip-efficiency-sensors | `sensor.effy_battery_efficiency` and `sensor.effy_roundtrip_efficiency`, published (CAP-9) | todo | TASK-0021-charge-and-discharge-efficiency-sensors, TASK-0025-battery-slot-feed-and-restore | — |
+| TASK-0027-battery-history-rebuild | History recalculation rebuilds battery and roundtrip efficiency (CAP-9) | todo | TASK-0022-efficiency-history-rebuild, TASK-0026-battery-and-roundtrip-efficiency-sensors | — |
+| TASK-0028-branch-coverage-non-defensive-code | Investigate which branches no test reaches, classify them (non-defensive / defensive / dead / needs real Home Assistant), then cover the non-defensive ones; one worker, file by file in slices, no gate in between; tests and coverage configuration only (human request 2026-10-24) | todo | — | — |
+
+Draft ADR-023 tasks (TASK-0017 to TASK-0027, proposed 2026-10-23, **blocked
+until the human accepts ADR-023 at Gate 2**): the proposed order is the
+numbering. Shared files force it when working inline: 0017, 0020, 0022, 0025,
+0027 all edit `coordinator.py`; 0018, 0021, 0026 edit `sensor.py`, `catalog.py`
+and `effy_exports.py`; 0019 and 0024 edit `calculation.py`; 0017 and 0023 edit
+`config_flow.py` and `inputs.py`; 0020, 0022, 0025 and 0027 edit `history.py`.
+With sub-agents the disjoint pairs could run in parallel: 0019 beside 0017/0018,
+0023 beside 0019 to 0022, 0024 beside 0020 to 0022. README and the translations
+are shared by most tasks, so merge those last. TASK-0022 and TASK-0027 hook at
+the call site of `async_recalculate_history` so they do not collide with the
+Draft ADR-022 tasks TASK-0011 to TASK-0015; the Lead interleaves those at Phase
+3\.
+
+TASK-0028 (branch coverage) is independent of every other task and changes only
+`tests/`, the coverage configuration and documents. Recommended: run it before
+TASK-0017 so it measures the code the ADR-023 tasks start from. It runs file by
+file in slices inside one worker pass, with no gate in between, and is not
+blocked by ADR-023.
 
 Execution order: strictly sequential. 0001 and 0002 both edit `calculation.py` /
 `tests/test_calculation.py` (shared files → sequential, Phase 3); 0003 consumes
@@ -122,6 +153,9 @@ changed.
 | 2026-10-19 | TASK-0010 | Gate 2 for TASK-0010 approved by the human ("Proceed with instrumentalisation. Measure parsing separate if possible."); the other CAP-6 tasks and Gate 1 of CAP-6 as a whole stay pending | human go-ahead; the request to measure parsing separately added a parse probe to the task |
 | 2026-10-19 | TASK-0010 | implemented inline as worker, then reviewed as reviewer: PASS. Parse probe added (one extra pass over the raw states, separate from `compute`; parsing sits in `calculation.py` and cannot be timed inline without changing it); probe hardened against timestamp errors and a missing jump-refetch test added during the review. Draft ADR-022 Decision 1 and the draft section of `adr-summary.md` updated in the text | 440 tests pass (427 before); `ruff` clean; `mypy` shows only the 3 errors that already exist on the untouched tree. First reading on 28 synthetic days: one parse pass is about 2–3 % (strings) and 4 % (timestamps) of the pure-Python compute phase. Next step is the human's: one history recalculation on the Pi with the `history` logger at INFO, then gate G-perf |
 | 2026-10-23 | — | added TASK-0016-effy-exports-contract-file | human request: the ADR-021 contract as a copyable file Effy itself imports |
+| 2026-10-23 | — | Gate 1 approved for CAP-7 to CAP-9; generated TASK-0017 to TASK-0027 | Draft ADR-023 split into config (0017, 0018, 0023), pure machines (0019, 0024), feeds (0020, 0025), sensors (0021, 0026), history rebuilds (0022, 0027) |
+| 2026-10-24 | TASK-0016 | closed as done by the human; added TASK-0028-branch-coverage-non-defensive-code | human request: investigate and cover the non-defensive branches; deliberately not investigated in the planning session |
+| 2026-10-24 | TASK-0028 | rewritten: file slices inside one task, no human gate between investigation and tests | human request: the worker investigates and covers slice by slice without stopping; open questions are listed at the end |
 
 ## Audit Groups
 

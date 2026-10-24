@@ -1,7 +1,7 @@
 # Task: Effy's Published Contract as a Copyable Symbol File
 
-- **Status:** review — worker-inline, 2026-10-23; open points for the human
-  below
+- **Status:** done — worker-inline 2026-10-23; closed by the human 2026-10-24
+  ("Task 16 is done"), the open points below stand as written
 - **Related ADRs:** \[ADR-021 (Amendment 2026-10-23), ADR-000 (Amendment
   2026-10-23), ADR-019, ADR-018\]
 - **Dependencies:** [TASK-0009-config-attributes-on-recalculated-from] (done)
