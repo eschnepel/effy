@@ -58,3 +58,14 @@ extend-select = ["E", "F"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["custom_components"]
+
+# Branch coverage (TASK-0028). The tests load modules by file path
+# (ADR-000 §6), so the source is the directory, not a package name.
+# Measurement only: no threshold (that decision is the human's).
+[tool.coverage.run]
+branch = true
+source = ["custom_components/effy"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

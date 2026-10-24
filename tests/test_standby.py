@@ -618,6 +618,22 @@ class TestFeedAndRestore:
         activity[_at(1, 10)] = frozenset()
         assert drain_feed(DrainState(), [late], [_at(1, 0), _at(1, 5)], activity).armed is None
 
+    def test_a_batch_with_no_completed_slot_leaves_the_state_unchanged(self) -> None:
+        """Every event belongs to a slot that is still open when no slot has
+        completed (the ``drain_feed`` docstring): nothing is armed, counted
+        or learned, whatever the events are (TASK-0028)."""
+        peak = DrainPeak(_at(1, 5), "d", None, None, 10.0, True)
+        seen = DrainSeen(_at(1, 6), "p", 3.0)
+        brk = DrainBreak(_at(1, 7), "d")
+        fresh = DrainState()
+        assert drain_feed(fresh, [peak, seen, brk], [], {}) == fresh
+        assert drain_feed(fresh, [peak], iter(()), {}) == fresh
+
+        discharge, end = _night(hours=8)
+        counted = _feed_all({"discharge": discharge}, T0, end)
+        assert counted.estimate is not None
+        assert drain_feed(counted, [peak, seen, brk], [], {}) == counted
+
     def test_activity_start_is_the_slot_before_the_oldest_armed_or_pending_peak(self) -> None:
         assert drain_activity_start(DrainState()) is None
         discharge, end = _night(hours=2)

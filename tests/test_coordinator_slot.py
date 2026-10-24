@@ -371,6 +371,63 @@ class TestEffyCoordinatorShell:
         assert cancelled == [True]
         assert coord._unsub_slot_timer is None
 
+    def test_shutdown_without_a_setup_does_nothing(self) -> None:
+        """Unloading an entry whose setup never ran (or failed) must not raise."""
+        coord = self._coordinator()
+        coord.async_shutdown()
+        assert coord._unsub_recorder_event is None and coord._unsub_slot_timer is None
+        assert coord._slot_job_task is None
+
+    def test_a_second_shutdown_releases_nothing_twice(self) -> None:
+        coord = self._coordinator()
+        coord.async_setup()
+        timer_calls: list[bool] = []
+        coord._unsub_slot_timer = lambda: timer_calls.append(True)
+        coord.async_shutdown()
+        coord.async_shutdown()
+        assert timer_calls == [True]
+        assert len(coord._hass.bus.unsubscribed) == 1  # the recorder listener, once
+
+    def test_shutdown_releases_whichever_of_the_two_is_still_held(self) -> None:
+        for held in ("recorder_event", "slot_timer"):
+            coord = self._coordinator()
+            released: list[str] = []
+            if held == "recorder_event":
+                coord._unsub_recorder_event = lambda: released.append("recorder_event")
+            else:
+                coord._unsub_slot_timer = lambda: released.append("slot_timer")
+            coord.async_shutdown()
+            assert released == [held]
+
+    def test_an_entity_update_subscription_ends_with_its_unsubscribe(self) -> None:
+        """After the unsubscribe a recalculation no longer pushes to the entity (it was
+        removed); the other subscribers are untouched."""
+        coord = self._coordinator()
+        gone: list[tuple[Any, Any]] = []
+        kept: list[tuple[Any, Any]] = []
+        unsub = coord.subscribe_updates("sensor.effy_a", lambda v, u: gone.append((v, u)))
+        coord.subscribe_updates("sensor.effy_b", lambda v, u: kept.append((v, u)))
+        last = {"sensor.effy_a": (1.0, "W"), "sensor.effy_b": (2.0, "W")}
+
+        coord.notify_updated(["sensor.effy_a", "sensor.effy_b"], last)
+        unsub()
+        unsub()  # the entity may be removed and the entry unloaded: harmless twice
+        coord.notify_updated(["sensor.effy_a", "sensor.effy_b"], last)
+
+        assert gone == [(1.0, "W")]
+        assert kept == [(2.0, "W"), (2.0, "W")]
+
+    def test_the_recalculated_from_unsubscribe_is_harmless_twice(self) -> None:
+        coord = self._coordinator()
+        first: list[datetime] = []
+        second: list[datetime] = []
+        unsub = coord.subscribe_recalculated_from(first.append)
+        coord.subscribe_recalculated_from(second.append)
+        unsub()
+        unsub()
+        coord.set_recalculated_from(_ts(11, 0, 0))
+        assert first == [] and second == [_ts(11, 0, 0)]
+
     def test_force_refresh_does_not_raise(self) -> None:
         """No-op placeholder while disabled — must be safe for sensor.py's
         unconditional call on platform setup."""
@@ -1160,6 +1217,31 @@ class TestStandbyInTheSlotJob(_SlotCoordinatorBase):
         unsubscribe()  # idempotent
         await self._job(coord, _ts(12, 5, 10))
         assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_feed_is_not_a_failure_and_leaves_the_state(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Shutdown cancels the in-flight job; that must reach the task as a
+        cancellation, not be logged as "updating the standby power estimate failed"
+        and not move the state (TASK-0028)."""
+        coord = self._bms_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_standby(seen.append)
+
+        async def cancel_in_the_feed(which: str) -> None:
+            if which == "standby":
+                raise asyncio.CancelledError
+
+        _job_hook[0] = cancel_in_the_feed
+        with caplog.at_level(logging.ERROR):
+            await self._job(coord, _ts(12, 0, 10))
+
+        task = coord._slot_job_task
+        assert task is not None and task.cancelled()
+        assert seen == []
+        assert coord.standby_state is not None and coord.standby_state.count == 0
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
     @pytest.mark.asyncio
     async def test_a_failing_feed_is_logged_and_neither_fails_the_job_nor_moves_the_state(

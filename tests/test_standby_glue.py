@@ -274,3 +274,162 @@ class TestReplay:
         )
         assert again == state
         assert world.raw_calls == []
+
+
+# ---------------------------------------------------------------------------
+# TASK-0028, slice 5e: what the two reads select and return
+# ---------------------------------------------------------------------------
+
+BMS_W = "sensor.bms_power"  # power-family BMS input
+PV_W = "sensor.pv_power"  # power-family PV input
+OUT_W = "sensor.grid_power"  # power-family output
+
+
+def _power_sensor(world: _World, eid: str, unit: str) -> None:
+    world.units[eid] = unit
+    world.state_classes[eid] = "measurement"
+
+
+class TestReadDrainEvents:
+    SINCE = T0 + timedelta(minutes=5)
+    UNTIL = T0 + timedelta(minutes=30)
+
+    async def test_nothing_is_read_without_a_bms_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Docstring: without a BMS input nothing is read: no raw states and not even
+        the unit lookup, which is a recorder job of its own."""
+        world = _world(discharge=[(T0, "100.00")])
+        _rig(monkeypatch, world)
+        jobs: list[Any] = []
+
+        class Recorder:
+            async def async_add_executor_job(self, fn: Any, *args: Any) -> Any:
+                jobs.append(fn)
+                return fn(*args)
+
+        monkeypatch.setattr(_history, "get_recorder", lambda _h: Recorder())
+
+        events = await _history.async_read_drain_events(
+            object(), _opts(bms=False), {}, self.SINCE, self.UNTIL
+        )
+
+        assert events == []
+        assert jobs == []
+        assert world.raw_calls == []
+
+    @pytest.mark.parametrize(
+        ("unit", "idle", "reading"), [("W", "0", "12"), ("kW", "0.000", "0.012")]
+    )
+    async def test_a_power_family_bms_input_gives_its_peaks_in_watts(
+        self, monkeypatch: pytest.MonkeyPatch, unit: str, idle: str, reading: str
+    ) -> None:
+        """A lone reading above 0 is a peak whose height is the reading in W (ADR-018
+        §1); a kW sensor is scaled, an energy-family sensor is not read this way.
+        Events outside ``[since, until)`` are left out (docstring)."""
+        world = _world(discharge=[(T0, "100.00")])
+        _power_sensor(world, BMS_W, unit)
+        world.energy[BMS_W] = [
+            (T0, idle),
+            (T0 + timedelta(minutes=4, seconds=30), reading),  # before ``since``: left out
+            (T0 + timedelta(minutes=7), idle),
+            (T0 + timedelta(minutes=10), reading),
+            (T0 + timedelta(minutes=20), idle),
+            (T0 + timedelta(minutes=30), reading),  # at ``until``: belongs to the open slot
+        ]
+        _rig(monkeypatch, world)
+
+        events = await _history.async_read_drain_events(
+            object(), _options([PV], [OUT], [BMS_W]), {}, self.SINCE, self.UNTIL
+        )
+
+        peaks = [e for e in events if isinstance(e, _history.DrainPeak)]
+        assert [(p.t, p.source, p.height, p.power_w, p.is_energy) for p in peaks] == [
+            (T0 + timedelta(minutes=10), BMS_W, pytest.approx(12.0), pytest.approx(12.0), False)
+        ]
+        assert [e.value for e in events if isinstance(e, _history.DrainSeen)] == [
+            pytest.approx(12.0)
+        ]
+
+
+class TestReadDrainActivity:
+    START = T0
+    END = T0 + timedelta(minutes=30)
+
+    def _serve(
+        self, monkeypatch: pytest.MonkeyPatch, rows: dict[str, list[dict[str, Any]]]
+    ) -> list[list[str]]:
+        """Answer the statistics read from ``rows``; return the statistic ids asked for."""
+        asked: list[list[str]] = []
+
+        def fetch(_h: Any, eids: list[str], _s: datetime, _e: datetime) -> Any:
+            asked.append(list(eids))
+            return {eid: list(rows.get(eid, [])) for eid in eids}
+
+        monkeypatch.setattr(_history, "_fetch_statistics", fetch)
+        return asked
+
+    async def test_no_sensor_at_all_reads_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = _world(discharge=[(T0, "100.00")])
+        _install(monkeypatch, world)
+        asked = self._serve(monkeypatch, {})
+        activity = await _history.async_read_drain_activity(
+            object(), _options([], []), self.START, self.END
+        )
+        assert activity == {}
+        assert asked == []
+
+    async def test_each_kind_of_sensor_is_read_from_its_own_statistic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An energy-family sensor through its ``effy_*_power``, a power-family
+        input through its ``effy_*_smoothed``, a power-family output through its
+        own ``mean`` (docstring, ADR-018 §3); the result names the *source*."""
+        world = _world(discharge=[(T0, "100.00")])
+        _power_sensor(world, PV_W, "W")
+        _power_sensor(world, OUT_W, "W")
+        world.units[PV_W] = world.units[OUT_W] = "W"
+        _install(monkeypatch, world)
+        slot = T0 + SLOT
+        pv_power = _history._effy_power_entity_id(PV)
+        pv_w_smoothed = _history._effy_smoothed_entity_id(PV_W)
+        asked = self._serve(
+            monkeypatch,
+            {
+                pv_power: [{"start": slot, "mean": 5.0}],
+                pv_w_smoothed: [{"start": slot, "mean": 0.0}],
+                OUT_W: [{"start": slot, "mean": 3.0}],
+            },
+        )
+
+        activity = await _history.async_read_drain_activity(
+            object(), _options([PV, PV_W], [OUT_W]), self.START, self.END
+        )
+
+        assert [set(a) for a in asked] == [{pv_power, pv_w_smoothed, OUT_W}]
+        assert activity == {slot: frozenset({PV, OUT_W})}  # the 0.0 reading is not flow
+
+    async def test_a_row_without_a_value_does_not_make_its_slot_known(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slot in which no sensor has a statistic is unknown and left out, which the
+        machine never treats as quiet; a slot with only zero readings is known and quiet."""
+        world = _world(discharge=[(T0, "100.00")])
+        _power_sensor(world, OUT_W, "W")
+        _install(monkeypatch, world)
+        known, unknown = T0 + SLOT, T0 + 2 * SLOT
+        self._serve(
+            monkeypatch,
+            {
+                OUT_W: [
+                    {"start": known, "mean": 0.0},
+                    {"start": unknown, "mean": None},
+                ]
+            },
+        )
+
+        activity = await _history.async_read_drain_activity(
+            object(), _options([PV], [OUT_W]), self.START, self.END
+        )
+
+        assert activity == {known: frozenset()}

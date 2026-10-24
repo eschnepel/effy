@@ -6,6 +6,8 @@ Covers:
     an "effective" (post-loss-distribution) reading.
   - to_power_equivalent: Wh/kWh -> W-equivalent conversion, and that its
     returned unit stays consistent with effective_unit_for.
+  - get_sensor_meta: the metadata of a source sensor, and the empty result of
+    a source that has no state yet (ADR-013 Decision 1, TASK-0028).
 
 Regression coverage for a unit-mislabeling bug found while investigating a
 report of BMS (battery) effective values reading consistently 0: an
@@ -32,7 +34,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -40,6 +42,9 @@ import pytest
 if TYPE_CHECKING:
     from effy.sensor_utils import (
         effective_unit_for as effective_unit_for,
+    )
+    from effy.sensor_utils import (
+        get_sensor_meta as get_sensor_meta,
     )
     from effy.sensor_utils import (
         is_energy_family as is_energy_family,
@@ -103,6 +108,7 @@ _su_mod = _load("effy.sensor_utils", "sensor_utils.py")
 
 if not TYPE_CHECKING:
     effective_unit_for = _su_mod.effective_unit_for
+    get_sensor_meta = _su_mod.get_sensor_meta
     is_energy_family = _su_mod.is_energy_family
     to_power_equivalent = _su_mod.to_power_equivalent
 
@@ -263,3 +269,84 @@ class TestEffectiveValueRoundTrip:
 
         assert correct == pytest.approx(buggy)  # same number...
         assert effective_unit_for("kWh") != "kWh"  # ...under a different label
+
+
+# ---------------------------------------------------------------------------
+# get_sensor_meta (TASK-0028)
+# ---------------------------------------------------------------------------
+
+
+class _FakeHass:
+    """Just the ``hass.states.get`` that ``get_sensor_meta`` reads.
+
+    A Home Assistant state is an object with ``state`` and ``attributes``;
+    the dict holding them is the only thing this fake replaces.
+    """
+
+    def __init__(self, states: dict[str, Any]) -> None:
+        self._states = states
+        self.states = SimpleNamespace(get=self._get)
+
+    def _get(self, entity_id: str) -> Any:
+        return self._states.get(entity_id)
+
+
+def _state(**attributes: Any) -> SimpleNamespace:
+    return SimpleNamespace(state="1.0", attributes=attributes)
+
+
+class TestGetSensorMeta:
+    """What ``sensor.py`` classifies a source sensor by (ADR-012, ADR-013)."""
+
+    def test_source_without_state_gives_an_empty_dict(self) -> None:
+        """ADR-013 Decision 1: at startup the source's own integration may not
+        have reported yet; ``hass.states.get`` returns None and the caller
+        must see *no* metadata, not a made-up classification."""
+        hass = _FakeHass({})
+        assert get_sensor_meta(hass, "sensor.not_reported_yet") == {}
+
+    def test_empty_meta_does_not_classify_as_energy_family(self) -> None:
+        """The consequence ADR-013 Decision 1 names: with no state the
+        derived-power entity is not created (yet), exactly as
+        ``_build_derived_entities`` reads the result."""
+        meta = get_sensor_meta(_FakeHass({}), "sensor.not_reported_yet")
+        assert is_energy_family(meta.get("state_class"), meta.get("unit", "W")) is False
+
+    def test_reported_source_gives_unit_state_class_and_name(self) -> None:
+        hass = _FakeHass(
+            {
+                "sensor.pv_energy": _state(
+                    unit_of_measurement="kWh",
+                    state_class=SC.TOTAL_INCREASING,
+                    friendly_name="PV energy",
+                )
+            }
+        )
+        assert get_sensor_meta(hass, "sensor.pv_energy") == {
+            "unit": "kWh",
+            "state_class": SC.TOTAL_INCREASING,
+            "friendly_name": "PV energy",
+        }
+
+    def test_source_that_reports_later_is_classified_then(self) -> None:
+        """The late-binding scenario: the same entity id is empty first and
+        energy-family once its integration has reported."""
+        states: dict[str, Any] = {}
+        hass = _FakeHass(states)
+        before = get_sensor_meta(hass, "sensor.late")
+        states["sensor.late"] = _state(unit_of_measurement="Wh", state_class=SC.TOTAL_INCREASING)
+        after = get_sensor_meta(hass, "sensor.late")
+
+        assert is_energy_family(before.get("state_class"), before.get("unit", "W")) is False
+        assert is_energy_family(after.get("state_class"), after.get("unit", "W")) is True
+
+    def test_missing_attributes_fall_back_to_watt_none_and_entity_id(self) -> None:
+        """A reported source with no unit, no state class and no name: the
+        unit defaults to W (the default ``_build_derived_entities`` also
+        uses), the state class is None, the friendly name is the entity id."""
+        hass = _FakeHass({"sensor.bare": _state()})
+        assert get_sensor_meta(hass, "sensor.bare") == {
+            "unit": "W",
+            "state_class": None,
+            "friendly_name": "sensor.bare",
+        }

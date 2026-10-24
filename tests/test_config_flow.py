@@ -258,6 +258,24 @@ class TestSchemaHasTwoInputLists:
         assert keys[BMS].description == {"suggested_value": []}
 
 
+class TestOptionsFlowHook:
+    """The entry point Home Assistant calls to open the options dialog (TASK-0028)."""
+
+    def test_the_hook_returns_the_options_flow_of_the_entry_it_is_given(self) -> None:
+        def entry(pv: str) -> Any:
+            return type("Entry", (), {"options": {PV: [pv], BMS: [], OUT: []}})()
+
+        first = _config_flow.EffyConfigFlow.async_get_options_flow(entry("sensor.first"))
+        second = _config_flow.EffyConfigFlow.async_get_options_flow(entry("sensor.second"))
+
+        assert isinstance(first, _config_flow.EffyOptionsFlow)
+        assert first is not second  # one flow per call, not a shared instance
+        for flow, expected in ((first, "sensor.first"), (second, "sensor.second")):
+            flow.hass = _hass_with_outputs()
+            form = asyncio.run(flow.async_step_init())
+            assert _keys(form)[PV].description == {"suggested_value": [expected]}
+
+
 class TestInputValidation:
     def _submit(self, user_input: dict[str, Any]) -> dict[str, Any]:
         flow = _config_flow.EffyConfigFlow()

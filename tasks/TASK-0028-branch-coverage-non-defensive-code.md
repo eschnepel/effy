@@ -1,6 +1,6 @@
 # Task: Branch Coverage of the Non-Defensive Code
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** none (cross-cutting quality task; human request 2026-10-24)
 - **Related ADRs:** \[ADR-000 §3 and §6 (module order, tests), ADR-018, ADR-021,
   ADR-001\]
@@ -137,6 +137,30 @@ file is needed). No file under `custom_components/`.
 ## Delivered Artifacts
 
 <!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
+
+No symbol is exported and nothing under `custom_components/` changed (verified
+by a diff against the delivered zip). 100 tests added (456 → 556), none removed
+or changed; branch coverage of `custom_components/effy` 81.1 % → 95.0 %, lines
+88.1 % → 98.6 %. The full account is `tasks/coverage-report.md`.
+
+- `pyproject.toml` → new `[tool.coverage.run]` (`branch = true`,
+  `source = ["custom_components/effy"]`) and `[tool.coverage.report]`
+  (`show_missing`, `skip_empty`); no threshold.
+- `tasks/coverage-report.md` → new: slice list, a section per slice (before and
+  after, every uncovered branch with class and reason), the per-module table,
+  classes B/C/D, findings F1-F6, open questions Q1-Q7, A branches left
+  uncovered: none.
+- `tasks/DEPENDENCIES.md` → entry `pytest-cov 7.1.0` (coverage.py 7.14.3),
+  development only, not in `manifest.json`.
+- New test modules: `tests/test_history_recorder_helpers.py` (36),
+  `tests/test_history_compute_edges.py` (8), `tests/test_sensor_setup.py` (24),
+  `tests/test_button.py` (6), `tests/test_entry_lifecycle.py` (5).
+- Tests appended to existing modules: `tests/test_sensor_utils.py` (+5),
+  `tests/test_standby.py` (+1), `tests/test_standby_glue.py` (+6),
+  `tests/test_history_phase_timing.py` (+2), `tests/test_config_flow.py` (+1),
+  `tests/test_coordinator_slot.py` (+6).
+- One test helper changed: `_load_history(mean_type=None)` in
+  `tests/test_history_recent_equivalence.py` (default behaviour unchanged).
 
 ## Notes for the Lead
 

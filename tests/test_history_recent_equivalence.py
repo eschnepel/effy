@@ -63,9 +63,14 @@ class _SensorStateClass:
     MEASUREMENT = "measurement"
 
 
-def _load_history() -> tuple[ModuleType, ModuleType, ModuleType]:
+def _load_history(
+    mean_type: Any = None,
+) -> tuple[ModuleType, ModuleType, ModuleType]:
     """Return (history, const, effy_exports) loaded from the real files under a private
-    package name, with HA stubbed only for the duration of the load."""
+    package name, with HA stubbed only for the duration of the load.
+
+    ``mean_type`` is the ``StatisticMeanType`` a newer HA core ships (TASK-0028);
+    left out, the older-core stub applies and history.py takes its ImportError branch."""
     stub_names = [
         "homeassistant",
         "homeassistant.core",
@@ -103,7 +108,10 @@ def _load_history() -> tuple[ModuleType, ModuleType, ModuleType]:
         )
         # No StatisticMeanType here on purpose: history.py's defensive
         # ImportError branch handles it (older-HA code path).
-        stub("homeassistant.components.recorder.models", StatisticData=dict, StatisticMetaData=dict)
+        models: dict[str, Any] = {"StatisticData": dict, "StatisticMetaData": dict}
+        if mean_type is not None:
+            models["StatisticMeanType"] = mean_type
+        stub("homeassistant.components.recorder.models", **models)
 
         pkg = ModuleType(_PKG)
         pkg.__path__ = [str(_BASE)]

@@ -419,6 +419,33 @@ class TestJumpExtendedRefetch:
         assert _figure(jump_msg, "fetch") == pytest.approx(4 * JOB_S)
 
 
+class TestDisabledStopwatch:
+    """``_PhaseTimings`` docstring: a disabled instance does nothing and keeps no state
+    (TASK-0028)."""
+
+    def test_finishing_a_disabled_record_logs_nothing_and_keeps_nothing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        disabled = _history._PhaseTimings("history", logging.INFO, enabled=False)
+        with caplog.at_level(logging.DEBUG, logger=_history.__name__):
+            disabled.enter("compute")
+            disabled.finish(rows=42)
+        assert _timing_records(caplog, "history") == []
+        assert disabled.rows == 0  # the row count of a finished record was not stored
+        assert disabled.seconds == {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
+
+    def test_the_same_call_on_an_enabled_record_logs_one_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: without it the test above would also pass if ``finish``
+        never logged at all."""
+        enabled = _history._PhaseTimings("history", logging.INFO)
+        with caplog.at_level(logging.DEBUG, logger=_history.__name__):
+            enabled.finish(rows=42)
+        assert len(_timing_records(caplog, "history")) == 1
+        assert enabled.rows == 42
+
+
 class TestNoBehaviourChange:
     async def test_compute_without_a_stopwatch_equals_compute_with_one(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

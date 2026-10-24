@@ -52,3 +52,15 @@ installs.
   `ruff check custom_components/ tests/`
 - **Added by task:** pre-existing
 - **Purpose:** formatting + linting gate (ADR-000 §1), line length 100
+
+## pytest-cov 7.1.0 (with coverage.py 7.14.3)
+
+- **Install:** `uv sync` (dev group, pinned in `uv.lock`; already declared
+  before TASK-0028, the task configures and records it)
+- **Import:** n/a (pytest plugin, CLI): `pytest --cov --cov-report=term-missing`
+  (branch coverage is configured in `pyproject.toml` under
+  `[tool.coverage.run]`)
+- **Added by task:** TASK-0028 (declared earlier, first used here)
+- **Purpose:** branch coverage of `custom_components/effy`. **Development
+  only:** it is not in `manifest.json` and nothing under `custom_components/`
+  imports it.
