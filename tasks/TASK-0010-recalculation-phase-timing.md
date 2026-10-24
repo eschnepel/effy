@@ -169,3 +169,17 @@ removed once G-perf is decided (ADR-022 Decision 1).
    *compute dominates* → TASK-0011 to TASK-0013 (and TASK-0014 per Q2) are
    released for Gate 2; *fetch or write dominates* → they stay `todo`, a new
    Draft ADR addresses that phase, and ADR-022 ends with the measurement.
+
+## Test results
+
+The following shows the debug output on the PI 5:
+
+```
+2026-10-24 22:50:18.906 INFO (MainThread) [custom_components.effy_.button] Effy: starting history recalculation (triggered by button)
+2026-10-24 22:54:07.228 DEBUG (MainThread) [custom_components.effy_.history] Effy: history recalculation wrote 236112 short-term slots across 6 effective + 4 derived-power + 4 smoothed sensors
+2026-10-24 22:54:07.266 INFO (MainThread) [custom_components.effy_.button] Effy: history recalculation complete – 236112 slots written
+2026-10-24 22:55:05.028 DEBUG (MainThread) [custom_components.effy_.history] Effy recent recalc: counter jump(s) in the last 0:20:00 extend the rewrite range from 2026-10-24 20:35:05.000176+00:00 back to 2026-10-24 19:35:00+00:00
+2026-10-24 22:55:05.265 DEBUG (MainThread) [custom_components.effy_.history] Effy: recent recalculation wrote 222 short-term rows across 6 effective + 4 derived-power + 4 smoothed sensors, earliest touched slot 2026-10-24 19:35:00+00:00
+2026-10-24 23:00:05.023 DEBUG (MainThread) [custom_components.effy_.history] Effy recent recalc: counter jump(s) in the last 0:20:00 extend the rewrite range from 2026-10-24 20:40:05.000701+00:00 back to 2026-10-24 19:35:00+00:00
+2026-10-24 23:00:05.270 DEBUG (MainThread) [custom_components.effy_.history] Effy: recent recalculation wrote 236 short-term rows across 6 effective + 4 derived-power + 4 smoothed sensors, earliest touched slot 2026-10-24 19:35:00+00:00
+```
