@@ -517,7 +517,10 @@ class TestRecalculatedFromRestore:
         entity.last_state = _last("2026-10-18T08:50:00+00:00", previous)
         await entity.async_added_to_hass()
         entity.extra_state_attributes["sensors"][0]["series"] = "changed"
-        assert previous["sensors"][0]["series"] == "effective"
+        sensors = previous["sensors"]
+        assert isinstance(sensors, list)
+        assert isinstance(sensors[0], dict)
+        assert sensors[0]["series"] == "effective"
 
     @pytest.mark.asyncio
     async def test_a_recalculation_that_finished_before_adding_takes_over_only_the_timestamp(

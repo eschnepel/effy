@@ -40,9 +40,10 @@ OUT = ["sensor.bms_charge"]
 
 
 def _describe(entity_id: str, series: str, source: str) -> dict[str, object]:
-    return catalog.describe_source_series(
+    entry: dict[str, object] = catalog.describe_source_series(
         entity_id, series, source, pv_input_ids=PV, bms_input_ids=BMS, output_ids=OUT
     )
+    return entry
 
 
 class TestDescribeSourceSeries:
@@ -98,7 +99,7 @@ class TestDescribeSourceSeries:
     def test_the_aggregations_are_a_copy_of_the_constant(self) -> None:
         entry = _describe("sensor.effy_pv_south", "effective", "sensor.pv_south")
         assert isinstance(entry["aggregations"], list)
-        entry["aggregations"].append("sum")  # type: ignore[attr-defined]
+        entry["aggregations"].append("sum")
         assert exports.EFFY_AGGREGATIONS == ("mean", "state")
         assert _describe("sensor.effy_pv_south", "effective", "sensor.pv_south")[
             "aggregations"
