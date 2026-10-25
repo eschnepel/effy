@@ -228,6 +228,67 @@ class TestLateBinding:
         assert [_kinds(batch) for batch in platform.added] == [[("EffySmoothedSensor", PV_W)]]
 
 
+class _StrictTracker(_Tracker):
+    """Like Home Assistant's tracker: removing the same listener twice raises
+    ``ValueError: list.remove(x): x not in list`` (``helpers/event.py``)."""
+
+    def __call__(self, hass: Any, entity_ids: list[str], callback: Any) -> Any:
+        self.calls.append((hass, list(entity_ids), callback))
+        registered = [callback]
+
+        def unsub() -> None:
+            registered.remove(callback)
+            self.unsubscribed += 1
+
+        return unsub
+
+
+class TestLateBindingUnload:
+    """The listener removes itself once every source has a state, and the entry
+    removes it again on unload (an options change reloads the entry)."""
+
+    async def _platform(self, monkeypatch: pytest.MonkeyPatch) -> tuple[_Platform, _StrictTracker]:
+        tracker = _StrictTracker()
+        monkeypatch.setattr(_sensor, "async_track_state_change_event", tracker)
+        platform = _Platform(_SetupEntry([PV_W], []), {})
+        await platform.setup()
+        return platform, tracker
+
+    async def test_unloading_after_the_listener_removed_itself_raises_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        platform, tracker = await self._platform(monkeypatch)
+        platform.states[PV_W] = _state(POWER)
+        tracker.calls[0][2](
+            _event(PV_W, platform.states[PV_W])
+        )  # resolves; listener removes itself
+        assert tracker.unsubscribed == 1
+
+        for unload in platform.entry.unloads:  # what Home Assistant does on unload
+            unload()
+
+        assert tracker.unsubscribed == 1  # the tracker was told once, not twice
+
+    async def test_unloading_while_a_source_still_waits_removes_the_listener_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        platform, tracker = await self._platform(monkeypatch)
+
+        for unload in platform.entry.unloads:
+            unload()
+
+        assert tracker.unsubscribed == 1
+
+    async def test_removing_it_twice_in_a_row_is_harmless(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        platform, tracker = await self._platform(monkeypatch)
+        for unload in platform.entry.unloads:
+            unload()
+            unload()
+        assert tracker.unsubscribed == 1
+
+
 # ---------------------------------------------------------------------------
 # restoring a value that has no unit
 # ---------------------------------------------------------------------------

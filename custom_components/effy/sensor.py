@@ -285,7 +285,19 @@ def _add_late_derived_entities(
         if not remaining:
             unsub()
 
-    unsub = async_track_state_change_event(hass, pending_ids, _on_state_changed)
+    tracker_unsub = async_track_state_change_event(hass, pending_ids, _on_state_changed)
+    removed = False
+
+    def unsub() -> None:
+        """Remove the listener once. It is called when the last pending source has
+        resolved and again on unload; Home Assistant's tracker raises on a second
+        removal, which made the unload (and so every options-change reload) fail."""
+        nonlocal removed
+        if removed:
+            return
+        removed = True
+        tracker_unsub()
+
     entry.async_on_unload(unsub)
 
 
