@@ -108,8 +108,16 @@ already be 200 s. Nothing here measures any of the three.
    figure, once converting the state strings and once the timestamps to epoch
    seconds. Effy parses each state in the trapezoid and, because the coordinator
    passes its reading cache, once more in the fetch helper, so the probe is the
-   cost of one such pass. The probe is a diagnostic and can be removed once gate
-   G-perf has been decided. The human runs it on the Pi and reports the line.
+   cost of one such pass. The history recalculation's record also carries a
+   **detail block** (TASK-0010 patch 1, after the first Pi run took 228 s with
+   no record): each recorder job with its time in the executor apart from its
+   wait for it, the compute stages (trapezoid per source, interpolation, the
+   slot loop split into readings, waterfall, conversion), the three statistics
+   writes (preparing apart from awaiting the recorder), CPU against wall
+   seconds, the longest stretch without an `await` (Q2's number) and the
+   environment. The probe and the detail are diagnostics and can be removed once
+   gate G-perf has been decided. The human runs it on the Pi and reports the
+   whole record.
 
 1. **Decision gate G-perf.** The numpy work (TASK-0011 to TASK-0013) is released
    only if that line shows the compute phase at or above a threshold (Q1). If

@@ -247,6 +247,12 @@ recalculation, timed on its own, so the cost of parsing (state strings to
 numbers, timestamps to epoch seconds) is visible apart from the compute phase. A
 diagnostic, not part of the calculation. _Avoid_: Parsing phase
 
+**Recalculation detail**: The lines after the first line of a history
+recalculation's timing record: the environment, CPU against wall seconds, the
+longest stretch without an `await`, every recorder job with its run and its
+wait, the compute stages and the three statistics writes. It splits the phases
+into sub-processes; it adds nothing to them. _Avoid_: Profile
+
 **Closing step**: The last action of a recalculation, the slot job or the
 history recalculation: the update of the recalculated-from sensor. It tells a
 listener that the recalculation's statistics and states are final.

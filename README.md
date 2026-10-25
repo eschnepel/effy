@@ -343,10 +343,41 @@ slot timer, once more while reading the history, so the real parsing time is the
 probe's `values` times the number of those passes. The probe adds roughly its
 own time to the recalculation and is a diagnostic, not a feature.
 
-The 5-minute recalculation writes the same line at level DEBUG, without the
-probe. When reporting a slow recalculation, send that one line, the
-`max_history_days` setting, the number of configured sensors and your Home
-Assistant version.
+The history recalculation's record continues with a **detail block** on the
+lines below that line (numbers made up):
+
+```text
+  detail v2: HA 2026.3.4, Python 3.13.2 aarch64, 4 CPUs, recorder sqlite, keep_days 60, history days 60, energy sources 4, power sources 4
+  cpu / wall (cpu is process-wide, it includes anything else Home Assistant did meanwhile): fetch 3.10 / 40.20 s, compute 12.00 / 12.10 s, write 20.50 / 170.20 s
+  longest stretch without awaiting (event loop held): 12.05 s
+  fetch jobs (wall = run in the executor + wait for the executor):
+    raw states sensor.battery_discharge: calls 1, wall 12.30 s = run 12.10 s + wait 0.20 s, rows 543210
+  compute stages (carved out of compute):
+    trapezoid sensor.battery_discharge: 5.50 s, 543210 states -> 16865 slots
+  slot loop: 4.10 s for 16865 slots = readings 1.20 s + waterfall 2.00 s + conversion 0.70 s + rest 0.20 s
+  write calls (build = preparing and scheduling the imports on the event loop, recorder = awaiting the recorder):
+    effective: 101190 short-term + 8430 hourly rows, build 0.80 s, recorder 60.20 s
+```
+
+| Part | How to read it |
+| -- | -- |
+| `detail v2` line | proves which build wrote the record, and on what machine |
+| `cpu / wall` | CPU far below wall means waiting (storage, queues); near wall means computing |
+| `longest stretch` | the longest time the recalculation held the event loop without giving it back |
+| `run` and `wait` of a job | seconds inside the recorder's executor, and queued for it |
+| `trapezoid`, `slot loop` | where `compute` goes; `rest` includes the instrumentation's own cost |
+| `build` and `recorder` | preparing the imports, and awaiting the recorder until it has stored them |
+
+The detail costs well under 1 % of a recalculation (measured on 480,000 states).
+
+If no `Effy recalculation timing` line shows up after a history recalculation,
+the copy Home Assistant is running does not contain this feature. The logger
+name in the log tells which copy that is (`custom_components.<folder>.history`);
+install the current `helper_sensors` branch and press the button again.
+
+The 5-minute recalculation writes the first line only, at level DEBUG, without
+the probe and the detail. When reporting a slow recalculation, send the whole
+record (all its lines).
 
 ### State-class handling during history recalculation
 

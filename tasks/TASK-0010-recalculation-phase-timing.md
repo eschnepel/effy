@@ -183,3 +183,55 @@ The following shows the debug output on the PI 5:
 2026-10-24 23:00:05.023 DEBUG (MainThread) [custom_components.effy_.history] Effy recent recalc: counter jump(s) in the last 0:20:00 extend the rewrite range from 2026-10-24 20:40:05.000701+00:00 back to 2026-10-24 19:35:00+00:00
 2026-10-24 23:00:05.270 DEBUG (MainThread) [custom_components.effy_.history] Effy: recent recalculation wrote 236 short-term rows across 6 effective + 4 derived-power + 4 smoothed sensors, earliest touched slot 2026-10-24 19:35:00+00:00
 ```
+
+## Evaluation of the test results (Lead Agent, 2026-10-25)
+
+**The measurement did not happen.** None of the pasted lines is the timing
+record. In this branch `finish()` logs it at INFO immediately after the
+`history recalculation wrote …` line, from the same logger, and the DEBUG lines
+prove INFO was enabled. It is not there, and the logger is
+`custom_components.effy_.history`, not `custom_components.effy.history`. Only
+the `helper_sensors` branch contains the timing code (checked on all branches).
+So the copy that ran on the Pi is another build, presumably from before commit
+`f752c55`, and gate G-perf has no input yet.
+
+**What the lines do say** (arithmetic on the timestamps, not instrumentation):
+
+- The history recalculation took 228.3 s (22:50:18.906 to 22:54:07.228), about 3
+  min 48 s, not 5 min.
+- 236,112 rows across 14 series is 16,865 slots per series, about 58.6 days, not
+  the default 28 (that would be about 113,000 rows). `max_history_days` must be
+  near 60; please confirm.
+- That is 0.97 ms per row written, or 13.5 ms per slot across all series.
+- The two recent recalculations took 0.237 s and 0.247 s for 222 and 236 rows
+  (1.07 and 1.05 ms per row). Their start line is logged after the first fetch,
+  so this is refetch, compute and write of 16 slots.
+- Per-row cost is nearly the same for 16 slots and for 16,865 slots, so a fixed
+  per-recalculation cost (query count, lock, lookbacks) is at most 0.24 s of the
+  228 s. Two points cannot show that the cost is linear, only that a constant
+  part is small.
+
+**What they cannot say:** which phase it is. A per-slot-linear cost fits
+compute, fetch and write equally.
+
+**Plausibility, calculated and not measured.** The pure-Python trapezoid costs
+2.8 µs per raw state on the sandbox, linear from 83,000 to 1,000,000 states.
+With the ADR's 86 % share that is about 3.3 µs per state for the compute phase;
+at an assumed 3 to 5 times slower Pi, 10 to 16 µs. The series counts (6
+effective, 4 derived power, 4 smoothed) suggest 4 energy-family sensors. For
+compute to explain 228 s they would need 3.5 to 5.7 million raw states each, one
+state per 0.9 to 1.5 s for 58 days. Even Q1's 25 % (57 s) needs one state per
+3.6 to 5.9 s per sensor. A battery system's counters rarely tick that fast, so
+compute is the less likely explanation. 236,112 short-term rows plus about
+19,700 hourly rows at a per-row upsert in the order of 1 ms is what a recorder
+import on a Pi can cost (from memory of Home Assistant's import code, not
+checked against the 2026.x source), which would make the write phase the more
+likely one. The fetch phase (rows turned into state objects) is the third
+candidate. This is a ranking of hypotheses, not a finding.
+
+**Decision.** More data is needed, and a second run without more detail would
+risk a third. TASK-0010-recalculation-phase-timing-patch-1 adds the sub-process
+breakdown, CPU against wall time, the longest stretch without an `await` and the
+environment to the same record. Q1 and Q2 are still open points in the Draft
+ADR-022 (the text says "nothing below is a decision"); they must be confirmed
+before G-perf is decided.

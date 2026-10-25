@@ -142,9 +142,13 @@ Two recorder tables are populated for every recalculated slot:
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from itertools import chain
 from operator import itemgetter
@@ -210,6 +214,83 @@ _T = TypeVar("_T")
 # so tests can replace it with a fake that advances only where they say.
 _clock: Callable[[], float] = time.perf_counter
 
+# CPU seconds the whole process has used (all threads), for the detail block of the
+# record (TASK-0010 patch 1). Read at every use, like ``_clock``.
+_cpu_clock: Callable[[], float] = time.process_time
+
+# Version of the detail block; it is also how a pasted record proves which build made it.
+_RECORD_VERSION = 2
+
+
+class _Figure:
+    """Accumulated figures of one named step of the detail block.
+
+    For a recorder job ``items`` is the rows it returned and ``run`` the seconds
+    inside the executor (``wall`` minus ``run`` is the wait for it); for a stage
+    ``items`` is what went in and ``out`` what came out.
+    """
+
+    __slots__ = ("calls", "items", "out", "run", "wall")
+
+    def __init__(self, items: int = 0) -> None:
+        self.calls = 0
+        self.wall = 0.0
+        self.run = 0.0
+        self.items = items
+        self.out = 0
+
+
+class _WriteFigure:
+    """One statistics write: its rows, preparing it, awaiting the recorder."""
+
+    __slots__ = ("build", "hourly", "short", "wait")
+
+    def __init__(self) -> None:
+        self.short = 0
+        self.hourly = 0
+        self.build = 0.0
+        self.wait = 0.0
+
+
+def _rows_of(result: Any) -> int:
+    """Rows a recorder job returned. A diagnostic: an odd result counts as 0 or 1."""
+    try:
+        if result is None:
+            return 0
+        if isinstance(result, dict):
+            return sum(len(rows) if isinstance(rows, list) else 1 for rows in result.values())
+        if isinstance(result, list):
+            return len(result)
+    except TypeError:
+        return 0
+    return 1
+
+
+def _environment_summary(hass: Any, history_days: int) -> str:
+    """First line of the detail block: what produced the numbers. Never raises."""
+    try:
+        try:
+            from homeassistant.const import __version__ as ha_version  # noqa: PLC0415
+        except Exception:
+            ha_version = "unknown"
+        try:
+            instance: Any = get_recorder(hass)
+        except Exception:
+            instance = None
+        dialect = getattr(instance, "dialect_name", None)
+        dialect = getattr(dialect, "value", dialect)
+        keep_days = getattr(instance, "keep_days", None)
+        return (
+            f"detail v{_RECORD_VERSION}: HA {ha_version},"
+            f" Python {platform.python_version()} {platform.machine() or 'unknown'},"
+            f" {os.cpu_count() or 'unknown'} CPUs,"
+            f" recorder {dialect or 'unknown'},"
+            f" keep_days {'unknown' if keep_days is None else keep_days},"
+            f" history days {history_days}"
+        )
+    except Exception:
+        return f"detail v{_RECORD_VERSION}: environment unknown, history days {history_days}"
+
 
 class _PhaseTimings:
     """Wall-clock accounting of one recalculation (TASK-0010, ADR-022 Decision 1).
@@ -239,6 +320,15 @@ class _PhaseTimings:
     coordinator always does), once more in the fetch helper — the probe is the
     cost of one such pass.
 
+    ``detail_on`` (history recalculation only; TASK-0010 patch 1) adds a detail
+    block to the record: every recorder job with its time in the executor and
+    its wait for it, the compute stages, the three statistics writes (preparing
+    apart from awaiting the recorder), CPU seconds next to wall seconds, the
+    longest stretch without an ``await`` and the environment (GLOSSARY:
+    Recalculation detail). The stages are carved out of ``compute``, never added
+    to it. Without ``detail_on`` none of it costs anything: ``wrap`` hands the
+    function back unchanged and ``recorder_job`` hands the job over unwrapped.
+
     A disabled instance (``_NO_TIMINGS``) does nothing and keeps no state; it is
     the default for every caller that does not ask for timing.
     """
@@ -257,32 +347,150 @@ class _PhaseTimings:
         self.rows = 0
         self.parse_values = 0.0
         self.parse_timestamps = 0.0
+        self.cpu: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
+        self.detail = False
+        self.environment = ""
+        self.energy_sources = 0
+        self.power_sources = 0
+        self.jobs: dict[tuple[str, str], _Figure] = {}
+        self.stages: dict[tuple[str, str], _Figure] = {}
+        self.parts: dict[str, _Figure] = {}
+        self.writes: dict[str, _WriteFigure] = {}
+        self.longest_block = 0.0
+        self._write_label = "write"
         self._phase: str | None = None
-        self._started = self._since = _clock() if enabled else 0.0
+        self._started = self._since = self._resumed = _clock() if enabled else 0.0
+        self._cpu_since = _cpu_clock() if enabled else 0.0
         self._ended: float | None = None
 
     def enter(self, phase: str | None) -> None:
         """Switch the current phase; ``None`` means no phase (time counts as other)."""
         if not self.enabled:
             return
-        now = _clock()
+        now, cpu_now = _clock(), _cpu_clock()
         if self._phase is not None:
             self.seconds[self._phase] += now - self._since
-        self._phase, self._since = phase, now
+            self.cpu[self._phase] += cpu_now - self._cpu_since
+        self._phase, self._since, self._cpu_since = phase, now, cpu_now
 
-    async def recorder_job(self, recorder: Any, func: Callable[..., _T], *args: Any) -> _T:
-        """Await ``recorder.async_add_executor_job(func, *args)`` as a ``fetch`` query."""
+    def detail_on(self, environment: str) -> None:
+        """Switch the detail block on; ``environment`` becomes its first line."""
+        if self.enabled:
+            self.detail = True
+            self.environment = environment
+
+    def note_sources(self, energy: int, power: int) -> None:
+        if self.enabled:
+            self.energy_sources, self.power_sources = energy, power
+
+    def before_await(self) -> None:
+        """The coroutine is about to give the event loop back: close the stretch it held it."""
+        if self.enabled:
+            self.longest_block = max(self.longest_block, _clock() - self._resumed)
+
+    def after_await(self) -> None:
+        if self.enabled:
+            self._resumed = _clock()
+
+    async def recorder_job(
+        self,
+        recorder: Any,
+        func: Callable[..., _T],
+        *args: Any,
+        label: str = "",
+        source: str = "",
+    ) -> _T:
+        """Await ``recorder.async_add_executor_job(func, *args)`` as a ``fetch`` query.
+
+        With the detail on, ``func`` runs inside a twin that notes how long it ran in
+        the executor thread, so the wait for the executor is wall minus run.
+        """
         if not self.enabled:
             plain: _T = await recorder.async_add_executor_job(func, *args)
             return plain
         self.queries += 1
         previous = self._phase
         self.enter("fetch")
+        began = self._since
+        ran: list[float] = []
+
+        def timed(*job_args: Any) -> _T:
+            job_began = _clock()
+            try:
+                return func(*job_args)
+            finally:
+                ran.append(_clock() - job_began)
+
+        self.before_await()
         try:
-            result: _T = await recorder.async_add_executor_job(func, *args)
+            result: _T = await recorder.async_add_executor_job(
+                timed if self.detail else func, *args
+            )
         finally:
+            self.after_await()
             self.enter(previous)
+        if self.detail:
+            figure = self.jobs.setdefault((label or "recorder job", source), _Figure())
+            figure.calls += 1
+            figure.wall += _clock() - began
+            figure.run += ran[-1] if ran else 0.0
+            figure.items += _rows_of(result)
         return result
+
+    @contextmanager
+    def stage(self, name: str, source: str = "", *, items: int = 0) -> Iterator[_Figure]:
+        """Time a block as one stage of ``compute``; the block may set ``.out`` on the figure."""
+        figure = _Figure(items)
+        if not self.detail:
+            yield figure
+            return
+        began = _clock()
+        try:
+            yield figure
+        finally:
+            total = self.stages.setdefault((name, source), _Figure())
+            total.calls += 1
+            total.wall += _clock() - began
+            total.items += figure.items
+            total.out += figure.out
+
+    def wrap(self, name: str, func: Callable[..., _T]) -> Callable[..., _T]:
+        """``func`` itself, or with the detail on a twin adding its calls and time to ``name``."""
+        if not self.detail:
+            return func
+        figure = self.parts.setdefault(name, _Figure())
+
+        def timed(*args: Any, **kwargs: Any) -> _T:
+            began = _clock()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                figure.calls += 1
+                figure.wall += _clock() - began
+
+        return timed
+
+    @contextmanager
+    def write_call(self, label: str) -> Iterator[None]:
+        """Name one statistics write and let the real writer report to this stopwatch."""
+        if not self.detail:
+            yield
+            return
+        self._write_label = label
+        token = _active_timings.set(self)
+        try:
+            yield
+        finally:
+            _active_timings.reset(token)
+
+    def note_write(self, short: int, hourly: int, build: float, wait: float) -> None:
+        if not self.detail:
+            return
+        figure = self.writes.setdefault(self._write_label, _WriteFigure())
+        figure.short += short
+        figure.hourly += hourly
+        figure.build += build
+        figure.wait += wait
 
     def note_raw_states(self, energy_raw: dict[str, list[tuple[datetime, str]]]) -> None:
         if self.enabled:
@@ -322,6 +530,7 @@ class _PhaseTimings:
             return
         self.enter(None)
         self._ended = _clock()
+        self.longest_block = max(self.longest_block, self._ended - self._resumed)
         self.rows = rows
         if not _LOGGER.isEnabledFor(self.level):
             return
@@ -342,10 +551,72 @@ class _PhaseTimings:
                 "; parse probe (one extra pass over all raw states, not part of compute):"
                 f" values {self.parse_values:.2f} s, timestamps {self.parse_timestamps:.2f} s"
             )
+        if self.detail:
+            parts.extend(f"\n  {line}" for line in self._detail_lines())
         _LOGGER.log(self.level, "%s", "".join(parts))
+
+    def _detail_lines(self) -> list[str]:
+        """The detail block: headers flush left, their items indented two spaces."""
+        sec, cpu = self.seconds, self.cpu
+        lines = [
+            f"{self.environment}, energy sources {self.energy_sources},"
+            f" power sources {self.power_sources}",
+            "cpu / wall (cpu is process-wide, it includes anything else Home Assistant did"
+            " meanwhile): "
+            + ", ".join(
+                f"{p} {cpu[p]:.2f} / {sec[p]:.2f} s" for p in ("fetch", "compute", "write")
+            ),
+            f"longest stretch without awaiting (event loop held): {self.longest_block:.2f} s",
+            "fetch jobs (wall = run in the executor + wait for the executor):",
+        ]
+        for (label, source), job in self.jobs.items():
+            lines.append(
+                f"  {f'{label} {source}'.strip()}: calls {job.calls}, wall {job.wall:.2f} s"
+                f" = run {job.run:.2f} s + wait {max(0.0, job.wall - job.run):.2f} s,"
+                f" rows {job.items}"
+            )
+        lines.append("compute stages (carved out of compute):")
+        unit = {"trapezoid": "states", "cache pass": "states", "interpolation": "slots"}
+        for (name, source), stage in self.stages.items():
+            if name == "slot loop":
+                continue
+            out = f" -> {stage.out} slots" if stage.out else ""
+            lines.append(
+                f"  {f'{name} {source}'.strip()}: {stage.wall:.2f} s,"
+                f" {stage.items} {unit.get(name, 'items')}{out}"
+            )
+        loop = self.stages.get(("slot loop", ""))
+        if loop is not None:
+
+            def part(name: str) -> float:
+                return self.parts[name].wall if name in self.parts else 0.0
+
+            rest = max(
+                0.0, loop.wall - sum(part(n) for n in ("readings", "waterfall", "conversion"))
+            )
+            lines.append(
+                f"  slot loop: {loop.wall:.2f} s for {loop.items} slots"
+                f" = readings {part('readings'):.2f} s + waterfall {part('waterfall'):.2f} s"
+                f" + conversion {part('conversion'):.2f} s + rest {rest:.2f} s"
+            )
+        lines.append(
+            "write calls (build = preparing and scheduling the imports on the event loop,"
+            " recorder = awaiting the recorder):"
+        )
+        for name, write in self.writes.items():
+            lines.append(
+                f"  {name}: {write.short} short-term + {write.hourly} hourly rows,"
+                f" build {write.build:.2f} s, recorder {write.wait:.2f} s"
+            )
+        return lines
 
 
 _NO_TIMINGS = _PhaseTimings("", logging.NOTSET, enabled=False)
+
+# The stopwatch the real ``_write_recorder_statistics`` reports its build and wait
+# times to. Set only by ``_PhaseTimings.write_call``, so the writer needs no new
+# parameter (the tests' fake writer keeps the old signature).
+_active_timings: ContextVar[_PhaseTimings] = ContextVar("effy_active_timings", default=_NO_TIMINGS)
 
 # Fallback only used if the recorder instance somehow has no usable
 # keep_days value (should not normally happen) – matches HA's own default.
@@ -802,7 +1073,14 @@ async def _fetch_energy_raw_with_anchor(
     visible in *both*.
     """
     raw_states: list[tuple[datetime, str]] = await phases.recorder_job(
-        recorder, _fetch_raw_energy_states, hass, eid, raw_history_start, end
+        recorder,
+        _fetch_raw_energy_states,
+        hass,
+        eid,
+        raw_history_start,
+        end,
+        label="raw states",
+        source=eid,
     )
     # RECENT_RECALC_WINDOW is deliberately small (ADR-013) — if the
     # sensor was already offline when this window's own fetch starts,
@@ -848,6 +1126,8 @@ async def _fetch_energy_raw_with_anchor(
                 eid,
                 raw_history_start,
                 max_history_days,
+                label="anchor lookback",
+                source=eid,
             )
         )
         if anchor is not None:
@@ -860,9 +1140,10 @@ async def _fetch_energy_raw_with_anchor(
     # entity can skip the recorder query entirely too.
     if energy_reading_cache is not None:
         latest_valid: tuple[datetime, str] | None = None
-        for ts, state in raw_states:
-            if _parse_energy_state(state) is not None:
-                latest_valid = (ts, state)
+        with phases.stage("cache pass", eid, items=len(raw_states)):
+            for ts, state in raw_states:
+                if _parse_energy_state(state) is not None:
+                    latest_valid = (ts, state)
         if latest_valid is not None:
             cached = energy_reading_cache.get(eid)
             if cached is None or latest_valid[0] > cached[0]:
@@ -980,7 +1261,7 @@ async def _compute_effective_slots(
     # already-Wh value as if it were kWh (or vice versa), which would throw
     # off every downstream Wh/kWh → W conversion by a further factor of 1000.
     stats_units: dict[str, str] = await phases.recorder_job(
-        recorder, _get_statistics_units, hass, all_ids
+        recorder, _get_statistics_units, hass, all_ids, label="units"
     )
     units: dict[str, str] = {}
     for eid in all_ids:
@@ -1003,6 +1284,7 @@ async def _compute_effective_slots(
         eid for eid in all_ids if _stat_field_for(state_classes.get(eid), units[eid]) == "change"
     ]
     power_ids = [eid for eid in all_ids if eid not in energy_ids]
+    phases.note_sources(len(energy_ids), len(power_ids))
 
     indexed: dict[str, dict[datetime, StatRow]] = {}
 
@@ -1066,9 +1348,11 @@ async def _compute_effective_slots(
 
     phases.note_raw_states(energy_raw)
     for eid in energy_ids:
-        contributions = trapezoidal_slot_contributions(
-            energy_raw[eid], slot_minutes=SLOT_MINUTES, now=end
-        )
+        with phases.stage("trapezoid", eid, items=len(energy_raw[eid])) as trapezoid:
+            contributions = trapezoidal_slot_contributions(
+                energy_raw[eid], slot_minutes=SLOT_MINUTES, now=end
+            )
+            trapezoid.out = len(contributions)
         indexed[eid] = {
             slot: {"start": slot, "change": value}
             for slot, value in contributions.items()
@@ -1081,7 +1365,7 @@ async def _compute_effective_slots(
     # covers the same range.
     if power_ids:
         raw_stats: dict[str, list[StatRow]] = await phases.recorder_job(
-            recorder, _fetch_statistics, hass, power_ids, start, end
+            recorder, _fetch_statistics, hass, power_ids, start, end, label="power statistics"
         )
         for eid, rows in raw_stats.items():
             indexed[eid] = {row["start"]: row for row in rows}
@@ -1104,7 +1388,9 @@ async def _compute_effective_slots(
         }
         if not raw_means:
             continue
-        filled = interpolate_slot_gaps(raw_means, slot_minutes=SLOT_MINUTES)
+        with phases.stage("interpolation", eid, items=len(raw_means)) as interpolation:
+            filled = interpolate_slot_gaps(raw_means, slot_minutes=SLOT_MINUTES)
+            interpolation.out = len(filled)
         smoothed_series[eid] = filled
         for ts, value in filled.items():
             entity_rows.setdefault(ts, {"start": ts, "mean": value})
@@ -1125,26 +1411,30 @@ async def _compute_effective_slots(
     # power_results: raw (pre-waterfall) derived power per slot, energy-family only
     power_results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in energy_ids}
 
-    for slot in slots:
-        input_readings = _readings_for_slot(
-            slot, SLOT_MINUTES, input_ids, indexed, state_classes, units
-        )
-        output_readings = _readings_for_slot(
-            slot, SLOT_MINUTES, output_ids, indexed, state_classes, units
-        )
+    readings_for_slot = phases.wrap("readings", _readings_for_slot)
+    waterfall = phases.wrap("waterfall", distribute_loss)
+    to_original_unit = phases.wrap("conversion", effective_in_original_unit)
+    with phases.stage("slot loop", items=len(slots)):
+        for slot in slots:
+            input_readings = readings_for_slot(
+                slot, SLOT_MINUTES, input_ids, indexed, state_classes, units
+            )
+            output_readings = readings_for_slot(
+                slot, SLOT_MINUTES, output_ids, indexed, state_classes, units
+            )
 
-        for reading in input_readings + output_readings:
-            if reading.entity_id in power_results:
-                power_results[reading.entity_id].append((slot, reading.raw_value))
+            for reading in input_readings + output_readings:
+                if reading.entity_id in power_results:
+                    power_results[reading.entity_id].append((slot, reading.raw_value))
 
-        if not input_readings:
-            continue
+            if not input_readings:
+                continue
 
-        distribution = distribute_loss(input_readings, output_readings)
+            distribution = waterfall(input_readings, output_readings)
 
-        for reading in input_readings:
-            eff = effective_in_original_unit(reading.entity_id, distribution, reading.original_unit)
-            results[reading.entity_id].append((slot, eff))
+            for reading in input_readings:
+                eff = to_original_unit(reading.entity_id, distribution, reading.original_unit)
+                results[reading.entity_id].append((slot, eff))
 
     per_sensor: dict[str, dict[str, Any]] = {}
     for eid in input_ids:
@@ -1302,6 +1592,7 @@ async def async_recalculate_history(
     """
     phases = _PhaseTimings("history", logging.INFO, parse_probe=True)
     max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
+    phases.detail_on(_environment_summary(hass, max_days))
     end = datetime.now(tz=timezone.utc)
     start = end - timedelta(days=max_days)
     short_term_retention_days = _get_short_term_retention_days(hass)
@@ -1324,17 +1615,23 @@ async def async_recalculate_history(
     short_term_written = 0
     phases.enter("write")
     if per_sensor:
-        short_term_written += await _write_recorder_statistics(
-            hass, per_sensor, short_term_cutoff=short_term_cutoff, include_long_term=True
-        )
+        with phases.write_call("effective"):
+            short_term_written += await _write_recorder_statistics(
+                hass, per_sensor, short_term_cutoff=short_term_cutoff, include_long_term=True
+            )
     if per_sensor_power:
-        short_term_written += await _write_recorder_statistics(
-            hass, per_sensor_power, short_term_cutoff=short_term_cutoff, include_long_term=True
-        )
+        with phases.write_call("derived power"):
+            short_term_written += await _write_recorder_statistics(
+                hass, per_sensor_power, short_term_cutoff=short_term_cutoff, include_long_term=True
+            )
     if per_sensor_smoothed:
-        short_term_written += await _write_recorder_statistics(
-            hass, per_sensor_smoothed, short_term_cutoff=short_term_cutoff, include_long_term=True
-        )
+        with phases.write_call("smoothed"):
+            short_term_written += await _write_recorder_statistics(
+                hass,
+                per_sensor_smoothed,
+                short_term_cutoff=short_term_cutoff,
+                include_long_term=True,
+            )
     phases.enter(None)
 
     touched_entity_ids: set[str] = (
@@ -1856,8 +2153,12 @@ async def _write_recorder_statistics(
 
     Returns the number of short-term (5-minute) rows scheduled for write.
     """
+    phases = _active_timings.get()  # TASK-0010 patch 1; the disabled one outside a history run
+    timed = phases.detail
+    began = _clock() if timed else 0.0
     instance = get_recorder(hass)
     short_term_written = 0
+    hourly_written = 0
 
     for statistic_id, info in per_sensor.items():
         unit = info["unit"]
@@ -1903,10 +2204,16 @@ async def _write_recorder_statistics(
                 for hour_ts, vals in hourly.items()
             ]
             instance.async_import_statistics(metadata, long_term_stats, Statistics)
+            hourly_written += len(long_term_stats)
 
     # All async_import_statistics calls above only *scheduled* tasks on the
     # recorder's queue – wait for the recorder thread to actually process
     # them before reporting a row count back to the caller.
+    waited = _clock() if timed else 0.0
+    phases.before_await()
     await instance.async_block_till_done()
+    phases.after_await()
+    if timed:
+        phases.note_write(short_term_written, hourly_written, waited - began, _clock() - waited)
 
     return short_term_written
