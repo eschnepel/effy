@@ -33,6 +33,18 @@ meanwhile (the states of the whole instance, queued behind the 28 tasks) is
 noticeably delayed; and how many of the rewritten rows differ from what is
 already stored.
 
+**Measured on the Pi, 2026-10-26** (Home Assistant 2026.10.4, Python 3.14,
+SQLite, 28 days, two runs): the write phase took 106.10 s and 106.43 s for
+109,242 rows, and the process used **106.14 s and 106.47 s of CPU in it**. The
+recorder is therefore CPU-bound (one `SELECT` and one `UPDATE` per row through
+the ORM), not waiting for storage: faster storage, bigger or smaller batches
+would not shorten it, and only writing fewer rows does. Preparing and scheduling
+the imports on the event loop took 0.1 to 0.46 s per series group; the longest
+stretch the event loop was held was 0.46 s. Reading one series of about 8,000
+stored rows took 0.09 to 0.13 s (about 1.6 s for 14 series), so the read the
+decision relies on is cheap. That makes option D pointless for speed and leaves
+C as the one lever.
+
 ## Options considered
 
 | Option | Effect | Cost / risk |

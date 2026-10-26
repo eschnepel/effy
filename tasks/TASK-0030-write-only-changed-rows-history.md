@@ -172,3 +172,17 @@ temporarily: Python 3.12).
   its source (`dev` branch), not against a real Home Assistant or the Pi; a
   first run on an empty store reads nothing (no metadata) and costs what it did;
   after a change of settings every value is new and the run costs what it did.
+
+## First run on the Pi (human, 2026-10-26) — the feature did not take effect
+
+Two history recalculations in a row, then a recent cycle:
+`rows written 109242, rows unchanged 0` each time, although the second run's
+stored rows were exactly the first run's. All 14 `stored rows` jobs ran (0.09 to
+0.13 s each, `rows 0`), no warning, so the read succeeded and no row counted as
+unchanged. The test suite could not catch this, since its fake store returns
+what the code assumes; it also cannot tell which gate failed (unit, `start`,
+`mean`, `state` or a cleared column). A job of about 0.1 s rules the unit gate
+out (the metadata lookup alone takes under 10 ms), which leaves the comparison.
+TASK-0030 patch 1 makes the record say why; the cause is read from the next run.
+The same log answers a question for ADR-024: the write phase is CPU-bound
+(106.14 s of CPU in 106.10 s of wall).

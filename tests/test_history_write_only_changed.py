@@ -541,3 +541,107 @@ def test_the_helpers_the_tests_rely_on_exist() -> None:
     for name in ("_hourly_rows", "_unchanged_rows", "_mark_unchanged", "_earliest_change"):
         assert hasattr(_history, name), name
     assert {PV, OUT, PW}
+
+
+class TestTheCheckExplainsItself:
+    """TASK-0030 patch 1. The first Pi run found nothing unchanged on any series and the
+    record could not say why; each series now says what it read and what differed."""
+
+    SID = TestTheRule.SID
+    T0 = TestTheRule.T0
+
+    def _stored(self, monkeypatch: pytest.MonkeyPatch, **columns: Any) -> StoredRecorder:
+        recorder = StoredRecorder()
+        _install_ha_api(monkeypatch, recorder)
+        monkeypatch.setattr(_history, "_get_statistics_units", REAL_UNITS)
+        recorder.units[self.SID] = "kW"
+        for i in range(4):
+            row = {"mean": 1.5, "state": 1.5, "min": None, "max": None, "sum": None,
+                   "last_reset": None}  # fmt: skip
+            recorder.rows[("5minute", self.SID, self.T0 + SLOT * i)] = {**row, **columns}
+        return recorder
+
+    def _explain(self, unit: str = "kW", slots: int = 4) -> str:
+        notes: dict[str, str] = {}
+        short = [(self.T0 + SLOT * i, 1.5) for i in range(slots)]
+        _history._unchanged_rows(object(), self.SID, unit, short, {}, notes)
+        return notes[self.SID]
+
+    def test_a_series_that_is_all_equal_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._stored(monkeypatch)
+        assert "5minute: read 4, equal 4" in self._explain()
+
+    def test_a_differing_state_is_named_with_the_first_pair_of_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stored(monkeypatch, state=None)
+        text = self._explain()
+        assert "equal 0" in text and "state differs 4" in text
+        assert "first: state stored None, new 1.5" in text
+        assert self.T0.isoformat() in text
+
+    def test_a_differing_mean_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._stored(monkeypatch, mean=0.0015)
+        text = self._explain()
+        assert "mean differs 4" in text and "first: mean stored 0.0015, new 1.5" in text
+
+    def test_a_column_the_writer_clears_is_named_with_its_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stored(monkeypatch, max=9.5)
+        text = self._explain()
+        assert "columns set 4" in text and "first: max stored 9.5" in text
+
+    def test_rows_that_were_not_stored_are_counted_as_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stored(monkeypatch)
+        assert "missing 2" in self._explain(slots=6)
+
+    def test_a_unit_mismatch_names_both_units_and_reads_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder = self._stored(monkeypatch)
+        text = self._explain(unit="W")
+        assert "unit stored 'kW', new 'W'" in text
+        assert recorder.reads == []
+
+    def test_missing_metadata_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorder = self._stored(monkeypatch)
+        recorder.units.clear()
+        assert "no metadata stored" in self._explain()
+
+    def test_the_notes_are_optional_for_existing_callers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stored(monkeypatch)
+        result = _history._unchanged_rows(object(), self.SID, "kW", [(self.T0, 1.5)], {})
+        assert set(result["short"]) == {self.T0}
+
+    async def test_the_record_lists_the_check_of_every_series_after_a_second_run(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _world_, recorder = _rig(monkeypatch)
+        await _recalculate()
+        with caplog.at_level(logging.INFO, logger=_history.__name__):
+            await _recalculate()
+        msg = [r for r in caplog.records if "recalculation timing (history)" in r.getMessage()][
+            -1
+        ].getMessage()
+        lines = [line.strip() for line in msg.splitlines()]
+        start = next(i for i, line in enumerate(lines) if line.startswith("stored rows check"))
+        checks = [line for line in lines[start + 1 :] if line.startswith("sensor.")]
+        assert len(checks) == 5  # one per series
+        assert all("5minute: read " in c and "equal " in c for c in checks)
+        assert all("; hour: read " in c for c in checks)  # the hourly side is explained too
+
+    async def test_a_first_run_says_there_was_no_metadata(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _world_, _recorder = _rig(monkeypatch)
+        with caplog.at_level(logging.INFO, logger=_history.__name__):
+            await _recalculate()
+        msg = [r for r in caplog.records if "recalculation timing (history)" in r.getMessage()][
+            0
+        ].getMessage()
+        assert "no metadata stored" in msg

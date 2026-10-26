@@ -370,6 +370,11 @@ lines below that line (numbers made up):
 
 The detail costs well under 1 % of a recalculation (measured on 480,000 states).
 
+The detail also has a `stored rows check` section: per series, how many stored
+rows were read, how many were equal, and which column differed in the others
+(with the first pair of values). If a repeated recalculation still writes
+everything, this section says why.
+
 Since TASK-0030 the recalculation reads the stored statistics first and writes
 only the rows that are new or different (ADR-024). The first line then ends with
 `rows unchanged N` (rows found already up to date), the reads show up as

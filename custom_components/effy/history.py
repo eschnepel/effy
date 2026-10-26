@@ -289,10 +289,10 @@ def _environment_summary(hass: Any, history_days: int) -> str:
             f" {os.cpu_count() or 'unknown'} CPUs,"
             f" recorder {dialect or 'unknown'},"
             f" keep_days {'unknown' if keep_days is None else keep_days},"
-            f" history days {history_days}"
+            f" history days {history_days:g}"
         )
     except Exception:
-        return f"detail v{_RECORD_VERSION}: environment unknown, history days {history_days}"
+        return f"detail v{_RECORD_VERSION}: environment unknown, history days {history_days:g}"
 
 
 class _PhaseTimings:
@@ -352,6 +352,7 @@ class _PhaseTimings:
         self.parse_timestamps = 0.0
         self.cpu: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
         self.unchanged_rows: int | None = None
+        self.stored_checks: dict[str, str] = {}
         self.detail = False
         self.environment = ""
         self.energy_sources = 0
@@ -387,6 +388,11 @@ class _PhaseTimings:
         """Short-term rows found already up to date (ADR-024); shown on the first line."""
         if self.enabled:
             self.unchanged_rows = rows
+
+    def note_stored_checks(self, checks: dict[str, str]) -> None:
+        """What each stored series looked like against the new rows (detail block only)."""
+        if self.detail:
+            self.stored_checks.update(checks)
 
     def note_sources(self, energy: int, power: int) -> None:
         if self.enabled:
@@ -586,6 +592,11 @@ class _PhaseTimings:
                 f" = run {job.run:.2f} s + wait {max(0.0, job.wall - job.run):.2f} s,"
                 f" rows {job.items}"
             )
+        if self.stored_checks:
+            lines.append(
+                "stored rows check (what each stored series looked like against the new rows):"
+            )
+            lines.extend(f"  {sid}: {text}" for sid, text in self.stored_checks.items())
         lines.append("compute stages (carved out of compute):")
         unit = {"trapezoid": "states", "cache pass": "states", "interpolation": "slots"}
         for (name, source), stage in self.stages.items():
@@ -2180,8 +2191,13 @@ def _unchanged_slots(
     statistic_id: str,
     period: str,
     expected: dict[datetime, tuple[float, float]],
-) -> frozenset[datetime]:
-    """Starts of the stored rows that equal ``expected`` (start -> (mean, state)) exactly."""
+) -> tuple[frozenset[datetime], str]:
+    """Starts of the stored rows that equal ``expected`` (start -> (mean, state)) exactly.
+
+    Also returns a one-line diagnosis: how many stored rows were read, how many were
+    equal and, for each of the others, which column differed, with the first pair of
+    values (the first Pi run found nothing unchanged and could not say why).
+    """
     from homeassistant.components.recorder.statistics import (  # noqa: PLC0415
         statistics_during_period,
     )
@@ -2191,8 +2207,12 @@ def _unchanged_slots(
     result: dict[str, list[StatRow]] = statistics_during_period(
         hass, first, last_end, {statistic_id}, period, None, _COMPARED_TYPES
     )
+    rows = result.get(statistic_id, [])
     same: set[datetime] = set()
-    for row in result.get(statistic_id, []):
+    why = {"start": 0, "mean": 0, "state": 0, "columns": 0}
+    seen = 0
+    sample = ""
+    for row in rows:
         raw_start = row.get("start")  # a datetime, or a unix timestamp on some versions
         start: Any = (
             datetime.fromtimestamp(raw_start, tz=timezone.utc)
@@ -2200,14 +2220,33 @@ def _unchanged_slots(
             else raw_start
         )
         want = expected.get(start)
-        if (
-            want is not None
-            and row.get("mean") == want[0]
-            and row.get("state") == want[1]
-            and all(row.get(column) is None for column in _CLEARED_COLUMNS)
-        ):
+        if want is None:
+            why["start"] += 1
+            sample = sample or f"start {raw_start!r} is not one of the new rows"
+            continue
+        seen += 1
+        reason, detail = "", ""
+        if row.get("mean") != want[0]:
+            reason, detail = "mean", f"mean stored {row.get('mean')!r}, new {want[0]!r}"
+        elif row.get("state") != want[1]:
+            reason, detail = "state", f"state stored {row.get('state')!r}, new {want[1]!r}"
+        else:
+            for column in _CLEARED_COLUMNS:
+                if row.get(column) is not None:
+                    reason, detail = "columns", f"{column} stored {row.get(column)!r}"
+                    break
+        if not reason:
             same.add(start)
-    return frozenset(same)
+            continue
+        why[reason] += 1
+        sample = sample or f"{detail} at {start.isoformat()}"
+    text = (
+        f"{period}: read {len(rows)}, equal {len(same)}, missing {len(expected) - seen},"
+        f" start unexpected {why['start']}, mean differs {why['mean']},"
+        f" state differs {why['state']}, columns set {why['columns']}"
+        + (f"; first: {sample}" if sample else "")
+    )
+    return frozenset(same), text
 
 
 def _unchanged_rows(
@@ -2216,6 +2255,7 @@ def _unchanged_rows(
     unit: str,
     short: list[tuple[datetime, float]],
     hourly: dict[datetime, tuple[float, float]],
+    notes: dict[str, str] | None = None,
 ) -> dict[str, frozenset[datetime]]:
     """Which rows of one series are already exactly what the writer would write.
 
@@ -2226,14 +2266,26 @@ def _unchanged_rows(
     ``short`` is the 5-minute rows to write, ``hourly`` the hourly ones.
     """
     nothing: frozenset[datetime] = frozenset()
-    if _get_statistics_units(hass, [statistic_id]).get(statistic_id) != unit:
+    stored_unit = _get_statistics_units(hass, [statistic_id]).get(statistic_id)
+    if stored_unit != unit:
+        if notes is not None:
+            notes[statistic_id] = (
+                "no metadata stored"
+                if stored_unit is None
+                else f"unit stored {stored_unit!r}, new {unit!r}: written in full"
+            )
         return {"short": nothing, "hourly": nothing}
-    return {
-        "short": _unchanged_slots(hass, statistic_id, "5minute", {ts: (v, v) for ts, v in short})
+    found_short, text_short = (
+        _unchanged_slots(hass, statistic_id, "5minute", {ts: (v, v) for ts, v in short})
         if short
-        else nothing,
-        "hourly": _unchanged_slots(hass, statistic_id, "hour", hourly) if hourly else nothing,
-    }
+        else (nothing, "")
+    )
+    found_hourly, text_hourly = (
+        _unchanged_slots(hass, statistic_id, "hour", hourly) if hourly else (nothing, "")
+    )
+    if notes is not None:
+        notes[statistic_id] = "; ".join(text for text in (text_short, text_hourly) if text)
+    return {"short": found_short, "hourly": found_hourly}
 
 
 async def _mark_unchanged(
@@ -2255,6 +2307,7 @@ async def _mark_unchanged(
     warning says so: a failed read never fails a recalculation (ADR-024 Decision 3).
     """
     recorder = get_recorder(hass)
+    notes: dict[str, str] = {}
     for series in all_series:
         for statistic_id, info in series.items():
             slot_values: list[tuple[datetime, float]] = info["slot_values"]
@@ -2279,6 +2332,7 @@ async def _mark_unchanged(
                     info["unit"],
                     short,
                     hourly,
+                    notes,
                     label="stored rows",
                     source=statistic_id,
                 )
@@ -2295,6 +2349,7 @@ async def _mark_unchanged(
                 return
             info["unchanged_short"] = found["short"]
             info["unchanged_hourly"] = found["hourly"]
+    phases.note_stored_checks(notes)
 
 
 def _count_unchanged(all_series: tuple[dict[str, dict[str, Any]], ...]) -> int:
