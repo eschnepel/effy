@@ -258,7 +258,10 @@ def _rows_of(result: Any) -> int:
         if result is None:
             return 0
         if isinstance(result, dict):
-            return sum(len(rows) if isinstance(rows, list) else 1 for rows in result.values())
+            return sum(
+                len(rows) if isinstance(rows, (list, set, frozenset)) else 1
+                for rows in result.values()
+            )
         if isinstance(result, list):
             return len(result)
     except TypeError:
@@ -348,6 +351,7 @@ class _PhaseTimings:
         self.parse_values = 0.0
         self.parse_timestamps = 0.0
         self.cpu: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
+        self.unchanged_rows: int | None = None
         self.detail = False
         self.environment = ""
         self.energy_sources = 0
@@ -378,6 +382,11 @@ class _PhaseTimings:
         if self.enabled:
             self.detail = True
             self.environment = environment
+
+    def note_unchanged(self, rows: int) -> None:
+        """Short-term rows found already up to date (ADR-024); shown on the first line."""
+        if self.enabled:
+            self.unchanged_rows = rows
 
     def note_sources(self, energy: int, power: int) -> None:
         if self.enabled:
@@ -546,6 +555,8 @@ class _PhaseTimings:
             f" + other {self.other():.2f} s; recorder queries {self.queries},"
             f" raw states {self.raw_states}, slots {self.slots}, rows written {self.rows}"
         )
+        if self.unchanged_rows is not None:
+            parts.append(f", rows unchanged {self.unchanged_rows}")
         if self.parse_probe:
             parts.append(
                 "; parse probe (one extra pass over all raw states, not part of compute):"
@@ -1564,12 +1575,14 @@ async def async_recalculate_history(
 
     Returns (short_term_rows_written, recalculated_from, touched_entity_ids,
     last_values).
-    A full recalc unconditionally recomputes every slot in [start, end), so
-    recalculated_from is always exactly ``start`` — see
-    async_recalculate_recent for the dynamic-range case, and ADR-012 for
-    why this value matters (the "recalculated from" sensor).
-    touched_entity_ids is every effy_* entity_id that got at least one
-    slot written this run, across all three series — callers (button.py)
+    A full recalc recomputes every slot in [start, end) but, since TASK-0030
+    (ADR-024), writes only the rows that are new or differ from what is
+    stored. recalculated_from is the earliest slot whose row was written (a
+    changed hourly row counts from the first slot of its hour), or None if
+    nothing was — ADR-012 Amendment 2026-10-25, and the "recalculated from"
+    sensor. If the stored rows cannot be read, every row is written (warning).
+    touched_entity_ids is every effy_* entity_id that was computed this run,
+    across all three series, changed row or not — callers (button.py)
     push it, together with last_values, through
     EffyCoordinator.notify_updated() so those entities' dashboard cards
     see a state_changed event and refetch. last_values maps each touched
@@ -1612,6 +1625,16 @@ async def async_recalculate_history(
         phases.finish(0)
         return 0, None, set(), {}
 
+    # Read what is stored and mark the rows that are already right (ADR-024); the
+    # writer skips them. The reads are recorder jobs, so they count as fetch.
+    await _mark_unchanged(
+        hass,
+        (per_sensor, per_sensor_power, per_sensor_smoothed),
+        short_term_cutoff=short_term_cutoff,
+        include_long_term=True,
+        phases=phases,
+    )
+
     short_term_written = 0
     phases.enter("write")
     if per_sensor:
@@ -1639,16 +1662,26 @@ async def async_recalculate_history(
     )
     last_values = _last_slot_values(per_sensor, per_sensor_power, per_sensor_smoothed)
 
+    changes = [
+        _earliest_change(series, short_term_cutoff=short_term_cutoff, include_long_term=True)
+        for series in (per_sensor, per_sensor_power, per_sensor_smoothed)
+    ]
+    earliest = min((ts for ts in changes if ts is not None), default=None)
+    unchanged = _count_unchanged((per_sensor, per_sensor_power, per_sensor_smoothed))
+
     _LOGGER.debug(
-        "Effy: history recalculation wrote %d short-term slots across %d effective + "
-        "%d derived-power + %d smoothed sensors",
+        "Effy: history recalculation wrote %d short-term slots (%d already up to date) "
+        "across %d effective + %d derived-power + %d smoothed sensors, earliest change %s",
         short_term_written,
+        unchanged,
         len(per_sensor),
         len(per_sensor_power),
         len(per_sensor_smoothed),
+        earliest,
     )
+    phases.note_unchanged(unchanged)
     phases.finish(short_term_written)
-    return short_term_written, start, touched_entity_ids, last_values
+    return short_term_written, earliest, touched_entity_ids, last_values
 
 
 async def async_recalculate_recent(
@@ -1693,17 +1726,16 @@ async def async_recalculate_recent(
 
     Returns (short_term_rows_written, recalculated_from, touched_entity_ids,
     last_values).
-    recalculated_from is the earliest slot timestamp touched by this run
-    across all three series, or None if nothing was written this run (e.g.
-    the recorder hasn't compiled statistics for the relevant slots yet, or
-    no sensor changed) — see ADR-012 for how this feeds the "recalculated
-    from" sensor. On an idle cycle this is normally within a few minutes
-    of ``now``; on a cycle where a counter jump arrived it is the start of
-    the extended range (up to ~2 hours back for a normal jump, further for
-    an offline-recovery jump, bounded by RECENT_REWRITE_MAX_LOOKBACK) —
-    accurate, since those slots really were rewritten (ADR-014 Amendment).
-    touched_entity_ids is every effy_* entity_id
-    that got at least one slot written this run — the caller
+    recalculated_from is the earliest slot whose stored row this run wrote
+    across all three series, or None if nothing was written (every row
+    already equalled what is stored, TASK-0031, ADR-024) — see ADR-012
+    Amendment 2026-10-25 for how this feeds the "recalculated from" sensor.
+    A counter jump extends the range that is recomputed (up to ~2 hours back
+    for a normal jump, further for an offline-recovery jump, bounded by
+    RECENT_REWRITE_MAX_LOOKBACK, ADR-014 Amendment), but only the rows that
+    differ are written, and only they move this value.
+    touched_entity_ids is every effy_* entity_id that was computed this run,
+    changed row or not, so every live state is pushed (ADR-016) — the caller
     (EffyCoordinator's slot timer) pushes it, together with last_values,
     through notify_updated() so those entities' dashboard cards see a
     state_changed event and refetch. last_values maps each touched
@@ -1768,18 +1800,33 @@ async def async_recalculate_recent(
         phases.finish(0)
         return 0, None, set(), {}
 
+    # Read what is stored and mark the rows that are already right (ADR-024); the
+    # writer skips them. ``touched``/``last_values`` below stay "every entity computed":
+    # the live states of ADR-016 go out for all of them, changed row or not.
+    all_series = (per_sensor, per_sensor_power, per_sensor_smoothed)
+    await _mark_unchanged(
+        hass, all_series, short_term_cutoff=None, include_long_term=False, phases=phases
+    )
+
     written = 0
-    earliest: datetime | None = None
-    for series in (per_sensor, per_sensor_power, per_sensor_smoothed):
+    for series in all_series:
         if not series:
             continue
         phases.enter("write")
         written += await _write_recorder_statistics(hass, series, include_long_term=False)
         phases.enter(None)
-        for info in series.values():
-            for slot, _value in info["slot_values"]:
-                if earliest is None or slot < earliest:
-                    earliest = slot
+    earliest = min(
+        (
+            ts
+            for ts in (
+                _earliest_change(series, short_term_cutoff=None, include_long_term=False)
+                for series in all_series
+            )
+            if ts is not None
+        ),
+        default=None,
+    )
+    unchanged = _count_unchanged(all_series)
 
     touched_entity_ids: set[str] = (
         set(per_sensor) | set(per_sensor_power) | set(per_sensor_smoothed)
@@ -1787,14 +1834,16 @@ async def async_recalculate_recent(
     last_values = _last_slot_values(per_sensor, per_sensor_power, per_sensor_smoothed)
 
     _LOGGER.debug(
-        "Effy: recent recalculation wrote %d short-term rows across %d effective + %d "
-        "derived-power + %d smoothed sensors, earliest touched slot %s",
+        "Effy: recent recalculation wrote %d short-term rows (%d already up to date) across "
+        "%d effective + %d derived-power + %d smoothed sensors, earliest changed slot %s",
         written,
+        unchanged,
         len(per_sensor),
         len(per_sensor_power),
         len(per_sensor_smoothed),
         earliest,
     )
+    phases.note_unchanged(unchanged)
     phases.finish(written)
     return written, earliest, touched_entity_ids, last_values
 
@@ -1840,6 +1889,15 @@ async def async_rewrite_hourly(
             series[statistic_id] = {"unit": units[statistic_id], "slot_values": slot_values}
     if not series:
         return 0
+    # An hourly row that is already what the writer would write is not written again.
+    await _mark_unchanged(
+        hass,
+        (series,),
+        short_term_cutoff=None,
+        include_long_term=True,
+        include_short_term=False,
+        phases=_NO_TIMINGS,
+    )
     await _write_recorder_statistics(hass, series, include_long_term=True, include_short_term=False)
     return len(series)
 
@@ -2097,6 +2155,187 @@ def _fetch_statistics(
     return result
 
 
+def _hourly_rows(slot_values: list[tuple[datetime, float]]) -> dict[datetime, tuple[float, float]]:
+    """The hourly rows of a series' slots: hour -> (mean, state).
+
+    ``mean`` is the average of every slot in the hour, ``state`` the last one
+    (``slot_values`` ascend). The single derivation behind both the writer and the
+    comparison with what is stored (TASK-0030), so they cannot drift apart.
+    """
+    hourly: dict[datetime, list[float]] = {}
+    for ts, val in slot_values:
+        hourly.setdefault(ts.replace(minute=0, second=0, microsecond=0), []).append(val)
+    return {hour: (sum(vals) / len(vals), vals[-1]) for hour, vals in hourly.items()}
+
+
+# Columns of a stored row the writer controls: it writes mean and state and clears the
+# rest (an update replaces every column, TASK-0007a), so a row is only "already right"
+# if these are empty too.
+_CLEARED_COLUMNS = ("min", "max", "sum", "last_reset")
+_COMPARED_TYPES = {"mean", "state", *_CLEARED_COLUMNS}
+
+
+def _unchanged_slots(
+    hass: HomeAssistant,
+    statistic_id: str,
+    period: str,
+    expected: dict[datetime, tuple[float, float]],
+) -> frozenset[datetime]:
+    """Starts of the stored rows that equal ``expected`` (start -> (mean, state)) exactly."""
+    from homeassistant.components.recorder.statistics import (  # noqa: PLC0415
+        statistics_during_period,
+    )
+
+    first, last = min(expected), max(expected)
+    last_end = last + timedelta(minutes=SLOT_MINUTES if period == "5minute" else 60)
+    result: dict[str, list[StatRow]] = statistics_during_period(
+        hass, first, last_end, {statistic_id}, period, None, _COMPARED_TYPES
+    )
+    same: set[datetime] = set()
+    for row in result.get(statistic_id, []):
+        raw_start = row.get("start")  # a datetime, or a unix timestamp on some versions
+        start: Any = (
+            datetime.fromtimestamp(raw_start, tz=timezone.utc)
+            if isinstance(raw_start, (int, float))
+            else raw_start
+        )
+        want = expected.get(start)
+        if (
+            want is not None
+            and row.get("mean") == want[0]
+            and row.get("state") == want[1]
+            and all(row.get(column) is None for column in _CLEARED_COLUMNS)
+        ):
+            same.add(start)
+    return frozenset(same)
+
+
+def _unchanged_rows(
+    hass: HomeAssistant,
+    statistic_id: str,
+    unit: str,
+    short: list[tuple[datetime, float]],
+    hourly: dict[datetime, tuple[float, float]],
+) -> dict[str, frozenset[datetime]]:
+    """Which rows of one series are already exactly what the writer would write.
+
+    Blocking: run in the recorder's executor, one series at a time, so only the set
+    of unchanged starts crosses back to the event loop, never the stored rows
+    (TASK-0030, ADR-024). A series whose stored unit differs from ``unit`` (or has no
+    metadata yet) has nothing unchanged: the import is what updates the metadata.
+    ``short`` is the 5-minute rows to write, ``hourly`` the hourly ones.
+    """
+    nothing: frozenset[datetime] = frozenset()
+    if _get_statistics_units(hass, [statistic_id]).get(statistic_id) != unit:
+        return {"short": nothing, "hourly": nothing}
+    return {
+        "short": _unchanged_slots(hass, statistic_id, "5minute", {ts: (v, v) for ts, v in short})
+        if short
+        else nothing,
+        "hourly": _unchanged_slots(hass, statistic_id, "hour", hourly) if hourly else nothing,
+    }
+
+
+async def _mark_unchanged(
+    hass: HomeAssistant,
+    all_series: tuple[dict[str, dict[str, Any]], ...],
+    *,
+    short_term_cutoff: datetime | None,
+    include_long_term: bool,
+    include_short_term: bool = True,
+    phases: _PhaseTimings,
+) -> None:
+    """Add ``unchanged_short`` and ``unchanged_hourly`` to every series entry (in place).
+
+    ``all_series`` are the series of one recalculation (effective, derived power,
+    smoothed): one pass, one series per executor job, one warning at most.
+
+    The writer then skips those rows. If the stored rows cannot be read, no entry is
+    marked from then on (everything is written, as before this feature), and one
+    warning says so: a failed read never fails a recalculation (ADR-024 Decision 3).
+    """
+    recorder = get_recorder(hass)
+    for series in all_series:
+        for statistic_id, info in series.items():
+            slot_values: list[tuple[datetime, float]] = info["slot_values"]
+            short = (
+                [
+                    (ts, val)
+                    for ts, val in slot_values
+                    if short_term_cutoff is None or ts >= short_term_cutoff
+                ]
+                if include_short_term
+                else []
+            )
+            hourly = _hourly_rows(slot_values) if include_long_term else {}
+            if not short and not hourly:
+                continue
+            try:
+                found: dict[str, frozenset[datetime]] = await phases.recorder_job(
+                    recorder,
+                    _unchanged_rows,
+                    hass,
+                    statistic_id,
+                    info["unit"],
+                    short,
+                    hourly,
+                    label="stored rows",
+                    source=statistic_id,
+                )
+            except Exception as err:  # a failed read must never fail the recalculation
+                _LOGGER.warning(
+                    "Effy: could not read the stored statistics (%s: %s); writing every row",
+                    type(err).__name__,
+                    err,
+                )
+                for done_series in all_series:
+                    for done in done_series.values():
+                        done.pop("unchanged_short", None)
+                        done.pop("unchanged_hourly", None)
+                return
+            info["unchanged_short"] = found["short"]
+            info["unchanged_hourly"] = found["hourly"]
+
+
+def _count_unchanged(all_series: tuple[dict[str, dict[str, Any]], ...]) -> int:
+    """Short-term rows the stored rows already had (marked by ``_mark_unchanged``)."""
+    return sum(
+        len(info.get("unchanged_short", ())) for series in all_series for info in series.values()
+    )
+
+
+def _earliest_change(
+    series: dict[str, dict[str, Any]],
+    *,
+    short_term_cutoff: datetime | None,
+    include_long_term: bool,
+) -> datetime | None:
+    """The earliest slot of ``series`` whose stored row is written (ADR-012 Amendment 2026-10-25).
+
+    A short-term slot at or after the cutoff that is not marked unchanged, or, for a
+    changed hourly row, the first slot of that hour in the series (only for a run
+    that writes hourly rows: ``include_long_term``). ``None`` if nothing is written.
+    """
+    earliest: datetime | None = None
+    for info in series.values():
+        slot_values: list[tuple[datetime, float]] = info["slot_values"]
+        unchanged_short: frozenset[datetime] = info.get("unchanged_short", frozenset())
+        unchanged_hourly: frozenset[datetime] = info.get("unchanged_hourly", frozenset())
+        seen_hours: set[datetime] = set()
+        for ts, _val in slot_values:  # ascending
+            hour = ts.replace(minute=0, second=0, microsecond=0)
+            written = (short_term_cutoff is None or ts >= short_term_cutoff) and (
+                ts not in unchanged_short
+            )
+            first_of_hour = hour not in seen_hours
+            seen_hours.add(hour)
+            if written or (include_long_term and first_of_hour and hour not in unchanged_hourly):
+                if earliest is None or ts < earliest:
+                    earliest = ts
+                break
+    return earliest
+
+
 async def _write_recorder_statistics(
     hass: HomeAssistant,
     per_sensor: dict[str, dict[str, Any]],
@@ -2163,6 +2402,10 @@ async def _write_recorder_statistics(
     for statistic_id, info in per_sensor.items():
         unit = info["unit"]
         slot_values: list[tuple[datetime, float]] = info["slot_values"]
+        # Rows already stored exactly as they would be written (TASK-0030); absent
+        # unless the caller read the stored rows.
+        unchanged_short: frozenset[datetime] = info.get("unchanged_short", frozenset())
+        unchanged_hourly: frozenset[datetime] = info.get("unchanged_hourly", frozenset())
 
         metadata = _build_statistic_metadata(statistic_id, unit)
 
@@ -2175,10 +2418,12 @@ async def _write_recorder_statistics(
             if short_term_cutoff is not None
             else slot_values
         )
-        if include_short_term and short_term_slots:
-            short_term_stats: list[StatisticData] = [
-                {"start": ts, "mean": val, "state": val} for ts, val in short_term_slots
-            ]
+        short_term_stats: list[StatisticData] = [
+            {"start": ts, "mean": val, "state": val}
+            for ts, val in short_term_slots
+            if ts not in unchanged_short
+        ]
+        if include_short_term and short_term_stats:
             instance.async_import_statistics(metadata, short_term_stats, StatisticsShortTerm)
             short_term_written += len(short_term_stats)
 
@@ -2193,16 +2438,12 @@ async def _write_recorder_statistics(
         if not include_long_term:
             continue
 
-        hourly: dict[datetime, list[float]] = {}
-        for ts, val in slot_values:
-            hour_ts = ts.replace(minute=0, second=0, microsecond=0)
-            hourly.setdefault(hour_ts, []).append(val)
-
-        if hourly:
-            long_term_stats: list[StatisticData] = [
-                {"start": hour_ts, "mean": sum(vals) / len(vals), "state": vals[-1]}
-                for hour_ts, vals in hourly.items()
-            ]
+        long_term_stats: list[StatisticData] = [
+            {"start": hour_ts, "mean": mean, "state": state}
+            for hour_ts, (mean, state) in _hourly_rows(slot_values).items()
+            if hour_ts not in unchanged_hourly
+        ]
+        if long_term_stats:
             instance.async_import_statistics(metadata, long_term_stats, Statistics)
             hourly_written += len(long_term_stats)
 

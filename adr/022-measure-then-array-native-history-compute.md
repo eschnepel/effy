@@ -2,7 +2,9 @@
 
 **Date:** 2026-10-19 **Status:** Draft — not yet reviewed by the human. Nothing
 below is a decision until the human confirms it; open points are listed at the
-end (Q1–Q5). Terms follow `GLOSSARY.md`.
+end (Q1–Q5). Gate G-perf was evaluated on 2026-10-25: compute is 0.4 % of the
+run, the numpy and executor tasks are not released (see Decisions 2 and 3).
+Terms follow `GLOSSARY.md`.
 
 ---
 
@@ -123,13 +125,21 @@ already be 200 s. Nothing here measures any of the three.
    only if that line shows the compute phase at or above a threshold (Q1). If
    fetch or write dominates, no numpy work is released and a new Draft ADR
    addresses the dominating phase; this ADR then records the measurement and
-   ends.
+   ends. **Outcome (2026-10-25):** the Pi's record (28 history days) shows
+   compute at 0.41 s of 106.63 s (0.4 %), write at 104.34 s (97.9 %), fetch 1.82
+   s, 4,804 raw states. Compute is far below Q1's proposed 30 s and 25 %, so
+   TASK-0011 to TASK-0013 and TASK-0015 are **not released** and stay drafts;
+   the write phase is addressed by Draft ADR-024. This ADR ends with the
+   measurement (Q3 to Q5 are moot).
 
 1. **Off the event loop (TASK-0014), independent of numpy.** The compute phase
    is split from the fetch and write phases and runs as one executor job on
    plain data (no `hass`, no recorder). It is released if the compute phase
    blocks the event loop for longer than a threshold (Q2). The lock of ADR-011
-   Amendment 2026-10-16 is unchanged.
+   Amendment 2026-10-16 is unchanged. **Outcome (2026-10-25):** the whole
+   compute phase took 0.41 s, so it cannot have held the event loop for more
+   than that; Q2's proposed 1 s is not reached and TASK-0014 is **not
+   released**.
 
 1. **If released: an array-native compute path.** One slot grid per
    recalculation; the trapezoid writes into array columns; interpolation, unit

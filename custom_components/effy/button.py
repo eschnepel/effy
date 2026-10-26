@@ -67,11 +67,12 @@ class EffyRecalculateButton(ButtonEntity):  # type: ignore[misc]
     async def async_press(self) -> None:
         """Trigger history recalculation.
 
-        Also reports the recalculated range's start to the coordinator's
-        "recalculated from" tracking (ADR-012) — a manual rewrite always
-        recomputes every slot in the full configured window
-        unconditionally, so that window's own start is, by definition,
-        the earliest touched slot. Additionally pushes each touched
+        Also reports the earliest slot it actually changed to the coordinator's
+        "recalculated from" tracking (ADR-012 Amendment 2026-10-25): a manual
+        rewrite recomputes the full configured window but writes only the rows
+        that differ from what is stored (ADR-024), so a repeated press with
+        unchanged settings writes nothing and leaves the sensor alone.
+        Additionally pushes each touched
         entity's last-written slot value as its live state
         (EffyCoordinator.notify_updated, ADR-016) so dashboard cards that
         only refresh on state_changed pick up the rewritten statistics

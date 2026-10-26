@@ -1,6 +1,8 @@
 # Task: Wire the Array-Native Compute Path into the Recalculations
 
-- **Status:** todo — draft, blocked: gate G-perf, Gate 2, and ADR-022 Q3/Q4
+- **Status:** **skipped** (2026-10-25, human: not released by gate G-perf —
+  compute is 0.4 % of a history recalculation, ADR-022 outcome). Kept as an
+  audit trail; do not build.
 - **Related ADRs:** [ADR-022, ADR-011, ADR-012, ADR-014, ADR-016, ADR-000]
 - **Dependencies:** \[TASK-0011-array-native-trapezoid,
   TASK-0012-array-native-waterfall-and-interpolation\] (and TASK-0010, which

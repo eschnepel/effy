@@ -115,13 +115,21 @@ concise; ADRs in `adr/` are authoritative.
   capacity pickers, pure runs of charge or discharge slots less standby energy,
   valleys of the SoC between spans, decayed sums at 5 % per kWh. Not ground
   truth.
+- **ADR-024 (Draft, 2026-10-25):** the write phase is 98 % of a history
+  recalculation (104 s of 107 s at 28 days on the Pi, about 1 ms per short-term
+  row: Home Assistant's import does one `SELECT` and one `UPDATE`/`INSERT` per
+  row). Chosen by the human 2026-10-25: write only rows that differ, in the
+  history recalculation and the slot job; `recalculated_from` is the earliest
+  change (ADR-012 Amendment 2026-10-25); live states still for every computed
+  entity. Details (exact equality, fail-safe) proposed, Q1/Q2 open.
 - **ADR-022 (Draft, 2026-10-19):** a history recalculation takes about 5 minutes
   on a Raspberry Pi 5 and the code has no phase timing. Proposed: log the wall
   time of the fetch, compute and write phases first (TASK-0010, done 2026-10-19,
   with a separate parse probe; TASK-0010 patch 1, 2026-10-25, adds a detail
   block with the sub-processes after the first Pi run took 228 s and carried no
-  record); only if compute dominates (gate G-perf, thresholds Q1) add an
-  array-native compute path with numpy in a new pure module
+  record; measured 2026-10-25: compute 0.4 %, so the numpy and executor tasks
+  are not released); only if compute dominates (gate G-perf, thresholds Q1) add
+  an array-native compute path with numpy in a new pure module
   `calculation_grid.py` next to `calculation.py` (TASK-0011 to TASK-0013),
   tested against the pure-Python functions as oracle with an explicit tolerance
   (`abs=1e-9`, slot keys exact); optionally run the compute phase in an executor

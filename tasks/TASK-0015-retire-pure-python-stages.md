@@ -1,6 +1,8 @@
 # Task: Retire the Pure-Python Stages from Production (reference stays in tests)
 
-- **Status:** todo — draft, blocked: gate G-perf, Gate 2, and ADR-022 Q3 = A
+- **Status:** **skipped** (2026-10-25, human: not released by gate G-perf —
+  compute is 0.4 % of a history recalculation, ADR-022 outcome). Kept as an
+  audit trail; do not build.
 - **Related ADRs:** [ADR-022, ADR-000 (§3, §6), ADR-012, ADR-001]
 - **Dependencies:** [TASK-0013-wire-array-native-compute-path]
 

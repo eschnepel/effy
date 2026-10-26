@@ -31,7 +31,7 @@ It owns:
     live state into an already-closed slot).
   - A separate, single-value push for the "recalculated from" timestamp
     (ADR-012): both the slot timer below and a manual history rewrite
-    (button.py) report the earliest slot they touched, via
+    (button.py) report the earliest slot they changed, via
     set_recalculated_from — used by EffyRecalculatedFromSensor.
   - A third push registry, keyed by each derived entity's own entity_id
     (subscribe_updates / notify_updated): after either recalculation path
@@ -684,8 +684,9 @@ class EffyCoordinator:
     async def async_recalculate_history_and_report(self) -> int:
         """Run the full history recalculation (button) under the same lock.
 
-        Reports the earliest touched slot and pushes the last values exactly
-        as the button did before TASK-0006 (ADR-012, ADR-016). Returns the
+        Reports the earliest changed slot (ADR-012 Amendment 2026-10-25) and
+        pushes the last values exactly as the button did before TASK-0006
+        (ADR-012, ADR-016). Returns the
         number of slots written. Exceptions propagate to the caller.
         """
         async with self._recorder_job_lock():

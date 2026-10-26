@@ -1,7 +1,8 @@
 # Task: Run the Compute Phase Off the Event Loop
 
-- **Status:** todo — draft, blocked: gate G-perf, ADR-022 Q2/Q5, and Gate 2.
-  Independent of numpy.
+- **Status:** **skipped** (2026-10-25, human: not released by gate G-perf —
+  compute is 0.4 % of a history recalculation, ADR-022 outcome). Kept as an
+  audit trail; do not build.
 - **Related ADRs:** [ADR-022, ADR-011 (Amendment 2026-10-16: one lock), ADR-014]
 - **Dependencies:** [TASK-0010-recalculation-phase-timing]. It edits
   `history.py` like TASK-0013, so the two run one after the other, in the order

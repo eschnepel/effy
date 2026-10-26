@@ -198,3 +198,30 @@ catch-up, the history rebuild, the published series and their symbols.
 
 **Scope (out):** a reset of the estimates on a stack upgrade; correcting the
 BMS's state of charge; more than one battery system per entry.
+
+## CAP-10 — Recalculations write only what changed *(Gate 1 approved 2026-10-25, human; ADR-024 accepted, amends ADR-012)*
+
+**What the user sees:** pressing the history recalculation button a second time,
+with the settings unchanged, takes seconds instead of a minute and a half (28
+days on a Raspberry Pi 5), and the log says how many rows were already up to
+date. The slot job does the same for its 5-minute window. After a change of
+settings every value is new, and the run takes what it takes today.
+`sensor.effy_recalculated_from` shows the earliest slot whose stored value
+actually changed (not the start of the range that was recomputed), and stays as
+it is when nothing changed, so Shady and Chargy re-read only what moved. Every
+stored `effy_*` row ends up exactly as before; nothing is configured
+differently.
+
+**End-to-end demonstration:** the slot-timer equivalence harness (CAP-1,
+TASK-0004) green; a history recalculation run twice on the in-memory recorder
+writes nothing the second time and reports `None`; a changed raw value moves
+`recalculated_from` to exactly that slot; the Pi's own record of a repeated
+recalculation (the detail block's `stored rows` jobs show what the read costs).
+
+**Scope (in):** reading the stored rows, the rule of "unchanged", writing only
+the rest (short-term and hourly), the earliest change as `recalculated_from`,
+the fail-safe.
+
+**Scope (out):** what Effy computes or writes (values, range, series), the live
+states, progress lines, smaller batches, numpy (ADR-022's outcome), any change
+to the sensor's attributes (ADR-021).

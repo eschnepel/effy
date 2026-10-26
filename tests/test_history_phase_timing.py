@@ -93,6 +93,15 @@ class _Counts:
 def _rig(monkeypatch: pytest.MonkeyPatch, world: _World, clock: _Clock) -> _Counts:
     """Install the recorder world, then make every instrumented point cost time."""
     _install(monkeypatch, world)
+
+    # TASK-0030 reads the stored rows with one recorder job per series. These tests
+    # pin TASK-0010's figures (queries, fetch seconds) for the rest of the run, so
+    # that step is switched off here; test_history_write_only_changed covers it,
+    # including its place in the timing record.
+    async def no_marks(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(_history, "_mark_unchanged", no_marks)
     counts = _Counts()
 
     class TimedRecorder(_FakeRecorder):

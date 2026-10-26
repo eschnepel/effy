@@ -235,3 +235,38 @@ breakdown, CPU against wall time, the longest stretch without an `await` and the
 environment to the same record. Q1 and Q2 are still open points in the Draft
 ADR-022 (the text says "nothing below is a decision"); they must be confirmed
 before G-perf is decided.
+
+## Measurement from the Pi (human, 2026-10-25) and gate G-perf
+
+After removing the second old installation and setting the history days back to
+28, the build with TASK-0010 logged (first line only; no detail block, so the Pi
+runs TASK-0010 without patch 1):
+
+```
+Effy recalculation timing (history): total 106.63 s = fetch 1.82 s + compute 0.41 s + write 104.34 s + parse probe 0.00 s + other 0.05 s; recorder queries 6, raw states 4804, slots 8064, rows written 109242; parse probe (one extra pass over all raw states, not part of compute): values 0.00 s, timestamps 0.00 s
+```
+
+| Part | Seconds | Share |
+| -- | -- | -- |
+| fetch | 1.82 | 1.7 % |
+| compute | 0.41 | 0.4 % |
+| write | 104.34 | 97.9 % |
+| other | 0.05 | 0.0 % |
+
+- **Write is the history recalculation.** 0.955 ms per short-term row. The
+  60-day run (0.967 ms per row, 228 s) predicted 105.6 s for these 109,242 rows;
+  the measured 106.6 s is within 1 %, so the cost is linear in the rows written.
+- **Compute is not the problem, and was never going to be.** 4,804 raw states in
+  28 days (about 43 per day per energy sensor) are 38 times fewer than the
+  synthetic benchmark's 182,741. The parse probe rounds to 0.00 s.
+- **Gate G-perf:** compute 0.41 s is below Q1's proposed 30 s and 25 %, and
+  below Q2's proposed 1 s. TASK-0011 to TASK-0015 are not released; ADR-022 is
+  amended in its text; the write phase is the subject of Draft ADR-024.
+- **Why the write costs what it costs** (Home Assistant core, `dev` branch,
+  `recorder/statistics.py`; the Pi's release may differ in detail):
+  `_import_statistics_with_session` runs, for every row, one `SELECT` for an
+  existing row and then one `UPDATE` or `INSERT`, whether or not the value
+  changed. About 1 ms for those two statements on a Pi is ordinary.
+- **The 4,032-row recent recalculation** (11:20, 3.54 s of write, 0.88 ms per
+  row) is the first cycle after the reload: its range extends back 24 hours (the
+  one-off catch-up window of ADR-014), not a regression.

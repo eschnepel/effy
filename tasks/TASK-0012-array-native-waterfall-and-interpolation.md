@@ -1,6 +1,8 @@
 # Task: Array-Native Waterfall, Unit Conversion and Gap Interpolation
 
-- **Status:** todo — draft, blocked: gate G-perf and Gate 2
+- **Status:** **skipped** (2026-10-25, human: not released by gate G-perf —
+  compute is 0.4 % of a history recalculation, ADR-022 outcome). Kept as an
+  audit trail; do not build.
 - **Related ADRs:** \[ADR-022, ADR-001, ADR-002, ADR-005, ADR-008, ADR-013,
   ADR-000 (§6)\]
 - **Dependencies:** [TASK-0011-array-native-trapezoid] (same new module and the

@@ -253,6 +253,12 @@ longest stretch without an `await`, every recorder job with its run and its
 wait, the compute stages and the three statistics writes. It splits the phases
 into sub-processes; it adds nothing to them. _Avoid_: Profile
 
+**Unchanged row**: A stored statistic that already is exactly what Effy would
+write for that slot or hour: the same `mean` and `state`, and no `min`, `max`,
+`sum` or `last_reset`. A recalculation does not write an unchanged row, and
+`sensor.effy_recalculated_from` is the earliest slot of a row that was written.
+_Avoid_: Identical row, skipped row
+
 **Closing step**: The last action of a recalculation, the slot job or the
 history recalculation: the update of the recalculated-from sensor. It tells a
 listener that the recalculation's statistics and states are final.

@@ -370,6 +370,15 @@ lines below that line (numbers made up):
 
 The detail costs well under 1 % of a recalculation (measured on 480,000 states).
 
+Since TASK-0030 the recalculation reads the stored statistics first and writes
+only the rows that are new or different (ADR-024). The first line then ends with
+`rows unchanged N` (rows found already up to date), the reads show up as
+`stored rows <sensor>` lines under the fetch jobs, and a repeated recalculation
+with unchanged settings writes nothing and leaves
+`sensor.effy_recalculated_from` as it is. That sensor shows the earliest slot
+that was actually changed. After a change of settings every value is new and the
+run costs what it always did, about 1 ms per row.
+
 If no `Effy recalculation timing` line shows up after a history recalculation,
 the copy Home Assistant is running does not contain this feature. The logger
 name in the log tells which copy that is (`custom_components.<folder>.history`);

@@ -205,3 +205,29 @@ nothing neither pushes nor refreshes, and a recalculation that raises pushes
 nothing.
 
 **Decided by:** human (2026-10-18, grill rounds 3 and 4)
+
+---
+
+## Amendment — 2026-10-25
+
+**Reason:** ADR-024. 98 % of a history recalculation is the recorder writing
+rows (about 1 ms each), and most rows equal what is stored. The human decided
+that Effy writes only rows that differ, on the slot job as well, and that the
+sensor takes the earliest change. "The slot that was touched" no longer means
+"recomputed": a full recalculation used to report its own `start`
+unconditionally, and the slot job the start of its (extended) window.
+
+**Decision:** `recalculated_from` is the timestamp of the earliest slot whose
+stored statistic was **written** because it was new or differed from what was
+stored (ADR-024 Decision 2 defines "differs"). A changed long-term row counts
+from the first slot of its hour in the recomputed range, never from before it.
+Both recalculation entry points report it that way; a run that writes nothing
+returns `None`, which leaves the sensor's value alone (the rule above,
+unchanged). The statements "always returns its range's own `start`" (full
+recalculation) and "the minimum touched-slot timestamp" (slot job) are
+superseded. `touched_entity_ids` and `last_values` still cover every entity
+computed, so ADR-016's live states are unaffected. ADR-014's remark that the
+window "really was rewritten" is read as "really was recomputed".
+
+**Decided by:** human (2026-10-25: option 2, "the recalculated from sensor takes
+the earliest change"); wording by Lead Agent, confirmed with Gate 1 of CAP-10.

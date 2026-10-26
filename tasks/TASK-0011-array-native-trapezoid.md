@@ -1,6 +1,8 @@
 # Task: Array-Native Trapezoid and the numpy Dependency
 
-- **Status:** todo — draft, blocked: gate G-perf (ADR-022 Decision 2) and Gate 2
+- **Status:** **skipped** (2026-10-25, human: not released by gate G-perf —
+  compute is 0.4 % of a history recalculation, ADR-022 outcome). Kept as an
+  audit trail; do not build.
 - **Related ADRs:** [ADR-022, ADR-012, ADR-013, ADR-014, ADR-000 (§3, §6)]
 - **Dependencies:** [TASK-0010-recalculation-phase-timing]
 
