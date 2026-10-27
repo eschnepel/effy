@@ -29,7 +29,7 @@
 | TASK-0016-effy-exports-contract-file | Publish the ADR-021 contract as one copyable symbol file `effy_exports.py` that Effy itself imports; every symbol prefixed `EFFY_` (CAP-5 extension; human request 2026-10-23) | done | TASK-0009-config-attributes-on-recalculated-from | worker-inline; closed by the human 2026-10-24 |
 | TASK-0017-counter-roles-in-config | The four battery counters configured by function; old lists dropped, an unconfigured entry refuses setup (CAP-7, ADR-023) | done (2026-10-27; reviewer PASS) | — | worker-inline + reviewer-inline |
 | TASK-0018-function-key-on-source-series | Publish the `function` of every source series (CAP-7) | done (2026-10-27; reviewer PASS) | TASK-0017-counter-roles-in-config | worker-inline + reviewer-inline |
-| TASK-0019-efficiency-pure-run-machine | Pure machine for charge and discharge efficiency in `calculation.py`: pure runs, standby energy, decayed sums, simulator (CAP-8) | todo | — | — |
+| TASK-0019-efficiency-pure-run-machine | Pure machine for charge and discharge efficiency in `calculation.py`: pure runs, standby energy, decayed sums, simulator (CAP-8) | done (2026-10-27; reviewer PASS) | — | worker-inline + reviewer-inline |
 | TASK-0020-efficiency-slot-feed-and-restore | Feed that machine from the recorder after standby, restore and catch up 3 days (CAP-8) | todo | TASK-0017-counter-roles-in-config, TASK-0019-efficiency-pure-run-machine | — |
 | TASK-0021-charge-and-discharge-efficiency-sensors | `sensor.effy_charge_efficiency` and `sensor.effy_discharge_efficiency`, published (CAP-8) | todo | TASK-0018-function-key-on-source-series, TASK-0020-efficiency-slot-feed-and-restore | — |
 | TASK-0022-efficiency-history-rebuild | History recalculation rebuilds charge and discharge efficiency, hooked at the call site (CAP-8) | todo | TASK-0021-charge-and-discharge-efficiency-sensors | — |
@@ -175,6 +175,7 @@ changed.
 | 2026-10-27 | TASK-0030 | verified on the Pi: a repeated history run 3.92 s (106 s before), 0 rows written, 109,762 unchanged; recent run wrote 14 rows, 4,018 unchanged | the human's record of 2026-10-27; G-perf target met; changed-rows and hour paths not yet seen on the Pi |
 | 2026-10-27 | TASK-0017 | ADR-023 accepted (Gate 2) by the human's instruction; Open decision 3 settled in stage 0: `OptionsFlowWithReload`, no update listener; TASK-0017 done | source of Home Assistant 2026.10.4 and 2026.3.0 |
 | 2026-10-27 | TASK-0018 | done; finding for the human: the published `aggregations: [mean, state]` of the source series cannot be read back (HA drops `state` without `has_sum`) | TASK-0030 patch 2; not changed, a published value |
+| 2026-10-27 | TASK-0019 | done; the run kinds are `charging`/`discharging` because `charge`/`discharge` are reserved for the published function | the TASK-0018 guard test caught the first spelling |
 
 ## Audit Groups
 

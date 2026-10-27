@@ -1,12 +1,11 @@
 # Task: The pure machine for charge and discharge efficiency
 
-- **Status:** todo
+- **Status:** done — 2026-10-27, reviewer PASS (inline)
 - **Capability:** CAP-8
-- **Related ADRs:** \[ADR-023 (Draft) decisions 3, 4, 5, 7 and 13, ADR-018
-  (activity, D3), ADR-000 §3/§6\]
+- **Related ADRs:** \[ADR-023 decisions 3, 4, 5, 7 and 13, ADR-018 (activity,
+  D3), ADR-000 §3/§6\]
 - **Dependencies:** []
-- **Gate:** Blocked until Draft ADR-023 is **Accepted** by the human (Gate 2);
-  until then no code.
+- **Gate:** ADR-023 accepted 2026-10-27.
 
 ## Goal
 
@@ -71,7 +70,52 @@ functions), `tests/test_efficiency_runs.py`, `tests/` simulator helper.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
+All in `custom_components/effy/calculation.py` (no Home Assistant import):
 
-Names above are suggestions (ADR-023 ◇); the Delivered Artifacts block fixes
-them for TASK-0020, TASK-0021 and TASK-0024.
+- Constants: `EFF_VALIDATION_DELAY` (= `DRAIN_VALIDATION_DELAY`, 125 min),
+  `EFF_DECAY_PER_KWH` (0.95), `EFF_KIND_CHARGE` (`"charging"`),
+  `EFF_KIND_DISCHARGE` (`"discharging"`), the type `EffKind`. The kinds are not
+  spelled `charge`/`discharge`: those are the published `function` values
+  (TASK-0018's guard test reserves them for `effy_exports.py`).
+- Types: `EffRoles(grid_import, discharge, charge, grid_export)`,
+  `EffSlot(start, active, grid_import_kwh, discharge_kwh, charge_kwh, grid_export_kwh, standby_kwh)`,
+  `DecayedRatio(num, den)`,
+  `EffEstimate(ratio, counted_kwh, counted_runs, last_value, last_end; .value)`,
+  `EffRecord`,
+  `RunState(charge, discharge, prev1, prev2, run_counted, last_slot)`.
+- Functions: `classify_slot(active, roles)`,
+  `decay_add(ratio, gross_kwh, out, inp)`, `ratio_value(ratio)`,
+  `run_step(state, slot, roles)`, `run_feed(state, slots, roles, now, delay)`,
+  `run_restore_data(state)`, `run_state_from_restore(data)` (the persisted
+  estimates sit under the keys `charging` and `discharging`).
+- Conventions fixed here ◇: slots enter in time order and only when 125 min old,
+  so a slot's neighbours are settled too (a slot is therefore counted when its
+  successor has settled, at the earliest 130 min after its start); a slot that
+  does not directly follow the last one is a gap and ends the run; a slot at or
+  before the last processed one is ignored; a slot without a standby statistic
+  does not count but stays in the run; `counted_runs` counts runs that counted
+  at least one slot; `last_value` is the last counted slot's own ratio.
+- `tests/test_efficiency_runs.py` (59 tests): classification, the decayed ratio
+  by hand (1 kWh weighs 5 %, 3 kWh 14.3 %, no cap), the run rules, age, batch
+  equals step by step and replay, the restore round trip including a restore in
+  the middle of a run, and a simulator of a battery with known efficiencies and
+  cumulative counters that tick in 10 Wh.
+- External dependencies added: none.
+
+## Review
+
+**PASS** (inline; 744 tests, ruff, mypy on source and tests). The simulator (90
+days, 25,678 slots, 1,340 mixed slots, a few missing slots): 2,880 kWh counted
+in 568 charge runs, the charge estimate stays within 0.19 points of 95 % after
+the first 60 kWh and the discharge estimate within 0.18 points of 93 %; after a
+step of the true efficiencies (95/93 % to 90/88 %) both follow within 0.5
+points. Twenty mutants of the machine are caught (decay on net instead of gross,
+base 0.9, gross denominator, a cap, extras allowed in a slot, the first slot
+counted, no gap reset, standby ignored, input equal to standby counting, no age
+gate, an age gate off by a slot, no replay guard, runs counted per slot, the run
+flag never reset, `last_end` at the slot start, an unsorted feed, a restore that
+drops the records or the run flag or accepts NaN).
+
+One of the first test runs found a real clash: the new code first spelled the
+kinds `"charge"` and `"discharge"` and the guard test of TASK-0018 failed;
+renamed.

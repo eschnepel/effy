@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -1020,4 +1020,330 @@ def drain_state_from_restore(data: Mapping[str, Any]) -> DrainState | None:
         last_end=_restore_time(data.get("last_end")),
         last_source=last_source if isinstance(last_source, str) else None,
         suppress_until=last_slot,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Charge and discharge efficiency (ADR-023 decisions 3, 4, 5 and 7)
+# ---------------------------------------------------------------------------
+# The machine measures how much of the energy that enters the BMS on one side comes
+# out on the other, in *pure* slots: slots in which only the two counters of one
+# process flow (grid import and charge, or discharge and grid export). It is fed
+# time-ordered slots of kWh and the sensors with flow in each slot; it reads no
+# statistics and has no clock. ``run_feed`` is given ``now`` so that only slots old
+# enough to be settled enter.
+
+# A slot enters the machine only when it is this old (ADR-023 decision 3, ADR-018 D3):
+# a late counter jump has redistributed its energy into earlier slots by then. The
+# neighbours of a slot are settled too, because they enter before it is counted ◇.
+EFF_VALIDATION_DELAY = DRAIN_VALIDATION_DELAY
+# 5 % per kWh of gross input (ADR-023 decision 7): a measurement of x kWh multiplies
+# what was there before by ``0.95 ** x``.
+EFF_DECAY_PER_KWH = 0.95
+
+# The process of a pure slot. Not the published ``function`` of a source (ADR-021): that is
+# a property of a counter, this is what the whole slot is doing.
+EFF_KIND_CHARGE: Literal["charging"] = "charging"
+EFF_KIND_DISCHARGE: Literal["discharging"] = "discharging"
+EffKind = Literal["charging", "discharging"]
+
+
+@dataclass(frozen=True)
+class EffRoles:
+    """The source entity IDs of the four counters; a role that is not set is ``None``."""
+
+    grid_import: str | None = None
+    discharge: str | None = None
+    charge: str | None = None
+    grid_export: str | None = None
+
+
+@dataclass(frozen=True)
+class EffSlot:
+    """One slot of statistics, in kWh. ``active`` are the source entity IDs with flow in
+    it, PV inputs included (ADR-018's reading). ``standby_kwh`` is the recorded standby
+    power of the slot × 5 min, ``None`` when the slot has no standby statistic."""
+
+    start: datetime
+    active: frozenset[str]
+    grid_import_kwh: float = 0.0
+    discharge_kwh: float = 0.0
+    charge_kwh: float = 0.0
+    grid_export_kwh: float = 0.0
+    standby_kwh: float | None = None
+
+
+@dataclass(frozen=True)
+class DecayedRatio:
+    """A numerator and a denominator that fade at 5 % per kWh of gross input."""
+
+    num: float = 0.0
+    den: float = 0.0
+
+
+def decay_add(ratio: DecayedRatio, gross_kwh: float, out: float, inp: float) -> DecayedRatio:
+    """Add one measurement: ``f = 0.95 ** x``, ``N <- f*N + out``, ``D <- f*D + in``.
+
+    ``gross_kwh`` (x) is the gross input energy that weighs the measurement; ``inp`` is
+    the denominator's own addend (the gross input less standby for charge and
+    discharge efficiency). The first measurement seeds the ratio (it fades 0).
+    """
+    f = EFF_DECAY_PER_KWH**gross_kwh
+    return DecayedRatio(num=f * ratio.num + out, den=f * ratio.den + inp)
+
+
+def ratio_value(ratio: DecayedRatio) -> float | None:
+    """The estimate N / D as a fraction, or ``None`` before the first measurement."""
+    return ratio.num / ratio.den if ratio.den > 0 else None
+
+
+@dataclass(frozen=True)
+class EffEstimate:
+    """One efficiency: the decayed sums and what the sensor shows as attributes."""
+
+    ratio: DecayedRatio = field(default_factory=DecayedRatio)
+    # Σ gross input of the counted slots since the estimate began (ADR-023 decision 2).
+    counted_kwh: float = 0.0
+    # Pure runs that have counted at least one slot.
+    counted_runs: int = 0
+    # The last counted slot's own ratio (not the estimate) and where it ended.
+    last_value: float | None = None
+    last_end: datetime | None = None
+
+    @property
+    def value(self) -> float | None:
+        return ratio_value(self.ratio)
+
+
+@dataclass(frozen=True)
+class EffRecord:
+    """A processed slot, kept for two slots: its kind and what counting it needs.
+    ``energy_in`` is the grid import (charge) or the discharge (discharge); ``energy_out``
+    the charge or the grid export. Both are 0 for a slot that is not pure."""
+
+    start: datetime
+    kind: EffKind | None
+    energy_in: float
+    energy_out: float
+    standby_kwh: float | None
+
+
+@dataclass(frozen=True)
+class RunState:
+    """The whole state of the machine; every field is plain data (ADR-023 decision 9)."""
+
+    charge: EffEstimate = field(default_factory=EffEstimate)
+    discharge: EffEstimate = field(default_factory=EffEstimate)
+    prev1: EffRecord | None = None  # the slot before the one being processed
+    prev2: EffRecord | None = None  # and the one before that
+    # The current pure run has already counted a slot (so ``counted_runs`` counts it once).
+    run_counted: bool = False
+    last_slot: datetime | None = None
+
+
+def classify_slot(active: Iterable[str], roles: EffRoles) -> EffKind | None:
+    """``charging`` only when exactly the grid import and charge counters are active,
+    ``discharging`` only when exactly the discharge and grid export counters are;
+    anything else (a PV input, another counter, nothing, an unset role) is ``None``."""
+    flow = frozenset(active)
+    if roles.grid_import and roles.charge and flow == {roles.grid_import, roles.charge}:
+        return EFF_KIND_CHARGE
+    if roles.discharge and roles.grid_export and flow == {roles.discharge, roles.grid_export}:
+        return EFF_KIND_DISCHARGE
+    return None
+
+
+def _eff_record(slot: EffSlot, kind: EffKind | None) -> EffRecord:
+    if kind == EFF_KIND_CHARGE:
+        return EffRecord(slot.start, kind, slot.grid_import_kwh, slot.charge_kwh, slot.standby_kwh)
+    if kind == EFF_KIND_DISCHARGE:
+        return EffRecord(
+            slot.start, kind, slot.discharge_kwh, slot.grid_export_kwh, slot.standby_kwh
+        )
+    return EffRecord(slot.start, None, 0.0, 0.0, slot.standby_kwh)
+
+
+def _eff_count(estimate: EffEstimate, record: EffRecord, new_run: bool) -> EffEstimate | None:
+    """The estimate with ``record`` counted, or ``None`` when it does not count: no
+    standby statistic, or an input not larger than the standby energy (decision 5)."""
+    standby = record.standby_kwh
+    if standby is None or record.energy_in <= standby:
+        return None
+    net = record.energy_in - standby
+    return EffEstimate(
+        ratio=decay_add(estimate.ratio, record.energy_in, record.energy_out, net),
+        counted_kwh=estimate.counted_kwh + record.energy_in,
+        counted_runs=estimate.counted_runs + (1 if new_run else 0),
+        last_value=record.energy_out / net,
+        last_end=record.start + _DRAIN_SLOT,
+    )
+
+
+def run_step(state: RunState, slot: EffSlot, roles: EffRoles) -> RunState:
+    """The one transition of the machine: a slot that has settled enters.
+
+    Slots must arrive in time order; one at or before the last processed slot is
+    ignored (each slot counts once). A slot that does not directly follow the last one
+    ends the run (an offline gap or a slot without statistics). The slot *before* the
+    new one is counted when it and both its neighbours are of one kind, which is what
+    leaves the first and the last slot of a run out (decision 4).
+    """
+    if state.last_slot is not None and slot.start <= state.last_slot:
+        return state
+    prev1, prev2, run_counted = state.prev1, state.prev2, state.run_counted
+    if state.last_slot is None or slot.start != state.last_slot + _DRAIN_SLOT:
+        prev1 = prev2 = None
+        run_counted = False
+    kind = classify_slot(slot.active, roles)
+    charge, discharge = state.charge, state.discharge
+    if kind is None or prev1 is None or prev1.kind != kind:
+        run_counted = False  # no run, or a new one begins
+    if kind is not None and prev1 is not None and prev2 is not None:
+        if prev1.kind == kind and prev2.kind == kind:
+            current = charge if kind == EFF_KIND_CHARGE else discharge
+            counted = _eff_count(current, prev1, new_run=not run_counted)
+            if counted is not None:
+                run_counted = True
+                if kind == EFF_KIND_CHARGE:
+                    charge = counted
+                else:
+                    discharge = counted
+    return RunState(
+        charge=charge,
+        discharge=discharge,
+        prev1=_eff_record(slot, kind),
+        prev2=prev1,
+        run_counted=run_counted,
+        last_slot=slot.start,
+    )
+
+
+def run_feed(
+    state: RunState,
+    slots: Iterable[EffSlot],
+    roles: EffRoles,
+    now: datetime,
+    delay: timedelta = EFF_VALIDATION_DELAY,
+) -> RunState:
+    """Feed time-ordered slots; only those at least ``delay`` old at ``now`` enter.
+
+    A slot that is too young stops the feed (every later one is younger): it enters
+    at a later call, so feeding slot by slot or in batches gives the same result.
+    """
+    cutoff = now - delay
+    for slot in sorted(slots, key=lambda s: s.start):
+        if slot.start > cutoff:
+            break
+        state = run_step(state, slot, roles)
+    return state
+
+
+def _estimate_data(estimate: EffEstimate) -> dict[str, Any]:
+    return {
+        "num": estimate.ratio.num,
+        "den": estimate.ratio.den,
+        "counted_kwh": estimate.counted_kwh,
+        "counted_runs": estimate.counted_runs,
+        "last_value": estimate.last_value,
+        "last_end": estimate.last_end.isoformat() if estimate.last_end else None,
+    }
+
+
+def _record_data(record: EffRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "start": record.start.isoformat(),
+        "kind": record.kind,
+        "energy_in": record.energy_in,
+        "energy_out": record.energy_out,
+        "standby_kwh": record.standby_kwh,
+    }
+
+
+def run_restore_data(state: RunState) -> dict[str, Any]:
+    """The whole state as plain JSON types: decayed sums and attributes of both
+    estimates, the classification of the last two slots and the run flag."""
+    return {
+        EFF_KIND_CHARGE: _estimate_data(state.charge),
+        EFF_KIND_DISCHARGE: _estimate_data(state.discharge),
+        "prev1": _record_data(state.prev1),
+        "prev2": _record_data(state.prev2),
+        "run_counted": state.run_counted,
+        "last_slot": state.last_slot.isoformat() if state.last_slot else None,
+    }
+
+
+def _restore_number(value: Any, *, minimum: float = 0.0) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if number == number and number >= minimum and number != float("inf") else None
+
+
+def _estimate_from_data(data: Any) -> EffEstimate | None:
+    if not isinstance(data, Mapping):
+        return None
+    num, den = _restore_number(data.get("num")), _restore_number(data.get("den"))
+    kwh = _restore_number(data.get("counted_kwh"))
+    runs = data.get("counted_runs")
+    if num is None or den is None or kwh is None:
+        return None
+    if isinstance(runs, bool) or not isinstance(runs, int) or runs < 0:
+        return None
+    last_value = data.get("last_value")
+    return EffEstimate(
+        ratio=DecayedRatio(num, den),
+        counted_kwh=kwh,
+        counted_runs=runs,
+        last_value=_restore_number(last_value, minimum=-float("inf")),
+        last_end=_restore_time(data.get("last_end")),
+    )
+
+
+def _record_from_data(data: Any) -> EffRecord | None | Literal[False]:
+    """The record, ``None`` for no record, ``False`` for unusable data."""
+    if data is None:
+        return None
+    if not isinstance(data, Mapping):
+        return False
+    start = _restore_time(data.get("start"))
+    kind = data.get("kind")
+    energy_in, energy_out = (
+        _restore_number(data.get("energy_in")),
+        _restore_number(data.get("energy_out")),
+    )
+    standby = data.get("standby_kwh")
+    if start is None or kind not in (EFF_KIND_CHARGE, EFF_KIND_DISCHARGE, None):
+        return False
+    if energy_in is None or energy_out is None:
+        return False
+    if standby is not None and _restore_number(standby) is None:
+        return False
+    return EffRecord(
+        start, kind, energy_in, energy_out, None if standby is None else float(standby)
+    )
+
+
+def run_state_from_restore(data: Mapping[str, Any]) -> RunState | None:
+    """The state to continue from, or ``None`` when ``data`` is unusable (the caller
+    then starts from nothing, which is correct: nothing was counted yet)."""
+    charge = _estimate_from_data(data.get(EFF_KIND_CHARGE))
+    discharge = _estimate_from_data(data.get(EFF_KIND_DISCHARGE))
+    prev1, prev2 = _record_from_data(data.get("prev1")), _record_from_data(data.get("prev2"))
+    last_slot = _restore_time(data.get("last_slot"))
+    run_counted = data.get("run_counted")
+    if charge is None or discharge is None or last_slot is None:
+        return None
+    if prev1 is False or prev2 is False or not isinstance(run_counted, bool):
+        return None
+    if prev1 is None and prev2 is not None:
+        return None  # the two records are the last two slots: a hole in them is nonsense
+    return RunState(
+        charge=charge,
+        discharge=discharge,
+        prev1=prev1,
+        prev2=prev2,
+        run_counted=run_counted,
+        last_slot=last_slot,
     )
