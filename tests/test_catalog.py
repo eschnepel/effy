@@ -35,13 +35,31 @@ exports = _load("effy_exports")
 catalog = _load("catalog")
 
 PV = ["sensor.pv_south"]
-BMS = ["sensor.bms_discharge"]
-OUT = ["sensor.bms_charge"]
+GRID_IN = "sensor.bms_grid_in"
+DISCHARGE = "sensor.bms_discharge"
+CHARGE = "sensor.bms_charge"
+GRID_OUT = "sensor.bms_grid_out"
 
 
-def _describe(entity_id: str, series: str, source: str) -> dict[str, object]:
+def _describe(
+    entity_id: str,
+    series: str,
+    source: str,
+    *,
+    grid_import: str | None = GRID_IN,
+    discharge: str | None = DISCHARGE,
+    charge: str | None = CHARGE,
+    grid_export: str | None = GRID_OUT,
+) -> dict[str, object]:
     entry: dict[str, object] = catalog.describe_source_series(
-        entity_id, series, source, pv_input_ids=PV, bms_input_ids=BMS, output_ids=OUT
+        entity_id,
+        series,
+        source,
+        pv_input_ids=PV,
+        grid_import_id=grid_import,
+        discharge_id=discharge,
+        charge_id=charge,
+        grid_export_id=grid_export,
     )
     return entry
 
@@ -54,16 +72,51 @@ class TestDescribeSourceSeries:
             "source_entity_id": "sensor.pv_south",
             "direction": "input",
             "role": "pv",
+            "function": None,
             "aggregations": ["mean", "state"],
         }
 
-    def test_a_bms_input_is_an_input_with_role_bms(self) -> None:
-        entry = _describe("sensor.effy_bms_discharge_smoothed", "smoothed", "sensor.bms_discharge")
-        assert (entry["direction"], entry["role"]) == ("input", "bms")
+    @pytest.mark.parametrize(
+        ("source", "direction", "function"),
+        [
+            (GRID_IN, "input", "grid_import"),
+            (DISCHARGE, "input", "discharge"),
+            (CHARGE, "output", "charge"),
+            (GRID_OUT, "output", "grid_export"),
+        ],
+    )
+    def test_a_bms_counter_has_the_direction_role_and_function_of_its_role(
+        self, source: str, direction: str, function: str
+    ) -> None:
+        for series in ("effective", "derived_power", "smoothed"):
+            entry = _describe("sensor.effy_x", series, source)
+            assert (entry["direction"], entry["role"], entry["function"]) == (
+                direction,
+                "bms",
+                function,
+            )
 
-    def test_an_output_is_an_output_and_always_bms(self) -> None:
-        entry = _describe("sensor.effy_bms_charge_power", "derived_power", "sensor.bms_charge")
-        assert (entry["direction"], entry["role"]) == ("output", "bms")
+    def test_a_pv_input_has_function_none_for_all_three_series(self) -> None:
+        for series in ("effective", "derived_power", "smoothed"):
+            entry = _describe("sensor.effy_pv_south", series, "sensor.pv_south")
+            assert "function" in entry and entry["function"] is None
+
+    def test_the_function_is_the_one_of_the_role_not_of_the_entity_name(self) -> None:
+        # only the discharge counter is set: the charge role is unset, so the entity
+        # that would have been the charge counter is no longer a configured source
+        only = {"grid_import": None, "charge": None, "grid_export": None}
+        entry = _describe("sensor.effy_d", "effective", DISCHARGE, **only)
+        assert entry["function"] == "discharge"
+        with pytest.raises(ValueError, match="sensor.bms_charge"):
+            _describe("sensor.effy_c", "effective", CHARGE, **only)
+
+    def test_the_function_constants_are_the_ones_published(self) -> None:
+        assert (
+            exports.EFFY_FUNCTION_GRID_IMPORT,
+            exports.EFFY_FUNCTION_DISCHARGE,
+            exports.EFFY_FUNCTION_CHARGE,
+            exports.EFFY_FUNCTION_GRID_EXPORT,
+        ) == ("grid_import", "discharge", "charge", "grid_export")
 
     def test_the_keys_come_in_the_published_order(self) -> None:
         entry = _describe("sensor.effy_pv_south", "effective", "sensor.pv_south")
@@ -73,6 +126,7 @@ class TestDescribeSourceSeries:
             "source_entity_id",
             "direction",
             "role",
+            "function",
             "aggregations",
         ]
 
@@ -94,7 +148,8 @@ class TestDescribeSourceSeries:
     def test_an_entry_has_exactly_the_contract_keys(self) -> None:
         keys = set(exports.EffyPublishedSensor.__annotations__)
         assert set(_describe("sensor.effy_pv_south", "effective", "sensor.pv_south")) == keys
-        assert set(catalog.describe_standby("sensor.effy_standby_power")) == keys
+        # the standby entry has no function (ADR-021 Amendment 2026-10-23)
+        assert set(catalog.describe_standby("sensor.effy_standby_power")) == keys - {"function"}
 
     def test_the_aggregations_are_a_copy_of_the_constant(self) -> None:
         entry = _describe("sensor.effy_pv_south", "effective", "sensor.pv_south")

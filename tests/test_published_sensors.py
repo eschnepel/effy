@@ -38,6 +38,10 @@ class _Coordinator:
 
     pv_input_ids = [PV]
     bms_input_ids = [BMS]
+    grid_import_id: str | None = None
+    discharge_id: str | None = BMS
+    charge_id: str | None = OUT
+    grid_export_id: str | None = None
 
     def __init__(self) -> None:
         self.recalculated_from: datetime | None = None
@@ -98,9 +102,17 @@ def _fixed_restore_time(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 SERIES = [
-    ("EffySensor", PV, "sensor.effy_pv_south", "effective", "input", "pv"),
-    ("EffySensor", BMS, "sensor.effy_bms_discharge", "effective", "input", "bms"),
-    ("EffyDerivedPowerSensor", PV, "sensor.effy_pv_south_power", "derived_power", "input", "pv"),
+    ("EffySensor", PV, "sensor.effy_pv_south", "effective", "input", "pv", None),
+    ("EffySensor", BMS, "sensor.effy_bms_discharge", "effective", "input", "bms", "discharge"),
+    (
+        "EffyDerivedPowerSensor",
+        PV,
+        "sensor.effy_pv_south_power",
+        "derived_power",
+        "input",
+        "pv",
+        None,
+    ),
     (
         "EffyDerivedPowerSensor",
         OUT,
@@ -108,16 +120,34 @@ SERIES = [
         "derived_power",
         "output",
         "bms",
+        "charge",
     ),
-    ("EffySmoothedSensor", BMS, "sensor.effy_bms_discharge_smoothed", "smoothed", "input", "bms"),
+    (
+        "EffySmoothedSensor",
+        BMS,
+        "sensor.effy_bms_discharge_smoothed",
+        "smoothed",
+        "input",
+        "bms",
+        "discharge",
+    ),
 ]
 
 
 class TestRegistration:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("cls", "source", "entity_id", "series", "direction", "role"), SERIES)
+    @pytest.mark.parametrize(
+        ("cls", "source", "entity_id", "series", "direction", "role", "function"), SERIES
+    )
     async def test_each_series_sensor_registers_its_descriptor_when_added(
-        self, cls: str, source: str, entity_id: str, series: str, direction: str, role: str
+        self,
+        cls: str,
+        source: str,
+        entity_id: str,
+        series: str,
+        direction: str,
+        role: str,
+        function: str | None,
     ) -> None:
         coordinator = _Coordinator()
         entity = _series(cls, source, coordinator)
@@ -129,14 +159,24 @@ class TestRegistration:
                 "source_entity_id": source,
                 "direction": direction,
                 "role": role,
+                "function": function,
                 "aggregations": ["mean", "state"],
             }
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("cls", "source", "entity_id", "series", "direction", "role"), SERIES)
+    @pytest.mark.parametrize(
+        ("cls", "source", "entity_id", "series", "direction", "role", "function"), SERIES
+    )
     async def test_removing_the_sensor_unregisters_it(
-        self, cls: str, source: str, entity_id: str, series: str, direction: str, role: str
+        self,
+        cls: str,
+        source: str,
+        entity_id: str,
+        series: str,
+        direction: str,
+        role: str,
+        function: str | None,
     ) -> None:
         coordinator = _Coordinator()
         entity = _series(cls, source, coordinator)
@@ -231,15 +271,20 @@ class TestTheWholeFixture:
             "sensor.effy_bms_charge_power": ("derived_power", OUT, "output", "bms"),
             "sensor.effy_standby_power": ("standby_power", None, "output", "bms"),
         }
-        for s in listed.values():
-            assert set(s) == {
-                "entity_id",
-                "series",
-                "source_entity_id",
-                "direction",
-                "role",
-                "aggregations",
-            }
+        for eid, s in listed.items():
+            keys = {"entity_id", "series", "source_entity_id", "direction", "role", "aggregations"}
+            if eid != "sensor.effy_standby_power":
+                keys.add("function")  # the standby entry has none
+            assert set(s) == keys, eid
+        functions = {eid: s.get("function", "absent") for eid, s in listed.items()}
+        assert functions == {
+            "sensor.effy_pv_south": None,
+            "sensor.effy_pv_south_power": None,
+            "sensor.effy_bms_discharge": "discharge",
+            "sensor.effy_bms_discharge_smoothed": "discharge",
+            "sensor.effy_bms_charge_power": "charge",
+            "sensor.effy_standby_power": "absent",
+        }
 
     def test_without_a_bms_input_there_is_no_standby_entity_to_register(self) -> None:
         coordinator = _StandbyCoordinator(_Coordinator())
@@ -403,6 +448,34 @@ PREVIOUS = {
 
 
 class TestRecalculatedFromRestore:
+    @pytest.mark.asyncio
+    async def test_entries_from_before_the_function_key_restore_unchanged_until_the_next_step(
+        self,
+    ) -> None:
+        # TASK-0018: ``function`` is additive, so a state saved before it existed stays valid
+        before = {
+            "entity_id": "sensor.effy_pv_south",
+            "series": "effective",
+            "source_entity_id": PV,
+            "direction": "input",
+            "role": "pv",
+            "aggregations": ["mean", "state"],
+        }
+        coordinator = _Coordinator()
+        entity = _recalculated(coordinator)
+        entity.last_state = _last(
+            "2026-10-18T08:50:00+00:00",
+            {"schema_version": 1, "max_history_days": 14, "sensors": [dict(before)]},
+        )
+        await entity.async_added_to_hass()
+        assert entity.extra_state_attributes["sensors"] == [before]
+        assert "function" not in entity.extra_state_attributes["sensors"][0]
+
+        series = _series("EffySensor", BMS, coordinator)
+        await series.async_added_to_hass()
+        coordinator.close(datetime(2026, 10, 18, 9, 0, tzinfo=UTC))
+        assert [s["function"] for s in entity.extra_state_attributes["sensors"]] == ["discharge"]
+
     @pytest.mark.asyncio
     async def test_state_and_all_attributes_come_back_marked_as_restored(self) -> None:
         entity = _recalculated()

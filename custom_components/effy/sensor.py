@@ -141,8 +141,10 @@ def _source_descriptor(
         series,
         source_entity_id,
         pv_input_ids=coordinator.pv_input_ids,
-        bms_input_ids=coordinator.bms_input_ids,
-        output_ids=configured_output_ids(entry.options),
+        grid_import_id=coordinator.grid_import_id,
+        discharge_id=coordinator.discharge_id,
+        charge_id=coordinator.charge_id,
+        grid_export_id=coordinator.grid_export_id,
     )
 
 

@@ -1,12 +1,11 @@
 # Task: Publish the `function` of every source series
 
-- **Status:** todo
+- **Status:** done — 2026-10-27, reviewer PASS (inline)
 - **Capability:** CAP-7
-- **Related ADRs:** \[ADR-023 (Draft) decision 11, ADR-021 (Amendment
-  2026-10-23, both), ADR-019\]
+- **Related ADRs:** \[ADR-023 decision 11, ADR-021 (Amendment 2026-10-23, both),
+  ADR-019\]
 - **Dependencies:** [TASK-0017-counter-roles-in-config]
-- **Gate:** Blocked until Draft ADR-023 is **Accepted** by the human (Gate 2);
-  until then no code.
+- **Gate:** ADR-023 accepted 2026-10-27.
 
 ## Goal
 
@@ -65,4 +64,36 @@ PV input), so Shady and Chargy pick by function. The symbols join
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
+- `effy_exports.py`: `EFFY_KEY_FUNCTION` (`"function"`),
+  `EFFY_FUNCTION_GRID_IMPORT` (`"grid_import"`), `EFFY_FUNCTION_DISCHARGE`,
+  `EFFY_FUNCTION_CHARGE`, `EFFY_FUNCTION_GRID_EXPORT`, the type `EffyFunction`;
+  `EffyPublishedSensor.function: NotRequired[EffyFunction | None]`.
+  `EFFY_PUBLISHED_SCHEMA_VERSION` is still 1.
+- `catalog.py`:
+  `describe_source_series(entity_id, series, source_entity_id, *, pv_input_ids, grid_import_id, discharge_id, charge_id, grid_export_id)`
+  (the `bms_input_ids` and `output_ids` parameters are gone); the entry carries
+  `function` between `role` and `aggregations`: the role's function, `None` for
+  a PV input. `describe_standby` is unchanged (no `function` key).
+- `sensor.py`: `_source_descriptor` passes the coordinator's four role ids.
+- README (example and key table), ADR-021 amendment heading.
+- Tests: `test_effy_exports.py` (pinned table, optional key, `EffyFunction`,
+  schema version 1, the four literals spelled out only in the file),
+  `test_catalog.py`, `test_published_sensors.py` (every series sensor, the
+  closing step, a restored state from before the key).
+- External dependencies added: none.
+
+## Review
+
+**PASS** (inline; 683 tests, ruff, mypy). Each acceptance criterion has its
+test: the contract table and types (1), `function` per role and `None` for PV
+(2), no key on the standby entry (3), a pre-task restored state stays valid
+until the next closing step (4), README (5), no quoted literal outside the file
+(6).
+
+**Finding for the human, not changed here:** the contract publishes
+`aggregations: [mean, state]` for the source series (`EFFY_AGGREGATIONS`) and
+the README says so. TASK-0030 patch 2 showed that Home Assistant 2026.10.4 does
+not return `state` through `statistics_during_period` for a series whose
+metadata has `has_sum` false, which Effy's always has. A reader that asks for
+`state` gets nothing. Whether the value is stored is unverified. Changing a
+published value is a contract decision; it needs the human.

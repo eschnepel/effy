@@ -59,6 +59,7 @@ EFFY_KEY_SERIES: Final = "series"
 EFFY_KEY_SOURCE_ENTITY_ID: Final = "source_entity_id"
 EFFY_KEY_DIRECTION: Final = "direction"
 EFFY_KEY_ROLE: Final = "role"
+EFFY_KEY_FUNCTION: Final = "function"
 EFFY_KEY_AGGREGATIONS: Final = "aggregations"
 
 # --- Values ---------------------------------------------------------------------
@@ -76,6 +77,15 @@ EFFY_DIRECTION_OUTPUT: Final = "output"
 # ``role``: PV inputs apart from the battery system (ADR-019); every output is ``bms``.
 EFFY_ROLE_PV: Final = "pv"
 EFFY_ROLE_BMS: Final = "bms"
+
+# ``function``: which counter of the battery system a source series stands for (ADR-023,
+# ADR-021 Amendment 2026-10-23). Only the entries of a source series (``effective``,
+# ``derived_power``, ``smoothed``) have the key; it is ``None`` for a PV input. The
+# standby power entry has none. Pick a BMS counter by this, not by guessing.
+EFFY_FUNCTION_GRID_IMPORT: Final = "grid_import"
+EFFY_FUNCTION_DISCHARGE: Final = "discharge"
+EFFY_FUNCTION_CHARGE: Final = "charge"
+EFFY_FUNCTION_GRID_EXPORT: Final = "grid_export"
 
 # ``aggregations``: the ``types`` a reader can pass to ``statistics_during_period``
 # for the sensor's short-term statistics, with non-null values.
@@ -99,6 +109,7 @@ EFFY_STANDBY_AGGREGATIONS: Final = (
 EffySeries = Literal["effective", "derived_power", "smoothed", "standby_power"]
 EffyDirection = Literal["input", "output"]
 EffyRole = Literal["pv", "bms"]
+EffyFunction = Literal["grid_import", "discharge", "charge", "grid_export"]
 
 # --- Shapes ---------------------------------------------------------------------
 
@@ -113,6 +124,9 @@ class EffyPublishedSensor(TypedDict):
     source_entity_id: str | None
     direction: EffyDirection
     role: EffyRole
+    # A source series only: the function of its source, ``None`` for a PV input; absent
+    # on the standby entry and on an entry published before ``function`` existed.
+    function: NotRequired[EffyFunction | None]
     aggregations: list[str]
 
 

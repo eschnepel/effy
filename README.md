@@ -154,6 +154,14 @@ sensors:
     source_entity_id: sensor.pv_south
     direction: input
     role: pv
+    function:
+    aggregations: [mean, state]
+  - entity_id: sensor.effy_bms_discharge
+    series: effective
+    source_entity_id: sensor.bms_discharge
+    direction: input
+    role: bms
+    function: discharge
     aggregations: [mean, state]
   - entity_id: sensor.effy_standby_power
     series: standby_power
@@ -171,6 +179,7 @@ sensors:
 | `source_entity_id` | The configured source sensor; `null` for the standby sensor |
 | `direction` | `input` or `output`; the standby sensor is an `output` |
 | `role` | `pv` or `bms`; every output is `bms` |
+| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input. The standby entry has no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
 | `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's series have `mean` and `state` (never `sum`) |
 
 - **Which sensors are listed:** every Effy sensor that exists, except

@@ -51,6 +51,7 @@ PINNED: dict[str, object] = {
     "EFFY_KEY_SOURCE_ENTITY_ID": "source_entity_id",
     "EFFY_KEY_DIRECTION": "direction",
     "EFFY_KEY_ROLE": "role",
+    "EFFY_KEY_FUNCTION": "function",
     "EFFY_KEY_AGGREGATIONS": "aggregations",
     "EFFY_SERIES_EFFECTIVE": "effective",
     "EFFY_SERIES_DERIVED_POWER": "derived_power",
@@ -60,6 +61,10 @@ PINNED: dict[str, object] = {
     "EFFY_DIRECTION_OUTPUT": "output",
     "EFFY_ROLE_PV": "pv",
     "EFFY_ROLE_BMS": "bms",
+    "EFFY_FUNCTION_GRID_IMPORT": "grid_import",
+    "EFFY_FUNCTION_DISCHARGE": "discharge",
+    "EFFY_FUNCTION_CHARGE": "charge",
+    "EFFY_FUNCTION_GRID_EXPORT": "grid_export",
     "EFFY_AGGREGATION_MEAN": "mean",
     "EFFY_AGGREGATION_MIN": "min",
     "EFFY_AGGREGATION_MAX": "max",
@@ -152,10 +157,14 @@ class TestTheTypesMatchTheConstants:
             exports.EFFY_KEY_SOURCE_ENTITY_ID,
             exports.EFFY_KEY_DIRECTION,
             exports.EFFY_KEY_ROLE,
+            exports.EFFY_KEY_FUNCTION,
             exports.EFFY_KEY_AGGREGATIONS,
         }
         assert set(exports.EffyPublishedSensor.__annotations__) == keys
-        assert exports.EffyPublishedSensor.__optional_keys__ == frozenset()
+        # ``function`` is additive (ADR-021 Amendment 2026-10-23): a reader of an older
+        # entry, or of the standby entry, sees no such key
+        assert exports.EffyPublishedSensor.__optional_keys__ == {exports.EFFY_KEY_FUNCTION}
+        assert exports.EffyPublishedSensor.__required_keys__ == keys - {exports.EFFY_KEY_FUNCTION}
 
     def test_the_published_attributes_have_exactly_the_attribute_constants(self) -> None:
         attrs = {
@@ -187,6 +196,15 @@ class TestTheTypesMatchTheConstants:
             exports.EFFY_ROLE_PV,
             exports.EFFY_ROLE_BMS,
         }
+        assert set(typing.get_args(exports.EffyFunction)) == {
+            exports.EFFY_FUNCTION_GRID_IMPORT,
+            exports.EFFY_FUNCTION_DISCHARGE,
+            exports.EFFY_FUNCTION_CHARGE,
+            exports.EFFY_FUNCTION_GRID_EXPORT,
+        }
+
+    def test_the_schema_version_is_still_one_because_function_is_additive(self) -> None:
+        assert exports.EFFY_PUBLISHED_SCHEMA_VERSION == 1
 
 
 class TestEffyHasNoSecondCopy:
@@ -200,6 +218,10 @@ class TestEffyHasNoSecondCopy:
             "schema_version",
             "restored_as_of",
             "restored_at",
+            "grid_import",
+            "discharge",
+            "charge",
+            "grid_export",
         ],
     )
     def test_the_literal_is_spelled_out_only_in_effy_exports(self, literal: str) -> None:
