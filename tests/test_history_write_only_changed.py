@@ -51,6 +51,9 @@ class StoredRecorder(_FakeRecorder):
         self.reads: list[tuple[str, set[str], datetime, datetime | None]] = []
         self.read_error: Exception | None = None
         self.start_as_float = False
+        # The metadata flags of the last import per series. Effy's own metadata is
+        # {"has_mean": True, "has_sum": False}; a series never imported defaults to it.
+        self.flags: dict[str, dict[str, bool]] = {}
 
     @staticmethod
     def _table(table: Any) -> str:
@@ -62,6 +65,7 @@ class StoredRecorder(_FakeRecorder):
     def async_import_statistics(self, metadata: Any, stats: Any, table: Any) -> None:
         sid = metadata["statistic_id"]
         self.units[sid] = metadata["unit_of_measurement"]
+        self.flags[sid] = {"has_mean": metadata["has_mean"], "has_sum": metadata["has_sum"]}
         self.imports.append((self._table(table), sid, len(stats)))
         for stat in stats:
             self.rows[(self._table(table), sid, stat["start"])] = {
@@ -86,6 +90,18 @@ class StoredRecorder(_FakeRecorder):
         self.reads.append((period, set(statistic_ids or ()), start, end))
         if self.read_error is not None:
             raise self.read_error
+        # Home Assistant discards the types a series cannot have, silently: no ``sum`` or
+        # ``state`` unless the metadata has ``has_sum``, no ``mean``/``min``/``max``
+        # unless it has ``has_mean`` (recorder/statistics.py of 2026.10.4, the function
+        # that extracts the metadata ids). It is why a stored ``state`` of Effy's rows
+        # never came back (TASK-0030 patch 2).
+        types = set(types)
+        for sid in statistic_ids or ():
+            flags = self.flags.get(sid, {"has_mean": True, "has_sum": False})
+            if not flags["has_mean"]:
+                types -= {"mean", "min", "max"}
+            if not flags["has_sum"]:
+                types -= {"sum", "state"}
         result: dict[str, list[dict[str, Any]]] = {}
         for (table, sid, ts), row in sorted(self.rows.items(), key=lambda kv: kv[0][2]):
             if table != period or sid not in (statistic_ids or ()):
@@ -181,16 +197,41 @@ class TestTheRule:
         self._store(self._rig(monkeypatch), self.T0)
         assert self._unchanged() == {self.T0}
 
-    @pytest.mark.parametrize("column", ["mean", "state"])
-    def test_a_different_mean_or_state_is_a_change(
-        self, monkeypatch: pytest.MonkeyPatch, column: str
-    ) -> None:
-        self._store(self._rig(monkeypatch), self.T0, **{column: 1.6})
+    def test_a_different_mean_is_a_change(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._store(self._rig(monkeypatch), self.T0, mean=1.6)
         assert self._unchanged() == set()
+
+    @pytest.mark.parametrize("state", [None, 1.6])
+    def test_the_state_is_not_compared_because_home_assistant_does_not_return_it(
+        self, monkeypatch: pytest.MonkeyPatch, state: float | None
+    ) -> None:
+        # TASK-0030 patch 2: the first version compared `state` and so never found a
+        # row unchanged on the Pi, where Home Assistant 2026.10.4 drops it for a series
+        # without has_sum. The fake drops it too.
+        self._store(self._rig(monkeypatch), self.T0, state=state)
+        assert self._unchanged() == {self.T0}
+        assert "state" not in _history._COMPARED_TYPES
+
+    def test_the_fake_drops_what_home_assistant_drops(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard of the guard: a fake that returns ``state`` hid the defect."""
+        recorder = self._rig(monkeypatch)
+        self._store(recorder, self.T0)
+        types = {"mean", "state", "sum", "min"}
+        row = recorder.statistics_during_period(
+            None, self.T0, None, {self.SID}, "5minute", None, types
+        )[self.SID][0]
+        assert set(row) == {"start", "mean", "min"}  # no state, no sum: has_sum is false
+        recorder.flags[self.SID] = {"has_mean": False, "has_sum": True}
+        row = recorder.statistics_during_period(
+            None, self.T0, None, {self.SID}, "5minute", None, types
+        )[self.SID][0]
+        assert set(row) == {"start", "state", "sum"}
 
     @pytest.mark.parametrize(
         ("column", "value"),
-        [("min", 1.0), ("max", 2.0), ("sum", 9.0), ("last_reset", NOW)],
+        [("min", 1.0), ("max", 2.0), ("last_reset", NOW)],
     )
     def test_a_native_row_that_still_carries_a_column_the_writer_clears_is_a_change(
         self, monkeypatch: pytest.MonkeyPatch, column: str, value: Any
@@ -242,9 +283,94 @@ class TestTheRule:
         }  # fmt: skip
         result = _history._unchanged_rows(object(), self.SID, "kW", [], derived)
         assert set(result["hourly"]) == {hour}
-        recorder.rows[("hour", self.SID, hour)]["state"] = 10.0
+        recorder.rows[("hour", self.SID, hour)]["mean"] = 5.0
         result = _history._unchanged_rows(object(), self.SID, "kW", [], derived)
         assert set(result["hourly"]) == set()
+
+
+_HOUR3 = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+_SLOTS3 = [(_HOUR3 + SLOT * i, float(i)) for i in range(36)]  # three whole hours
+
+
+class TestTheAffectedHours:
+    """A history run rewrites an hour only if a change was written in it, and never
+    reads the hourly row (the human, 2026-10-26)."""
+
+    def _hours(self) -> list[datetime]:
+        return [_HOUR3 + timedelta(hours=i) for i in range(3)]
+
+    def test_an_hour_in_which_every_slot_is_unchanged_is_not_rewritten(self) -> None:
+        unchanged = frozenset(ts for ts, _ in _SLOTS3)
+        assert _history._unchanged_hours(_SLOTS3, unchanged) == frozenset(self._hours())
+
+    @pytest.mark.parametrize("index", [0, 5, 11, 12, 35])  # first, middle, last slot of an hour
+    def test_one_written_slot_makes_only_its_hour_affected(self, index: int) -> None:
+        unchanged = frozenset(ts for i, (ts, _) in enumerate(_SLOTS3) if i != index)
+        hour = _SLOTS3[index][0].replace(minute=0)
+        expected = frozenset(self._hours()) - {hour}
+        assert _history._unchanged_hours(_SLOTS3, unchanged) == expected
+
+    def test_a_slot_that_was_never_compared_counts_as_not_unchanged(self) -> None:
+        # below the short-term cutoff a slot is neither read nor written
+        unchanged = frozenset(ts for ts, _ in _SLOTS3[12:])
+        assert _history._unchanged_hours(_SLOTS3, unchanged) == frozenset(self._hours()[1:])
+
+    def test_nothing_unchanged_means_every_hour_is_affected(self) -> None:
+        assert _history._unchanged_hours(_SLOTS3, frozenset()) == frozenset()
+
+    async def test_the_marks_of_a_history_run_and_of_the_hour_rewrite(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder = StoredRecorder()
+        _install_ha_api(monkeypatch, recorder)
+        monkeypatch.setattr(_history, "get_recorder", lambda _hass: recorder)
+        monkeypatch.setattr(_history, "_get_statistics_units", REAL_UNITS)
+        sid = "sensor.effy_x"
+        recorder.units[sid] = "kW"
+        for ts, value in _SLOTS3:
+            recorder.rows[("5minute", sid, ts)] = {
+                "mean": value, "state": value, "min": None, "max": None, "sum": None,
+                "last_reset": None,
+            }  # fmt: skip
+        recorder.rows[("5minute", sid, _SLOTS3[20][0])]["mean"] = -1.0  # hour 1 changed
+
+        def series() -> dict[str, dict[str, Any]]:
+            return {sid: {"unit": "kW", "slot_values": list(_SLOTS3)}}
+
+        run = series()
+        await _history._mark_unchanged(
+            object(),
+            (run,),
+            short_term_cutoff=_SLOTS3[12][0],  # hour 0 lies below it: never compared
+            include_long_term=True,
+            phases=_history._NO_TIMINGS,
+        )
+        assert _SLOTS3[20][0] not in run[sid]["unchanged_short"]
+        assert run[sid]["unchanged_hourly"] == frozenset({self._hours()[2]})
+        assert {period for period, *_ in recorder.reads} == {"5minute"}
+
+        recorder.reads.clear()
+        no_hours = series()
+        await _history._mark_unchanged(
+            object(),
+            (no_hours,),
+            short_term_cutoff=None,
+            include_long_term=False,
+            phases=_history._NO_TIMINGS,
+        )
+        assert no_hours[sid]["unchanged_hourly"] == frozenset()  # the recent run: no hours
+
+        recorder.reads.clear()
+        rewrite = series()
+        await _history._mark_unchanged(
+            object(),
+            (rewrite,),
+            short_term_cutoff=None,
+            include_long_term=True,
+            include_short_term=False,
+            phases=_history._NO_TIMINGS,
+        )
+        assert {period for period, *_ in recorder.reads} == {"hour"}  # the hour rewrite compares
 
 
 class TestTheWriterHonoursTheMarks:
@@ -314,7 +440,7 @@ class TestTheHistoryRecalculation:
         assert _snapshot(recorder) == stored
         assert touched == first[2] and last_values == first[3]  # live states: every entity
 
-    async def test_one_changed_raw_value_writes_only_what_it_changes(
+    async def test_one_changed_raw_value_writes_its_slots_and_the_hours_they_are_in(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         world, recorder = _rig(monkeypatch)
@@ -326,20 +452,25 @@ class TestTheHistoryRecalculation:
         imports_before = len(recorder.imports)
         written, earliest, _touched, _last = await _recalculate()
 
-        changed = {k for k, row in recorder.rows.items() if before.get(k) != row}
-        changed_short = {ts_ for (t, _s, ts_) in changed if t == "5minute"}
+        changed_short = {
+            (sid, ts_)
+            for (t, sid, ts_), row in recorder.rows.items()
+            if t == "5minute" and before.get((t, sid, ts_)) != row
+        }
         assert changed_short  # the edit did change something
-        assert written == sum(1 for (t, _s, _ts) in changed if t == "5minute")
-        rows_imported = sum(n for _t, _s, n in recorder.imports[imports_before:])
-        assert rows_imported == len(changed)  # nothing was imported that did not change
-        # the earliest change: a short-term slot, or the first slot of a changed hour
-        candidates = set(changed_short)
-        for t, sid, hour in changed:
-            if t == "hour":
-                candidates.add(min(s for s in recorder.short(sid) if s >= hour))
+        assert written == len(changed_short)
+        # an hour is rewritten, without being compared, when a change was written in it:
+        # one hourly row per such hour and series, and no other hour is written
+        affected = {(sid, ts_.replace(minute=0)) for sid, ts_ in changed_short}
+        imported = recorder.imports[imports_before:]
+        assert sum(n for t, _s, n in imported if t == "5minute") == len(changed_short)
+        assert sum(n for t, _s, n in imported if t == "hour") == len(affected)
+        # the earliest change: a changed slot, or the first slot of an affected hour
+        candidates = {ts_ for _sid, ts_ in changed_short}
+        candidates |= {min(s for s in recorder.short(sid) if s >= hour) for sid, hour in affected}
         assert earliest == min(candidates)
 
-    async def test_a_native_row_with_min_and_max_is_rewritten_even_if_mean_and_state_match(
+    async def test_a_native_row_with_min_and_max_is_rewritten_even_if_the_mean_matches(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _world_, recorder = _rig(monkeypatch)
@@ -350,7 +481,10 @@ class TestTheHistoryRecalculation:
 
         written, earliest, _t, _l = await _recalculate()
 
-        assert (written, earliest) == (1, slot)
+        # its hour had a change written in it, so the hour is rewritten too and the
+        # change counts from the first slot of that hour
+        hour_start = min(s for s in recorder.short(sid) if s >= slot.replace(minute=0))
+        assert (written, earliest) == (1, hour_start)
         assert recorder.rows[("5minute", sid, slot)]["min"] is None  # cleared again
 
     async def test_a_changed_stored_unit_rewrites_the_whole_series(
@@ -388,7 +522,7 @@ class TestTheHistoryRecalculation:
         await _recalculate()
         assert recorder.reads
         assert all(len(ids) == 1 for _p, ids, _s, _e in recorder.reads)
-        assert {p for p, *_ in recorder.reads} == {"5minute", "hour"}
+        assert {p for p, *_ in recorder.reads} == {"5minute"}  # a history run never reads hours
 
 
 class TestTheCutoff:
@@ -571,14 +705,12 @@ class TestTheCheckExplainsItself:
         self._stored(monkeypatch)
         assert "5minute: read 4, equal 4" in self._explain()
 
-    def test_a_differing_state_is_named_with_the_first_pair_of_values(
+    def test_a_state_the_api_does_not_return_is_not_a_difference(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._stored(monkeypatch, state=None)
         text = self._explain()
-        assert "equal 0" in text and "state differs 4" in text
-        assert "first: state stored None, new 1.5" in text
-        assert self.T0.isoformat() in text
+        assert "equal 4" in text and "state" not in text
 
     def test_a_differing_mean_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._stored(monkeypatch, mean=0.0015)
@@ -633,7 +765,8 @@ class TestTheCheckExplainsItself:
         checks = [line for line in lines[start + 1 :] if line.startswith("sensor.")]
         assert len(checks) == 5  # one per series
         assert all("5minute: read " in c and "equal " in c for c in checks)
-        assert all("; hour: read " in c for c in checks)  # the hourly side is explained too
+        assert not any("hour: read" in c for c in checks)  # a history run reads no hours
+        assert "state is not returned by Home Assistant" in msg
 
     async def test_a_first_run_says_there_was_no_metadata(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

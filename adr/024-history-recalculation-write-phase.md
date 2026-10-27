@@ -109,3 +109,42 @@ computed one.
 *Decided A:* yes, so an entity does not stay `unknown` after a restart because
 its rows happened to equal the stored ones. *B:* push only entities with a
 changed row.
+
+## Amendment — 2026-10-26
+
+**Reason:** Decision 2 compared `mean` and `state` of the stored rows. Home
+Assistant 2026.10.4 silently discards the `state` and `sum` types in
+`statistics_during_period` when the series' metadata has `has_sum` false (the
+function that extracts the metadata ids in `recorder/statistics.py`, verified at
+tag `2026.10.4`), and Effy's metadata always has. The first Pi record showed it:
+`mean differs 0`, `state stored None` in every row, `rows unchanged 0`. The
+comparison could never succeed through this public call.
+
+**Decision:** (option A, chosen by the human)
+
+1. A stored row is unchanged if its `mean` equals the new value exactly and its
+   `min`, `max` and `last_reset` are empty. `state` and `sum` are not compared:
+   the API does not return them, and `state` is the row's own value by the
+   writer's rule (5-minute: the mean; hourly: the last slot, which is in the
+   mean).
+1. A history run does not read the hourly rows. An hour is rewritten only if a
+   change was written in it, i.e. at least one of its 5-minute rows is written;
+   the hourly row itself is not compared (the human: "rewrite every hour
+   affected by a change, no compare for the hour itself"). An hour in which no
+   5-minute row was written is not touched. Exception (the Lead Agent's,
+   awaiting the human): a slot older than the short-term cutoff has no stored
+   5-minute row, so no change can be detected there and its hour is rewritten.
+1. The slot job's hour rewrite (`async_rewrite_hourly`) is unchanged: it has no
+   5-minute comparison to go by, so it still compares the stored hourly rows,
+   now by the rule of point 1.
+1. `recalculated_from` follows: a written hourly row counts from the first slot
+   of its hour, so one changed slot reports the start of its hour at the
+   earliest (never later than the slot); a run that changes nothing still
+   reports `None`.
+
+**Known limit (inferred, not verified):** a native recorder row with the right
+`mean`, a null `state` and no `min`/`max` would count as unchanged. Native rows
+of a `has_mean` series carry `min` and `max`, which the check catches.
+
+**Decided by:** human; the exception in point 2 is the Lead Agent's, not yet
+confirmed by the human

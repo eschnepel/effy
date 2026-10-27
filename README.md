@@ -373,7 +373,13 @@ The detail costs well under 1 % of a recalculation (measured on 480,000 states).
 The detail also has a `stored rows check` section: per series, how many stored
 rows were read, how many were equal, and which column differed in the others
 (with the first pair of values). If a repeated recalculation still writes
-everything, this section says why.
+everything, this section says why. Home Assistant does not return a stored
+`state` for these series, so a row counts as unchanged when its `mean` is the
+new value and `min`, `max` and `last_reset` are empty. A history run does not
+read the hourly rows: an hour is written again only when one of its 5-minute
+rows is written (hours older than the recorder's `keep_days` have no 5-minute
+rows and are always written). The hour rewrite of the slot job still compares
+the stored hourly row.
 
 Since TASK-0030 the recalculation reads the stored statistics first and writes
 only the rows that are new or different (ADR-024). The first line then ends with

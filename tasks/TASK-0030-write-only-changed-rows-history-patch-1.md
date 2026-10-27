@@ -1,8 +1,9 @@
 # Task: The Stored-Rows Check Must Say Why It Found Nothing Unchanged
 
-- **Status:** review — diagnostics delivered, reviewer pass inline. **Defect
-  open:** on the Pi no stored row counted as unchanged; the cause is read from
-  the next record.
+- **Status:** done — diagnostics delivered, reviewer pass inline. **Defect moved
+  to TASK-0030-write-only-changed-rows-history-patch-2:** on the Pi no stored
+  row counted as unchanged; the record named the cause (`state` is hidden by the
+  API when `has_sum` is false).
 - **Related ADRs:** [ADR-024, ADR-012 (Amendment 2026-10-25)]
 - **Dependencies:** [TASK-0030-write-only-changed-rows-history]
 

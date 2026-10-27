@@ -594,7 +594,8 @@ class _PhaseTimings:
             )
         if self.stored_checks:
             lines.append(
-                "stored rows check (what each stored series looked like against the new rows):"
+                "stored rows check (mean, min, max and last_reset are compared; state is not"
+                " returned by Home Assistant for these series):"
             )
             lines.extend(f"  {sid}: {text}" for sid, text in self.stored_checks.items())
         lines.append("compute stages (carved out of compute):")
@@ -2181,18 +2182,24 @@ def _hourly_rows(slot_values: list[tuple[datetime, float]]) -> dict[datetime, tu
 
 # Columns of a stored row the writer controls: it writes mean and state and clears the
 # rest (an update replaces every column, TASK-0007a), so a row is only "already right"
-# if these are empty too.
-_CLEARED_COLUMNS = ("min", "max", "sum", "last_reset")
-_COMPARED_TYPES = {"mean", "state", *_CLEARED_COLUMNS}
+# if these are empty too. ``state`` and ``sum`` are not compared: Home Assistant's
+# ``statistics_during_period`` silently discards both for a series whose metadata has
+# ``has_sum`` false, which Effy's always has (verified in the source of 2026.10.4; the
+# first Pi record showed ``state stored None`` in every row). The writer's ``state`` is
+# the row's own value (5-minute: the mean; hourly: the last slot, which is in the mean),
+# so an equal ``mean`` and empty columns are what the writer wrote (ADR-024 Amendment
+# 2026-10-26).
+_CLEARED_COLUMNS = ("min", "max", "last_reset")
+_COMPARED_TYPES = {"mean", *_CLEARED_COLUMNS}
 
 
 def _unchanged_slots(
     hass: HomeAssistant,
     statistic_id: str,
     period: str,
-    expected: dict[datetime, tuple[float, float]],
+    expected: dict[datetime, float],
 ) -> tuple[frozenset[datetime], str]:
-    """Starts of the stored rows that equal ``expected`` (start -> (mean, state)) exactly.
+    """Starts of the stored rows that equal ``expected`` (start -> mean) exactly.
 
     Also returns a one-line diagnosis: how many stored rows were read, how many were
     equal and, for each of the others, which column differed, with the first pair of
@@ -2209,7 +2216,7 @@ def _unchanged_slots(
     )
     rows = result.get(statistic_id, [])
     same: set[datetime] = set()
-    why = {"start": 0, "mean": 0, "state": 0, "columns": 0}
+    why = {"start": 0, "mean": 0, "columns": 0}
     seen = 0
     sample = ""
     for row in rows:
@@ -2226,10 +2233,8 @@ def _unchanged_slots(
             continue
         seen += 1
         reason, detail = "", ""
-        if row.get("mean") != want[0]:
-            reason, detail = "mean", f"mean stored {row.get('mean')!r}, new {want[0]!r}"
-        elif row.get("state") != want[1]:
-            reason, detail = "state", f"state stored {row.get('state')!r}, new {want[1]!r}"
+        if row.get("mean") != want:
+            reason, detail = "mean", f"mean stored {row.get('mean')!r}, new {want!r}"
         else:
             for column in _CLEARED_COLUMNS:
                 if row.get(column) is not None:
@@ -2243,8 +2248,7 @@ def _unchanged_slots(
     text = (
         f"{period}: read {len(rows)}, equal {len(same)}, missing {len(expected) - seen},"
         f" start unexpected {why['start']}, mean differs {why['mean']},"
-        f" state differs {why['state']}, columns set {why['columns']}"
-        + (f"; first: {sample}" if sample else "")
+        f" columns set {why['columns']}" + (f"; first: {sample}" if sample else "")
     )
     return frozenset(same), text
 
@@ -2276,16 +2280,33 @@ def _unchanged_rows(
             )
         return {"short": nothing, "hourly": nothing}
     found_short, text_short = (
-        _unchanged_slots(hass, statistic_id, "5minute", {ts: (v, v) for ts, v in short})
-        if short
-        else (nothing, "")
+        _unchanged_slots(hass, statistic_id, "5minute", dict(short)) if short else (nothing, "")
     )
     found_hourly, text_hourly = (
-        _unchanged_slots(hass, statistic_id, "hour", hourly) if hourly else (nothing, "")
+        _unchanged_slots(
+            hass, statistic_id, "hour", {h: mean for h, (mean, _state) in hourly.items()}
+        )
+        if hourly
+        else (nothing, "")
     )
     if notes is not None:
         notes[statistic_id] = "; ".join(text for text in (text_short, text_hourly) if text)
     return {"short": found_short, "hourly": found_hourly}
+
+
+def _unchanged_hours(
+    slot_values: list[tuple[datetime, float]], unchanged_short: frozenset[datetime]
+) -> frozenset[datetime]:
+    """The hours of a history run in which no change was written.
+
+    The hourly rows of a history run are not read: an hour is rewritten only if a
+    change was written in it, i.e. at least one of its slots is not an unchanged
+    5-minute row (ADR-024 Amendment 2026-10-26). A slot older than the short-term
+    cutoff has no stored 5-minute row to compare, so it counts as not unchanged.
+    """
+    hour = {ts: ts.replace(minute=0, second=0, microsecond=0) for ts, _val in slot_values}
+    touched = {hour[ts] for ts in hour if ts not in unchanged_short}
+    return frozenset(set(hour.values()) - touched)
 
 
 async def _mark_unchanged(
@@ -2320,7 +2341,11 @@ async def _mark_unchanged(
                 if include_short_term
                 else []
             )
-            hourly = _hourly_rows(slot_values) if include_long_term else {}
+            # The hour rewrite (no 5-minute rows to go by) compares the stored hourly
+            # rows; a history run derives its hours from its 5-minute result below.
+            hourly = (
+                _hourly_rows(slot_values) if include_long_term and not include_short_term else {}
+            )
             if not short and not hourly:
                 continue
             try:
@@ -2348,7 +2373,11 @@ async def _mark_unchanged(
                         done.pop("unchanged_hourly", None)
                 return
             info["unchanged_short"] = found["short"]
-            info["unchanged_hourly"] = found["hourly"]
+            info["unchanged_hourly"] = (
+                _unchanged_hours(slot_values, found["short"])
+                if include_long_term and include_short_term
+                else found["hourly"]
+            )
     phases.note_stored_checks(notes)
 
 

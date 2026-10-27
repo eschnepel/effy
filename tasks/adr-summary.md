@@ -115,13 +115,16 @@ concise; ADRs in `adr/` are authoritative.
   capacity pickers, pure runs of charge or discharge slots less standby energy,
   valleys of the SoC between spans, decayed sums at 5 % per kWh. Not ground
   truth.
-- **ADR-024 (Draft, 2026-10-25):** the write phase is 98 % of a history
+- **ADR-024 (Accepted, 2026-10-25):** the write phase is 98 % of a history
   recalculation (104 s of 107 s at 28 days on the Pi, about 1 ms per short-term
   row: Home Assistant's import does one `SELECT` and one `UPDATE`/`INSERT` per
   row). Chosen by the human 2026-10-25: write only rows that differ, in the
   history recalculation and the slot job; `recalculated_from` is the earliest
   change (ADR-012 Amendment 2026-10-25); live states still for every computed
-  entity. Details (exact equality, fail-safe) proposed, Q1/Q2 open.
+  entity. Amendment 2026-10-26: Home Assistant drops `state`/`sum` for a series
+  without `has_sum`, so only `mean`, `min`, `max`, `last_reset` are compared; a
+  history run does not read hourly rows, an hour is rewritten only if one of its
+  5-minute rows is written; the slot job's hour rewrite is unchanged.
 - **ADR-022 (Draft, 2026-10-19):** a history recalculation takes about 5 minutes
   on a Raspberry Pi 5 and the code has no phase timing. Proposed: log the wall
   time of the fetch, compute and write phases first (TASK-0010, done 2026-10-19,
