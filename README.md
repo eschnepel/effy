@@ -56,18 +56,27 @@ All parameters are set via the UI (Config Flow + Options Flow).
 
 | Parameter | Description | Default |
 | -- | -- | -- |
-| **PV input sensors** | PV strings | – |
-| **BMS input sensors** | BMS import-from-battery, BMS import-from-grid (optional) | – |
-| **Output sensors** | BMS export-to-battery, BMS export-to-grid | – |
+| **PV input sensors** | PV strings (a list) | – |
+| **Grid import counter** | BMS input: energy the BMS takes from the grid | – |
+| **Discharge counter** | BMS input: energy the battery gives to the BMS (battery side) | – |
+| **Charge counter** | BMS output: energy into the battery (battery side) | – |
+| **Grid export counter** | BMS output: energy the BMS gives to the grid | – |
 | **Max history days** | How many days of 5-min statistics to reprocess | 28 |
 
-At least one input sensor is required in total (PV or BMS); a sensor cannot be
-in both lists. The loss calculation treats both lists as one pool of inputs —
-the split only tells Effy which inputs belong to the battery system.
+The four BMS counters are one optional picker each. At least one input in total
+is required (a PV sensor, the grid import or the discharge counter) and at least
+one output (the charge or the grid export counter); a sensor cannot have two
+roles, and the charge and grid export sensors need a device class (power or
+energy). The loss calculation treats all inputs as one pool and the outputs as
+the other — the roles tell Effy which counter is which, for the standby power
+sensor and for the efficiency sensors.
 
-**Upgrading from a version with one input list:** the old list is moved into the
-PV input list automatically when Effy starts, and every value stays as it was.
-Open Effy's options once and move the BMS sensors to the BMS input list.
+**Upgrading:** the former BMS input list and output list are ignored; nothing is
+migrated. Until you assign the charge or grid export counter in Effy's options,
+Effy does not set up (the entry shows a setup error and no statistics are
+written); saving the options reloads it. An entry that still has the pre-ADR-019
+single input list has it moved into the PV list automatically, and then needs
+the counters as well.
 
 Sensors may be in **W, kW, Wh, or kWh**. Effy converts all values to
 W-equivalent average power internally. Output sensors are written in W (or kW),

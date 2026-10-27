@@ -59,6 +59,12 @@ class _FlowHandlerBase:
 _MISSING = object()
 
 
+class _OptionsFlowWithReload(_FlowHandlerBase):
+    """Stand-in for HA's OptionsFlowWithReload (reloads the entry when options change)."""
+
+    automatic_reload = True
+
+
 class _Marker:
     """voluptuous Required/Optional stand-in: remembers key, default, description."""
 
@@ -88,6 +94,7 @@ _stub(
     "homeassistant.config_entries",
     ConfigFlow=_FlowHandlerBase,
     OptionsFlow=_FlowHandlerBase,
+    OptionsFlowWithReload=_OptionsFlowWithReload,
     ConfigEntry=object,
     FlowResult=object,
 )
@@ -125,8 +132,11 @@ _config_flow = _load("effy.config_flow", "config_flow.py")
 _outputs_missing_device_class = _config_flow._outputs_missing_device_class
 _const = sys.modules["effy.const"]
 PV = _const.CONF_PV_INPUT_SENSORS
-BMS = _const.CONF_BMS_INPUT_SENSORS
-OUT = _const.CONF_OUTPUT_SENSORS
+GRID_IMPORT = _const.CONF_GRID_IMPORT_SENSOR
+DISCHARGE = _const.CONF_DISCHARGE_SENSOR
+CHARGE = _const.CONF_CHARGE_SENSOR
+GRID_EXPORT = _const.CONF_GRID_EXPORT_SENSOR
+COUNTERS = (GRID_IMPORT, DISCHARGE, CHARGE, GRID_EXPORT)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +163,13 @@ class _FakeHass:
 
 
 def _hass_with_outputs() -> _FakeHass:
-    return _FakeHass({"sensor.export": _FakeState("energy")})
+    return _FakeHass(
+        {
+            "sensor.export": _FakeState("energy"),
+            "sensor.charge": _FakeState("energy"),
+            "sensor.bare": _FakeState(None),
+        }
+    )
 
 
 def _keys(form: dict[str, Any]) -> dict[str, _Marker]:
@@ -212,50 +228,76 @@ class TestOutputsMissingDeviceClass:
 # ---------------------------------------------------------------------------
 
 
-class TestSchemaHasTwoInputLists:
-    def _form(self, flow_step: str) -> dict[str, Any]:
+class TestSchemaHasTheFourCounterPickers:
+    def _form(self, flow_step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
         flow = _config_flow.EffyConfigFlow()
         flow.hass = _hass_with_outputs()
         if flow_step == "user":
             return asyncio.run(flow.async_step_user())
-        entry = type("Entry", (), {"options": {PV: ["sensor.pv"], BMS: ["sensor.bms"], OUT: []}})()
+        entry = type(
+            "Entry",
+            (),
+            {
+                "options": options
+                if options is not None
+                else {PV: ["sensor.pv"], GRID_IMPORT: "sensor.g"}
+            },
+        )()
         options_flow = _config_flow.EffyOptionsFlow(entry)
         options_flow.hass = flow.hass
         return asyncio.run(options_flow.async_step_init())
 
-    def test_both_flows_show_pv_and_bms_multi_selects(self) -> None:
+    def test_both_flows_show_the_pv_list_and_the_four_single_pickers(self) -> None:
         for step in ("user", "init"):
             keys = _keys(self._form(step))
-            assert PV in keys and BMS in keys
-            for key in (PV, BMS):
-                assert keys[key].schema == key
-        # the selectors themselves are multi-select entity pickers
+            assert PV in keys and all(c in keys for c in COUNTERS)
         schema = self._form("user")["data_schema"].schema
         for marker, selector_cfg in schema.items():
-            if marker.schema in (PV, BMS):
+            if marker.schema == PV:
                 assert selector_cfg["entity"]["multiple"] is True
+            if marker.schema in COUNTERS:
+                assert "multiple" not in selector_cfg["entity"]  # one sensor per role
+                assert selector_cfg["entity"]["domain"] == ["sensor"]
 
-    def test_the_old_key_is_no_longer_in_either_form(self) -> None:
+    def test_the_old_keys_are_in_neither_form(self) -> None:
         for step in ("user", "init"):
-            assert "input_sensors" not in _keys(self._form(step))
+            keys = _keys(self._form(step))
+            for old in ("input_sensors", "bms_input_sensors", "output_sensors"):
+                assert old not in keys
 
-    def test_neither_list_is_individually_required(self) -> None:
+    def test_every_picker_is_optional(self) -> None:
         keys = _keys(self._form("user"))
-        assert keys[PV].required is False  # a BMS-only system is possible
-        assert keys[BMS].required is False  # no BMS input is required (ADR-019)
+        for key in (PV, *COUNTERS):
+            assert keys[key].required is False
 
-    def test_the_options_flow_prefills_both_lists_as_suggestions(self) -> None:
-        keys = _keys(self._form("init"))
+    def test_the_outputs_are_restricted_to_a_device_class_and_the_inputs_are_not(self) -> None:
+        schema = self._form("user")["data_schema"].schema
+        by_key = {marker.schema: cfg for marker, cfg in schema.items()}
+        for key in (CHARGE, GRID_EXPORT):
+            assert by_key[key]["entity"]["device_class"] == ["power", "energy"]
+        for key in (GRID_IMPORT, DISCHARGE):
+            assert "device_class" not in by_key[key]["entity"]
+
+    def test_the_options_flow_prefills_every_assigned_role_as_a_suggestion(self) -> None:
+        options = {
+            PV: ["sensor.pv"],
+            GRID_IMPORT: "sensor.g",
+            DISCHARGE: "sensor.d",
+            CHARGE: "sensor.c",
+            GRID_EXPORT: "sensor.e",
+        }
+        keys = _keys(self._form("init", options))
         assert keys[PV].description == {"suggested_value": ["sensor.pv"]}
-        assert keys[BMS].description == {"suggested_value": ["sensor.bms"]}
+        assert keys[GRID_IMPORT].description == {"suggested_value": "sensor.g"}
+        assert keys[DISCHARGE].description == {"suggested_value": "sensor.d"}
+        assert keys[CHARGE].description == {"suggested_value": "sensor.c"}
+        assert keys[GRID_EXPORT].description == {"suggested_value": "sensor.e"}
 
-    def test_a_migrated_entry_shows_the_pv_list_filled_and_the_bms_list_empty(self) -> None:
-        entry = type("Entry", (), {"options": {PV: ["sensor.a", "sensor.b"], BMS: [], OUT: []}})()
-        flow = _config_flow.EffyOptionsFlow(entry)
-        flow.hass = _hass_with_outputs()
-        keys = _keys(asyncio.run(flow.async_step_init()))
-        assert keys[PV].description == {"suggested_value": ["sensor.a", "sensor.b"]}
-        assert keys[BMS].description == {"suggested_value": []}
+    def test_an_unassigned_role_has_no_suggestion_and_no_default(self) -> None:
+        keys = _keys(self._form("init", {PV: ["sensor.a"]}))  # an entry that still has the old keys
+        for key in COUNTERS:
+            assert keys[key].description is None
+            assert keys[key].default is _MISSING
 
 
 class TestOptionsFlowHook:
@@ -263,7 +305,7 @@ class TestOptionsFlowHook:
 
     def test_the_hook_returns_the_options_flow_of_the_entry_it_is_given(self) -> None:
         def entry(pv: str) -> Any:
-            return type("Entry", (), {"options": {PV: [pv], BMS: [], OUT: []}})()
+            return type("Entry", (), {"options": {PV: [pv]}})()
 
         first = _config_flow.EffyConfigFlow.async_get_options_flow(entry("sensor.first"))
         second = _config_flow.EffyConfigFlow.async_get_options_flow(entry("sensor.second"))
@@ -275,6 +317,13 @@ class TestOptionsFlowHook:
             form = asyncio.run(flow.async_step_init())
             assert _keys(form)[PV].description == {"suggested_value": [expected]}
 
+    def test_the_options_flow_reloads_the_entry_itself(self) -> None:
+        # ADR-023 decision 1 / Open decision 3, from the source of Home Assistant 2026.10.4:
+        # saving reloads the entry, also one whose setup failed (it has no listeners left);
+        # Effy therefore has no update listener (HA forbids both together).
+        assert issubclass(_config_flow.EffyOptionsFlow, _OptionsFlowWithReload)
+        assert _config_flow.EffyOptionsFlow.automatic_reload is True
+
 
 class TestInputValidation:
     def _submit(self, user_input: dict[str, Any]) -> dict[str, Any]:
@@ -282,63 +331,108 @@ class TestInputValidation:
         flow.hass = _hass_with_outputs()
         return asyncio.run(flow.async_step_user(user_input))
 
-    def test_no_input_in_either_list_is_at_least_one_input(self) -> None:
-        result = self._submit({PV: [], BMS: [], OUT: ["sensor.export"]})
+    def test_no_input_at_all_is_at_least_one_input(self) -> None:
+        result = self._submit({PV: [], CHARGE: "sensor.charge"})
         assert result["type"] == "form"
         assert result["errors"] == {PV: "at_least_one_input"}
 
-    def test_both_keys_missing_is_at_least_one_input(self) -> None:
-        result = self._submit({OUT: ["sensor.export"]})
-        assert result["errors"] == {PV: "at_least_one_input"}
+    def test_every_key_missing_but_an_output_is_at_least_one_input(self) -> None:
+        assert self._submit({GRID_EXPORT: "sensor.export"})["errors"] == {PV: "at_least_one_input"}
 
-    def test_a_sensor_in_both_lists_is_its_own_error(self) -> None:
-        result = self._submit(
-            {PV: ["sensor.x", "sensor.pv"], BMS: ["sensor.x"], OUT: ["sensor.export"]}
+    def test_an_output_alone_is_not_an_input(self) -> None:
+        both = self._submit({CHARGE: "sensor.charge", GRID_EXPORT: "sensor.export"})
+        assert both["errors"] == {PV: "at_least_one_input"}
+
+    def test_no_output_at_all_is_at_least_one_output(self) -> None:
+        result = self._submit({PV: ["sensor.pv"], GRID_IMPORT: "sensor.g"})
+        assert result["errors"] == {CHARGE: "at_least_one_output"}
+
+    def test_an_emptied_picker_counts_as_unset(self) -> None:
+        result = self._submit({PV: ["sensor.pv"], CHARGE: "", GRID_EXPORT: None})
+        assert result["errors"] == {CHARGE: "at_least_one_output"}
+
+    def test_a_sensor_in_two_roles_is_an_error_on_the_later_field(self) -> None:
+        cases = [
+            ({PV: ["sensor.x"], GRID_IMPORT: "sensor.x", CHARGE: "sensor.charge"}, GRID_IMPORT),
+            ({PV: ["sensor.pv"], GRID_IMPORT: "sensor.x", DISCHARGE: "sensor.x",
+              CHARGE: "sensor.charge"}, DISCHARGE),
+            ({PV: ["sensor.pv"], GRID_IMPORT: "sensor.g", CHARGE: "sensor.charge",
+              GRID_EXPORT: "sensor.charge"}, GRID_EXPORT),
+            ({PV: ["sensor.pv", "sensor.pv"], CHARGE: "sensor.charge"}, PV),
+        ]  # fmt: skip
+        for user_input, field in cases:
+            result = self._submit(user_input)
+            assert result["type"] == "form"
+            assert result["errors"] == {field: "sensor_in_two_roles"}, user_input
+
+    def test_each_picker_alone_is_optional(self) -> None:
+        for inputs in ({PV: ["sensor.pv"]}, {GRID_IMPORT: "sensor.g"}, {DISCHARGE: "sensor.d"}):
+            for output in ({CHARGE: "sensor.charge"}, {GRID_EXPORT: "sensor.export"}):
+                assert self._submit({**inputs, **output})["type"] == "create_entry", (
+                    inputs,
+                    output,
+                )
+
+    def test_a_charge_or_export_sensor_without_a_device_class_is_rejected(self) -> None:
+        assert self._submit({PV: ["sensor.pv"], CHARGE: "sensor.bare"})["errors"] == {
+            CHARGE: "output_needs_device_class"
+        }
+        assert self._submit({PV: ["sensor.pv"], GRID_EXPORT: "sensor.bare"})["errors"] == {
+            GRID_EXPORT: "output_needs_device_class"
+        }
+        mixed = self._submit(
+            {PV: ["sensor.pv"], CHARGE: "sensor.charge", GRID_EXPORT: "sensor.bare"}
         )
-        assert result["type"] == "form"
-        assert result["errors"] == {BMS: "sensor_in_both_input_lists"}
+        assert mixed["errors"] == {GRID_EXPORT: "output_needs_device_class"}
 
-    def test_pv_only_is_accepted(self) -> None:
-        result = self._submit({PV: ["sensor.pv"], BMS: [], OUT: ["sensor.export"]})
-        assert result["type"] == "create_entry"
-        assert result["options"][PV] == ["sensor.pv"]
-
-    def test_pv_only_with_the_bms_key_missing_is_accepted(self) -> None:
-        result = self._submit({PV: ["sensor.pv"], OUT: ["sensor.export"]})
+    def test_a_device_class_is_not_required_of_the_inputs(self) -> None:
+        result = self._submit(
+            {GRID_IMPORT: "sensor.bare", DISCHARGE: "sensor.x", CHARGE: "sensor.charge"}
+        )
         assert result["type"] == "create_entry"
 
-    def test_bms_only_is_accepted(self) -> None:
-        result = self._submit({BMS: ["sensor.bms"], OUT: ["sensor.export"]})
-        assert result["type"] == "create_entry"
+    def test_the_saved_options_hold_the_new_keys_and_neither_old_one(self) -> None:
+        result = self._submit(
+            {
+                PV: ["sensor.pv"],
+                GRID_IMPORT: "sensor.a",
+                DISCHARGE: "sensor.b",
+                CHARGE: "sensor.charge",
+                GRID_EXPORT: "sensor.export",
+            }
+        )
+        options = result["options"]
+        assert options[PV] == ["sensor.pv"]
+        assert [options[k] for k in COUNTERS] == [
+            "sensor.a",
+            "sensor.b",
+            "sensor.charge",
+            "sensor.export",
+        ]
+        assert "bms_input_sensors" not in options and "output_sensors" not in options
 
-    def test_a_split_into_both_lists_is_accepted(self) -> None:
-        result = self._submit({PV: ["sensor.pv"], BMS: ["sensor.bms"], OUT: ["sensor.export"]})
-        assert result["type"] == "create_entry"
+    def test_unset_pickers_are_not_saved_and_the_pv_list_always_is(self) -> None:
+        options = self._submit({GRID_IMPORT: "sensor.g", CHARGE: "sensor.charge", DISCHARGE: ""})[
+            "options"
+        ]
+        assert options[PV] == []
+        assert set(options) >= {PV, GRID_IMPORT, CHARGE} and DISCHARGE not in options
 
     def test_the_options_flow_validates_the_same_way(self) -> None:
-        entry = type("Entry", (), {"options": {PV: ["sensor.pv"], OUT: []}})()
+        entry = type("Entry", (), {"options": {PV: ["sensor.pv"]}})()
         flow = _config_flow.EffyOptionsFlow(entry)
         flow.hass = _hass_with_outputs()
         both = asyncio.run(
-            flow.async_step_init({PV: ["sensor.x"], BMS: ["sensor.x"], OUT: ["sensor.export"]})
+            flow.async_step_init({PV: ["sensor.x"], DISCHARGE: "sensor.x", CHARGE: "sensor.charge"})
         )
-        assert both["errors"] == {BMS: "sensor_in_both_input_lists"}
-        empty = asyncio.run(flow.async_step_init({PV: [], BMS: [], OUT: ["sensor.export"]}))
+        assert both["errors"] == {DISCHARGE: "sensor_in_two_roles"}
+        empty = asyncio.run(flow.async_step_init({PV: [], CHARGE: "sensor.charge"}))
         assert empty["errors"] == {PV: "at_least_one_input"}
-        split = asyncio.run(
-            flow.async_step_init({PV: ["sensor.pv"], BMS: ["sensor.bms"], OUT: ["sensor.export"]})
-        )
-        assert split["type"] == "create_entry"
-
-    def test_the_existing_output_checks_still_apply(self) -> None:
-        none = self._submit({PV: ["sensor.pv"], BMS: [], OUT: []})
-        assert none["errors"] == {OUT: "at_least_one_output"}
-        no_class = _config_flow.EffyConfigFlow()
-        no_class.hass = _FakeHass({"sensor.export": _FakeState(None)})
-        result = asyncio.run(
-            no_class.async_step_user({PV: ["sensor.pv"], BMS: [], OUT: ["sensor.export"]})
-        )
-        assert result["errors"] == {OUT: "output_needs_device_class"}
+        none = asyncio.run(flow.async_step_init({PV: ["sensor.pv"]}))
+        assert none["errors"] == {CHARGE: "at_least_one_output"}
+        saved = asyncio.run(flow.async_step_init({PV: ["sensor.pv"], CHARGE: "sensor.charge"}))
+        assert saved["type"] == "create_entry"
+        assert saved["data"] == {PV: ["sensor.pv"], CHARGE: "sensor.charge"}
 
     def test_the_config_flow_version_is_not_bumped(self) -> None:
         assert _config_flow.EffyConfigFlow.VERSION == 1
@@ -351,14 +445,22 @@ class TestTranslations:
         path = _base / "translations" / f"{lang}.json"
         return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
 
-    def test_en_and_de_carry_the_new_fields_and_error_in_both_flows(self) -> None:
+    def test_en_and_de_carry_every_picker_and_every_error_in_both_flows(self) -> None:
         for lang in ("en", "de"):
             data = self._load(lang)
             for section, step in (("config", "user"), ("options", "init")):
                 fields = data[section]["step"][step]["data"]
-                assert PV in fields and BMS in fields
-                assert "input_sensors" not in fields
-                assert fields[PV] and fields[BMS]
+                for key in (PV, *COUNTERS):
+                    assert fields[key], (lang, section, key)
+                for old in ("input_sensors", "bms_input_sensors", "output_sensors"):
+                    assert old not in fields
+                assert data[section]["step"][step]["description"], (lang, section)
                 errors = data[section]["error"]
-                assert errors["sensor_in_both_input_lists"]
-                assert errors["at_least_one_input"]
+                for error in (
+                    "at_least_one_input",
+                    "sensor_in_two_roles",
+                    "at_least_one_output",
+                    "output_needs_device_class",
+                ):
+                    assert errors[error], (lang, section, error)
+                assert "sensor_in_both_input_lists" not in errors

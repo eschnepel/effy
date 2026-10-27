@@ -70,7 +70,7 @@ and no BMS input is required.
 
 ---
 
-## Amendment — 2026-10-23 (BMS counters by function; takes effect when ADR-023 is accepted)
+## Amendment — 2026-10-23 (BMS counters by function; in force since ADR-023 was accepted, 2026-10-27)
 
 **Reason:** ADR-023 (Draft, efficiency sensors) needs to know which BMS counter
 is the grid import, the discharge, the charge and the grid export counter. The

@@ -1,10 +1,10 @@
 # ADR-023 – Efficiency Sensors for the Battery System
 
-**Date:** 2026-10-23 **Status:** Draft — decisions 1 to 14 were taken by the
-human in a grill session on 2026-10-23 and are wired into the text; the points
-under "Open decisions" are for the human before the ADR is accepted. A Draft is
-not ground truth: do not implement from it. Terms follow `GLOSSARY.md`; ◇ marks
-my formalization of a decision.
+**Date:** 2026-10-23 **Status:** Accepted 2026-10-27 — by the human's
+instruction in chat to implement TASK-0017 to TASK-0027 (the ADR's Gate 2).
+Decisions 1 to 14 were taken by the human in a grill session on 2026-10-23. The
+points under "Open decisions" stay open until their task settles them. Terms
+follow `GLOSSARY.md`; ◇ marks my formalization of a decision.
 
 ---
 
@@ -303,9 +303,16 @@ minimum of 15 for the hysteresis; half-slot boundaries for the span sums
 1. **The boundary convention of decision 6** (half boundary slots) is the Lead
    Agent's; the simulator of decision 13 must show a bias below 0.5 points
    before the task is done, or the convention changes.
-1. **Options flow on a failed entry.** To be verified against Home Assistant
-   2026.3 when the task starts: that the options flow can be opened and that
-   saving reloads the entry (decision 1). Home Assistant is not installed in the
-   sandbox at all, so nothing about its behaviour can be run there.
+1. **Options flow on a failed entry — settled 2026-10-27 (TASK-0017 stage 0,
+   from the source of Home Assistant 2026.10.4 and 2026.3.0).** (a) The options
+   flow is created without a check of the entry's state and `supports_options`
+   depends only on the handler, so a failed entry offers it; whether the
+   frontend's "Configure" button is shown for such an entry is not verified. (b)
+   Saving reloads a failed entry through `OptionsFlowWithReload`, which exists
+   in both versions; an update listener of Effy's own cannot do it (Home
+   Assistant runs the entry's unload callbacks when its setup fails, so the
+   listener is gone) and Home Assistant raises `ValueError` if an entry has a
+   listener next to `OptionsFlowWithReload`. Effy therefore has no update
+   listener.
 1. **Persistence mechanism** of decision 9 (restore data of one sensor or a
    store): left to the task; the contract is "whole state, restored, caught up".

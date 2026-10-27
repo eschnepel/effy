@@ -40,6 +40,8 @@ from pathlib import Path
 from types import ModuleType
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+
+from tests.support import role_options
 from unittest.mock import MagicMock
 
 import pytest
@@ -300,11 +302,7 @@ class _FakeEntry:
     def __init__(
         self, input_ids: list[str], output_ids: list[str], bms_ids: list[str] | None = None
     ) -> None:
-        self.options = {
-            "pv_input_sensors": input_ids,
-            "bms_input_sensors": bms_ids or [],
-            "output_sensors": output_ids,
-        }
+        self.options = role_options(input_ids, bms_ids or [], output_ids)
 
 
 class _FakeBus:
@@ -347,6 +345,37 @@ class TestEffyCoordinatorShell:
         assert coord._input_ids == ["sensor.pv_a", "sensor.pv_b", "sensor.bms"]
         coord.pv_input_ids.append("sensor.other")  # a copy: the coordinator is unaffected
         assert coord.pv_input_ids == ["sensor.pv_a", "sensor.pv_b"]
+
+    def test_exposes_one_accessor_per_counter_role(self) -> None:
+        entry = _FakeEntry(
+            ["sensor.pv"],
+            ["sensor.charge", "sensor.export"],
+            ["sensor.grid_in", "sensor.discharge"],
+        )
+        coord = EffyCoordinator(_FakeHass(), entry)
+        assert coord.grid_import_id == "sensor.grid_in"
+        assert coord.discharge_id == "sensor.discharge"
+        assert coord.charge_id == "sensor.charge"
+        assert coord.grid_export_id == "sensor.export"
+        assert coord.bms_input_ids == ["sensor.grid_in", "sensor.discharge"]
+        assert coord._output_ids == ["sensor.charge", "sensor.export"]
+        assert coord._input_ids == ["sensor.pv", "sensor.grid_in", "sensor.discharge"]
+
+    def test_an_unset_role_has_no_entity_and_the_standby_sensor_follows_the_bms_inputs(
+        self,
+    ) -> None:
+        pv_only = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.export"]))
+        assert pv_only.grid_import_id is None and pv_only.discharge_id is None
+        assert pv_only.charge_id == "sensor.export" and pv_only.grid_export_id is None
+        assert pv_only.standby_enabled is False
+        for bms in (["sensor.g"], ["sensor.g", "sensor.d"]):
+            with_bms = EffyCoordinator(_FakeHass(), _FakeEntry([], ["sensor.c"], bms))
+            assert with_bms.standby_enabled is True
+        only_discharge = _FakeEntry([], ["sensor.c"])
+        only_discharge.options["discharge_sensor"] = "sensor.d"
+        coord = EffyCoordinator(_FakeHass(), only_discharge)
+        assert coord.standby_enabled is True and coord.grid_import_id is None
+        assert coord.discharge_id == "sensor.d"
 
     def test_subscribe_registers_and_unsubscribe_removes(self) -> None:
         coord = self._coordinator()

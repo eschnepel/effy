@@ -35,6 +35,8 @@ from typing import Any
 
 import pytest
 
+from tests.support import role_options
+
 _BASE = Path(__file__).resolve().parent.parent / "custom_components" / "effy"
 _PKG = "effy_history_under_test"
 _UTC = timezone.utc
@@ -275,12 +277,7 @@ def _options(
     inputs: list[str], outputs: list[str] | None = None, bms: list[str] | None = None
 ) -> dict[str, Any]:
     """``inputs`` are the PV inputs, ``bms`` the BMS inputs (ADR-019)."""
-    return {
-        _const.CONF_PV_INPUT_SENSORS: inputs,
-        _const.CONF_BMS_INPUT_SENSORS: bms or [],
-        _const.CONF_OUTPUT_SENSORS: outputs or [],
-        _const.CONF_MAX_HISTORY_DAYS: 5,
-    }
+    return role_options(inputs, bms or [], outputs or [], **{_const.CONF_MAX_HISTORY_DAYS: 5})
 
 
 def _energy_world(**sensors: list[tuple[datetime, str]]) -> _World:

@@ -5,19 +5,21 @@
     "step": {
       "user": {
         "title": "Configure Effy",
-        "description": "Set up effective PV loss distribution. Select your PV input sources and your BMS input sources (battery import, grid import) and output sinks (battery export, grid export).",
+        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required.",
         "data": {
           "pv_input_sensors": "PV input sensors (PV strings)",
-          "bms_input_sensors": "BMS input sensors (BMS import from battery/grid)",
-          "output_sensors": "Output sensors (BMS export to battery/grid)",
+          "grid_import_sensor": "Grid import counter (BMS input: energy from the grid)",
+          "discharge_sensor": "Discharge counter (BMS input: energy out of the battery, battery side)",
+          "charge_sensor": "Charge counter (BMS output: energy into the battery, battery side)",
+          "grid_export_sensor": "Grid export counter (BMS output: energy to the grid)",
           "max_history_days": "Maximum history (days)"
         }
       }
     },
     "error": {
-      "at_least_one_input": "Please select at least one input sensor (PV or BMS).",
-      "sensor_in_both_input_lists": "A sensor cannot be both a PV input and a BMS input. Please remove it from one of the two lists.",
-      "at_least_one_output": "Please select at least one output sensor.",
+      "at_least_one_input": "Please select at least one input sensor (PV, grid import or discharge).",
+      "sensor_in_two_roles": "A sensor can only have one role. Please remove it from one of the roles.",
+      "at_least_one_output": "Please assign at least one output counter (charge or grid export).",
       "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first."
     }
   },
@@ -27,16 +29,19 @@
         "title": "Effy Options",
         "data": {
           "pv_input_sensors": "PV input sensors (PV strings)",
-          "bms_input_sensors": "BMS input sensors (BMS import from battery/grid)",
-          "output_sensors": "Output sensors (BMS export to battery/grid)",
+          "grid_import_sensor": "Grid import counter (BMS input: energy from the grid)",
+          "discharge_sensor": "Discharge counter (BMS input: energy out of the battery, battery side)",
+          "charge_sensor": "Charge counter (BMS output: energy into the battery, battery side)",
+          "grid_export_sensor": "Grid export counter (BMS output: energy to the grid)",
           "max_history_days": "Maximum history (days)"
-        }
+        },
+        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required."
       }
     },
     "error": {
-      "at_least_one_input": "Please select at least one input sensor (PV or BMS).",
-      "sensor_in_both_input_lists": "A sensor cannot be both a PV input and a BMS input. Please remove it from one of the two lists.",
-      "at_least_one_output": "Please select at least one output sensor.",
+      "at_least_one_input": "Please select at least one input sensor (PV, grid import or discharge).",
+      "sensor_in_two_roles": "A sensor can only have one role. Please remove it from one of the roles.",
+      "at_least_one_output": "Please assign at least one output counter (charge or grid export).",
       "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first."
     }
   },
@@ -56,6 +61,11 @@
       "recalculated_from": {
         "name": "Recalculated from"
       }
+    }
+  },
+  "exceptions": {
+    "outputs_not_assigned": {
+      "message": "Effy is not set up: no charge counter and no grid export counter is assigned. Please assign the BMS counters in Effy's options."
     }
   }
 }

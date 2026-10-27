@@ -84,7 +84,11 @@ class TestUnload:
 
 
 class TestReloadOnOptionsChange:
-    def test_the_entry_registers_the_reload_as_its_update_listener(self) -> None:
+    """The reload on an options change is the options flow's job (``OptionsFlowWithReload``),
+    not an update listener: Home Assistant forbids both together, and an entry whose setup
+    failed has lost its listeners (ADR-023 decision 1; tests of the flow: test_config_flow)."""
+
+    def test_the_entry_registers_no_update_listener(self) -> None:
         listeners: list[Any] = []
 
         class _Entry(_FakeEntry):
@@ -92,11 +96,7 @@ class TestReloadOnOptionsChange:
                 listeners.append(listener)
                 return lambda: None
 
-        asyncio.run(_init.async_setup_entry(_FakeHass(), _Entry({"output_sensors": []})))
+        asyncio.run(_init.async_setup_entry(_FakeHass(), _Entry({"charge_sensor": "sensor.c"})))
 
-        assert listeners == [_init._async_reload_entry]
-
-    def test_the_listener_reloads_the_entry_that_changed(self) -> None:
-        hass = _FakeHass()
-        asyncio.run(_init._async_reload_entry(hass, _FakeEntry({})))
-        assert hass.config_entries.reloads == [ENTRY_ID]
+        assert listeners == []
+        assert not hasattr(_init, "_async_reload_entry")

@@ -198,10 +198,10 @@ from .calculation import (
 )
 from .const import (
     CONF_MAX_HISTORY_DAYS,
-    CONF_OUTPUT_SENSORS,
     DEFAULT_MAX_HISTORY_DAYS,
 )
 from .inputs import all_input_ids, bms_input_ids
+from .inputs import output_ids as configured_output_ids
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -337,10 +337,10 @@ class _PhaseTimings:
     """
 
     def __init__(
-        self, kind: str, detail_log_level: int, *, parse_probe: bool = False, enabled: bool = True
+        self, kind: str, level: int, *, parse_probe: bool = False, enabled: bool = True
     ) -> None:
         self.kind = kind
-        self.detail_log_level = detail_log_level
+        self.level = level
         self.enabled = enabled
         self.parse_probe = parse_probe and enabled
         self.seconds: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
@@ -547,7 +547,7 @@ class _PhaseTimings:
         self._ended = _clock()
         self.longest_block = max(self.longest_block, self._ended - self._resumed)
         self.rows = rows
-        if not _LOGGER.isEnabledFor(self.detail_log_level):
+        if not _LOGGER.isEnabledFor(self.level):
             return
         sec = self.seconds
         parts = [
@@ -570,7 +570,7 @@ class _PhaseTimings:
             )
         if self.detail:
             parts.extend(f"\n  {line}" for line in self._detail_lines())
-        _LOGGER.log(self.detail_log_level, "%s", "".join(parts))
+        _LOGGER.log(self.level, "%s", "".join(parts))
 
     def _detail_lines(self) -> list[str]:
         """The detail block: headers flush left, their items indented two spaces."""
@@ -1267,7 +1267,7 @@ async def _compute_effective_slots(
     """
     phases.enter("compute")
     input_ids: list[str] = all_input_ids(entry_options)
-    output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
+    output_ids: list[str] = configured_output_ids(entry_options)
     all_ids: list[str] = input_ids + output_ids
     max_history_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
 
@@ -1935,7 +1935,7 @@ async def async_probe_last_slot_ready(
     sensors; nothing is read when there are none.
     """
     input_ids: list[str] = all_input_ids(entry_options)
-    output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
+    output_ids: list[str] = configured_output_ids(entry_options)
     all_ids: list[str] = input_ids + output_ids
     recorder = get_recorder(hass)
     stats_units: dict[str, str] = await recorder.async_add_executor_job(
@@ -2045,7 +2045,7 @@ async def async_read_drain_activity(
     unknown, which the machine never treats as quiet. One read for all sensors.
     """
     input_ids = all_input_ids(entry_options)
-    output_ids: list[str] = entry_options.get(CONF_OUTPUT_SENSORS, [])
+    output_ids: list[str] = configured_output_ids(entry_options)
     all_ids = input_ids + output_ids
     if not all_ids:
         return {}

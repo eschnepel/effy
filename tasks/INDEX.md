@@ -27,7 +27,7 @@
 | TASK-0014-compute-phase-off-the-event-loop | Run the compute phase as an executor job on plain data; independent of numpy (CAP-6, ADR-022 Decision 3, Q2/Q5) | skipped (G-perf: not released, 2026-10-25) | TASK-0010-recalculation-phase-timing | — |
 | TASK-0015-retire-pure-python-stages | Move production-unused pure-Python stage functions to `tests/` as the oracle (CAP-6, only if ADR-022 Q3 = A) | skipped (G-perf: not released, 2026-10-25) | TASK-0013-wire-array-native-compute-path | — |
 | TASK-0016-effy-exports-contract-file | Publish the ADR-021 contract as one copyable symbol file `effy_exports.py` that Effy itself imports; every symbol prefixed `EFFY_` (CAP-5 extension; human request 2026-10-23) | done | TASK-0009-config-attributes-on-recalculated-from | worker-inline; closed by the human 2026-10-24 |
-| TASK-0017-counter-roles-in-config | The four battery counters configured by function; old lists dropped, an unconfigured entry refuses setup (CAP-7, Draft ADR-023; Stage 0 verifies Home Assistant 2026.3) | todo | — | — |
+| TASK-0017-counter-roles-in-config | The four battery counters configured by function; old lists dropped, an unconfigured entry refuses setup (CAP-7, ADR-023) | done (2026-10-27; reviewer PASS) | — | worker-inline + reviewer-inline |
 | TASK-0018-function-key-on-source-series | Publish the `function` of every source series (CAP-7) | todo | TASK-0017-counter-roles-in-config | — |
 | TASK-0019-efficiency-pure-run-machine | Pure machine for charge and discharge efficiency in `calculation.py`: pure runs, standby energy, decayed sums, simulator (CAP-8) | todo | — | — |
 | TASK-0020-efficiency-slot-feed-and-restore | Feed that machine from the recorder after standby, restore and catch up 3 days (CAP-8) | todo | TASK-0017-counter-roles-in-config, TASK-0019-efficiency-pure-run-machine | — |
@@ -40,18 +40,18 @@
 | TASK-0027-battery-history-rebuild | History recalculation rebuilds battery and roundtrip efficiency (CAP-9) | todo | TASK-0022-efficiency-history-rebuild, TASK-0026-battery-and-roundtrip-efficiency-sensors | — |
 | TASK-0028-branch-coverage-non-defensive-code | Investigate which branches no test reaches, classify them (non-defensive / defensive / dead / needs real Home Assistant), then cover the non-defensive ones; one worker, file by file in slices, no gate in between; tests and coverage configuration only (human request 2026-10-24) | done | — | worker-inline + reviewer-inline |
 
-Draft ADR-023 tasks (TASK-0017 to TASK-0027, proposed 2026-10-23, **blocked
-until the human accepts ADR-023 at Gate 2**): the proposed order is the
-numbering. Shared files force it when working inline: 0017, 0020, 0022, 0025,
-0027 all edit `coordinator.py`; 0018, 0021, 0026 edit `sensor.py`, `catalog.py`
-and `effy_exports.py`; 0019 and 0024 edit `calculation.py`; 0017 and 0023 edit
-`config_flow.py` and `inputs.py`; 0020, 0022, 0025 and 0027 edit `history.py`.
-With sub-agents the disjoint pairs could run in parallel: 0019 beside 0017/0018,
-0023 beside 0019 to 0022, 0024 beside 0020 to 0022. README and the translations
-are shared by most tasks, so merge those last. TASK-0022 and TASK-0027 hook at
-the call site of `async_recalculate_history` so they do not collide with the
-Draft ADR-022 tasks TASK-0011 to TASK-0015; the Lead interleaves those at Phase
-3\.
+ADR-023 tasks (TASK-0017 to TASK-0027, proposed 2026-10-23; ADR-023 accepted
+2026-10-27 by the human's instruction to work on them, one after the other, a
+zip after each): the order is the numbering. Shared files force it when working
+inline: 0017, 0020, 0022, 0025, 0027 all edit `coordinator.py`; 0018, 0021, 0026
+edit `sensor.py`, `catalog.py` and `effy_exports.py`; 0019 and 0024 edit
+`calculation.py`; 0017 and 0023 edit `config_flow.py` and `inputs.py`; 0020,
+0022, 0025 and 0027 edit `history.py`. With sub-agents the disjoint pairs could
+run in parallel: 0019 beside 0017/0018, 0023 beside 0019 to 0022, 0024 beside
+0020 to 0022. README and the translations are shared by most tasks, so merge
+those last. TASK-0022 and TASK-0027 hook at the call site of
+`async_recalculate_history` so they do not collide with the Draft ADR-022 tasks
+TASK-0011 to TASK-0015; the Lead interleaves those at Phase 3.
 
 TASK-0028 (branch coverage) is independent of every other task and changes only
 `tests/`, the coverage configuration and documents. Recommended: run it before
@@ -173,6 +173,7 @@ changed.
 | 2026-10-26 | TASK-0030 | Gate 2 for patch-2 approved by the human: option A, "rewrite every hour affected, no compare is needed for the hour"; ADR-024 amended; implemented inline, reviewer PASS | human decision; 652 tests (645 before); the Pi's next record should show `rows unchanged` close to the rows read on a repeated run |
 | 2026-10-27 | TASK-0030 | patch-2 redone from the pushed state after the human rejected the first implementation (it also removed the hour rewrite's comparison and changed more than the defect needed); the hour rewrite is unchanged again | human review of `history.py`; scope of a patch is the defect and the approved rule only |
 | 2026-10-27 | TASK-0030 | verified on the Pi: a repeated history run 3.92 s (106 s before), 0 rows written, 109,762 unchanged; recent run wrote 14 rows, 4,018 unchanged | the human's record of 2026-10-27; G-perf target met; changed-rows and hour paths not yet seen on the Pi |
+| 2026-10-27 | TASK-0017 | ADR-023 accepted (Gate 2) by the human's instruction; Open decision 3 settled in stage 0: `OptionsFlowWithReload`, no update listener; TASK-0017 done | source of Home Assistant 2026.10.4 and 2026.3.0 |
 
 ## Audit Groups
 

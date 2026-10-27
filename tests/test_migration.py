@@ -58,6 +58,23 @@ def _tracking_get_instance(hass: Any) -> Any:
 _stub("homeassistant.components.recorder", get_instance=_tracking_get_instance)
 _stub("homeassistant.config_entries", ConfigEntry=object)
 _stub("homeassistant.core", HomeAssistant=object)
+
+
+class _ConfigEntryError(Exception):
+    """Stand-in for HA's ConfigEntryError: keeps the translation arguments."""
+
+    def __init__(
+        self,
+        *args: Any,
+        translation_domain: str | None = None,
+        translation_key: str | None = None,
+    ) -> None:
+        super().__init__(*args)
+        self.translation_domain = translation_domain
+        self.translation_key = translation_key
+
+
+_stub("homeassistant.exceptions", ConfigEntryError=_ConfigEntryError)
 _stub("homeassistant.helpers")
 _ir = _stub("homeassistant.helpers.issue_registry")
 _ir.IssueSeverity = type("IssueSeverity", (), {"WARNING": "warning"})  # type: ignore[attr-defined]
@@ -86,9 +103,13 @@ _const = _load("const")
 _init = _load("__init__")
 
 PV = _const.CONF_PV_INPUT_SENSORS
-BMS = _const.CONF_BMS_INPUT_SENSORS
-OUT = _const.CONF_OUTPUT_SENSORS
+CHARGE = _const.CONF_CHARGE_SENSOR
+GRID_EXPORT = _const.CONF_GRID_EXPORT_SENSOR
+GRID_IMPORT = _const.CONF_GRID_IMPORT_SENSOR
 LEGACY = "input_sensors"
+# the ADR-019 keys, ignored since ADR-023 decision 1
+OLD_BMS = "bms_input_sensors"
+OLD_OUT = "output_sensors"
 
 
 class _FakeEntry:
@@ -137,44 +158,53 @@ def _setup(options: dict[str, Any]) -> tuple[_FakeHass, _FakeEntry, bool]:
     return hass, entry, ok
 
 
+def _refused(options: dict[str, Any]) -> tuple[_FakeHass, _FakeEntry, _ConfigEntryError]:
+    """Set an entry up that must refuse; returns the hass, the entry and the error."""
+    _CALLS.clear()
+    _COORDINATOR_OPTIONS.clear()
+    hass, entry = _FakeHass(), _FakeEntry(options)
+    try:
+        asyncio.run(_init.async_setup_entry(hass, entry))
+    except _ConfigEntryError as err:
+        return hass, entry, err
+    raise AssertionError("the entry was set up, it should have refused")
+
+
 class TestSilentMigration:
-    def test_old_list_is_written_into_the_pv_list_once(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with caplog.at_level(logging.WARNING):
-            hass, entry, ok = _setup(
-                {LEGACY: ["sensor.pv", "sensor.bms_bat"], OUT: ["sensor.export"]}
-            )
-        assert ok is True
+    """The old ``input_sensors`` key still moves into the PV list; the entry then
+    refuses to set up, because no counter is assigned (ADR-023 decision 1)."""
+
+    def test_old_list_is_written_into_the_pv_list_once(self) -> None:
+        hass, entry, _err = _refused(
+            {LEGACY: ["sensor.pv", "sensor.bms_bat"], OLD_OUT: ["sensor.export"]}
+        )
         assert hass.config_entries.update_calls == [
-            {PV: ["sensor.pv", "sensor.bms_bat"], BMS: [], OUT: ["sensor.export"]}
+            {PV: ["sensor.pv", "sensor.bms_bat"], OLD_OUT: ["sensor.export"]}
         ]
         assert dict(entry.options) == hass.config_entries.update_calls[0]
         assert LEGACY not in entry.options
 
-    def test_one_warning_tells_the_user_to_assign_the_bms_inputs(
+    def test_one_warning_tells_the_user_to_assign_the_bms_counters(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
-            _setup({LEGACY: ["sensor.pv"], OUT: ["sensor.export"]})
+            _refused({LEGACY: ["sensor.pv"], OLD_OUT: ["sensor.export"]})
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
-        assert "PV" in warnings[0].getMessage() and "BMS" in warnings[0].getMessage()
+        message = warnings[0].getMessage()
+        assert "PV" in message and "BMS" in message and "does not set up" in message
 
-    def test_it_runs_before_the_coordinator_and_before_the_update_listener(self) -> None:
-        _setup({LEGACY: ["sensor.pv"], OUT: ["sensor.export"]})
-        assert _CALLS.index("async_update_entry") < _CALLS.index("coordinator")
-        assert _CALLS.index("async_update_entry") < _CALLS.index("add_update_listener")
-        # the coordinator already sees the migrated options
-        assert _COORDINATOR_OPTIONS[0][PV] == ["sensor.pv"]
-        assert LEGACY not in _COORDINATOR_OPTIONS[0]
+    def test_it_runs_first_and_then_the_entry_refuses_before_anything_is_created(self) -> None:
+        _refused({LEGACY: ["sensor.pv"], OLD_OUT: ["sensor.export"]})
+        assert _CALLS == ["async_update_entry"]  # no coordinator, no platforms, no listener
+        assert _COORDINATOR_OPTIONS == []
 
     def test_no_reload_is_triggered(self) -> None:
-        hass, _entry, _ok = _setup({LEGACY: ["sensor.pv"], OUT: ["sensor.export"]})
+        hass, _entry, _err = _refused({LEGACY: ["sensor.pv"], OLD_OUT: ["sensor.export"]})
         assert hass.config_entries.reloads == []
 
     def test_entry_identity_is_untouched(self) -> None:
-        _hass, entry, _ok = _setup({LEGACY: ["sensor.pv"], OUT: ["sensor.export"]})
+        _hass, entry, _err = _refused({LEGACY: ["sensor.pv"], OLD_OUT: ["sensor.export"]})
         assert entry.entry_id == "entry-1"  # unique IDs are {entry_id}_{slug}: unchanged
         assert entry.version == 1
 
@@ -185,17 +215,60 @@ class TestSilentMigration:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
-            hass, entry, _ok = _setup(
-                {LEGACY: ["sensor.old"], PV: ["sensor.pv"], BMS: ["sensor.bms"], OUT: ["sensor.o"]}
+            hass, entry, ok = _setup(
+                {LEGACY: ["sensor.old"], PV: ["sensor.pv"], CHARGE: "sensor.c"}
             )
-        assert dict(entry.options) == {PV: ["sensor.pv"], BMS: ["sensor.bms"], OUT: ["sensor.o"]}
+        assert ok is True
+        assert dict(entry.options) == {PV: ["sensor.pv"], CHARGE: "sensor.c"}
         assert hass.config_entries.update_calls == [dict(entry.options)]
         assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
     def test_an_entry_without_the_old_key_is_not_rewritten(self) -> None:
-        hass, entry, _ok = _setup({PV: ["sensor.pv"], BMS: [], OUT: ["sensor.o"]})
+        hass, entry, _ok = _setup({PV: ["sensor.pv"], CHARGE: "sensor.o"})
         assert hass.config_entries.update_calls == []
-        assert dict(entry.options) == {PV: ["sensor.pv"], BMS: [], OUT: ["sensor.o"]}
+        assert dict(entry.options) == {PV: ["sensor.pv"], CHARGE: "sensor.o"}
+
+
+class TestRefusalWithoutAnOutput:
+    """An entry without a charge or a grid export counter refuses to set up (ADR-023)."""
+
+    def test_an_entry_with_only_the_old_keys_refuses_with_a_translated_error(self) -> None:
+        options = {PV: ["sensor.pv"], OLD_BMS: ["sensor.bms"], OLD_OUT: ["sensor.out"]}
+        _hass, _entry, err = _refused(options)
+        assert err.translation_domain == "effy"
+        assert err.translation_key == "outputs_not_assigned"
+
+    def test_it_creates_nothing_schedules_nothing_and_writes_nothing(self) -> None:
+        hass, _entry, _err = _refused({PV: ["sensor.pv"], OLD_OUT: ["sensor.out"]})
+        assert _CALLS == []  # no migration write, no coordinator, no platforms, no listener
+        assert _COORDINATOR_OPTIONS == []
+        assert hass.data == {}
+        assert hass.config_entries.reloads == []
+
+    def test_inputs_without_an_output_refuse(self) -> None:
+        _refused({PV: ["sensor.pv"], GRID_IMPORT: "sensor.g"})
+
+    def test_either_output_alone_is_enough(self) -> None:
+        for options in ({CHARGE: "sensor.c"}, {GRID_EXPORT: "sensor.e"}):
+            _hass, _entry, ok = _setup({PV: ["sensor.pv"], **options})
+            assert ok is True
+
+    def test_an_emptied_output_counts_as_unset(self) -> None:
+        _refused({PV: ["sensor.pv"], CHARGE: "", GRID_EXPORT: None})
+
+    def test_a_set_up_entry_registers_no_update_listener(self) -> None:
+        # Home Assistant forbids one next to OptionsFlowWithReload, and a failed entry
+        # would lose it anyway (the options flow reloads the entry instead)
+        _setup({PV: ["sensor.pv"], CHARGE: "sensor.c"})
+        assert "add_update_listener" not in _CALLS
+        assert not hasattr(_init, "_async_reload_entry")
+
+    def test_the_refusal_message_exists_in_both_languages(self) -> None:
+        import json
+
+        for lang in ("en", "de"):
+            data = json.loads((_base / "translations" / f"{lang}.json").read_text(encoding="utf-8"))
+            assert data["exceptions"]["outputs_not_assigned"]["message"], lang
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +282,7 @@ class TestRecorderExclusionRetired:
     def test_setup_neither_probes_the_recorder_nor_touches_the_issue_registry(self) -> None:
         _RECORDER_CALLS.clear()
         _ISSUE_CALLS.clear()
-        _setup({PV: ["sensor.pv"], BMS: [], OUT: ["sensor.o"]})
+        _setup({PV: ["sensor.pv"], CHARGE: "sensor.o"})
         assert _RECORDER_CALLS == []
         assert _ISSUE_CALLS == []
 

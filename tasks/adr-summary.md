@@ -1,7 +1,7 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-10-23 (Draft ADR-023 added; ADR-019/021 amendments pending
-ADR-023; `effy_exports.py` added; last accepted change: ADR-021). Keep this
+Last updated: 2026-10-27 (ADR-023 accepted; the ADR-019 amendment is in force:
+four counter pickers, no update listener; `effy_exports.py` added). Keep this
 concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
@@ -107,14 +107,17 @@ concise; ADRs in `adr/` are authoritative.
   aggregation in the published `sensors` list (ADR-021).
 - No setup check or repair issue about the recorder (ADR-017 retired, ADR-020).
 
-## Draft ADRs (not yet ground truth — do not implement from these)
+## Recent ADRs
 
-- **ADR-023 (Draft, 2026-10-23):** four efficiency sensors (charge, battery,
+- **ADR-023 (Accepted, 2026-10-27):** four efficiency sensors (charge, battery,
   discharge, roundtrip) from the BMS counters configured by function (four
   single pickers replace the BMS-input and output lists, no migration), SoC and
   capacity pickers, pure runs of charge or discharge slots less standby energy,
-  valleys of the SoC between spans, decayed sums at 5 % per kWh. Not ground
-  truth.
+  valleys of the SoC between spans, decayed sums at 5 % per kWh. In force since
+  TASK-0017: the options hold `grid_import_sensor`, `discharge_sensor`,
+  `charge_sensor`, `grid_export_sensor` (the old lists are ignored); an entry
+  without a charge or grid export counter refuses to set up; the entry is
+  reloaded by `OptionsFlowWithReload`, Effy has no update listener.
 - **ADR-024 (Accepted, 2026-10-25):** the write phase is 98 % of a history
   recalculation (104 s of 107 s at 28 days on the Pi, about 1 ms per short-term
   row: Home Assistant's import does one `SELECT` and one `UPDATE`/`INSERT` per

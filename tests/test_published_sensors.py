@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from tests.support import role_options
+
 import pytest
 
 from tests.test_standby_sensor import _sensor
@@ -26,7 +28,7 @@ class _Entry:
     entry_id = "entry1"
 
     def __init__(self, max_history_days: int | None = 28) -> None:
-        self.options: dict[str, Any] = {"output_sensors": [OUT]}
+        self.options: dict[str, Any] = role_options(outputs=[OUT])
         if max_history_days is not None:
             self.options["max_history_days"] = max_history_days
 

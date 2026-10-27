@@ -53,7 +53,6 @@ from .catalog import (
 )
 from .const import (
     CONF_MAX_HISTORY_DAYS,
-    CONF_OUTPUT_SENSORS,
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
 )
@@ -72,6 +71,7 @@ from .effy_exports import (
     EffySeries,
 )
 from .inputs import all_input_ids
+from .inputs import output_ids as configured_output_ids
 from .coordinator import EffyCoordinator
 from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
 
@@ -142,7 +142,7 @@ def _source_descriptor(
         source_entity_id,
         pv_input_ids=coordinator.pv_input_ids,
         bms_input_ids=coordinator.bms_input_ids,
-        output_ids=entry.options.get(CONF_OUTPUT_SENSORS, []),
+        output_ids=configured_output_ids(entry.options),
     )
 
 
@@ -154,7 +154,7 @@ async def async_setup_entry(
     """Set up Effy sensor entities."""
     coordinator: EffyCoordinator = hass.data[DOMAIN][entry.entry_id]
     input_ids: list[str] = all_input_ids(entry.options)
-    output_ids: list[str] = entry.options.get(CONF_OUTPUT_SENSORS, [])
+    output_ids: list[str] = configured_output_ids(entry.options)
 
     entities: list[SensorEntity] = [
         EffySensor(hass, entry, coordinator, entity_id) for entity_id in input_ids

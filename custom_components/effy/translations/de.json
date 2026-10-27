@@ -5,19 +5,21 @@
     "step": {
       "user": {
         "title": "Effy konfigurieren",
-        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und BMS-Eingänge (Batterieimport, Netzimport) und Ausgänge (Batterieexport, Netzexport) auswählen.",
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig.",
         "data": {
           "pv_input_sensors": "PV-Eingangs-Sensoren (PV-Strings)",
-          "bms_input_sensors": "BMS-Eingangs-Sensoren (BMS-Import von Batterie/Netz)",
-          "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
+          "grid_import_sensor": "Netzimport-Zähler (BMS-Eingang: Energie aus dem Netz)",
+          "discharge_sensor": "Entlade-Zähler (BMS-Eingang: Energie aus der Batterie, Batterieseite)",
+          "charge_sensor": "Lade-Zähler (BMS-Ausgang: Energie in die Batterie, Batterieseite)",
+          "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
           "max_history_days": "Maximale Historie (Tage)"
         }
       }
     },
     "error": {
-      "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor (PV oder BMS) auswählen.",
-      "sensor_in_both_input_lists": "Ein Sensor kann nicht gleichzeitig PV-Eingang und BMS-Eingang sein. Bitte aus einer der beiden Listen entfernen.",
-      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen.",
+      "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen (PV, Netzimport oder Entladung).",
+      "sensor_in_two_roles": "Ein Sensor kann nur eine Rolle haben. Bitte aus einer der Rollen entfernen.",
+      "at_least_one_output": "Bitte mindestens einen Ausgangs-Zähler zuordnen (Ladung oder Netzexport).",
       "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren."
     }
   },
@@ -27,16 +29,19 @@
         "title": "Effy Optionen",
         "data": {
           "pv_input_sensors": "PV-Eingangs-Sensoren (PV-Strings)",
-          "bms_input_sensors": "BMS-Eingangs-Sensoren (BMS-Import von Batterie/Netz)",
-          "output_sensors": "Ausgangs-Sensoren (BMS-Export zu Batterie/Netz)",
+          "grid_import_sensor": "Netzimport-Zähler (BMS-Eingang: Energie aus dem Netz)",
+          "discharge_sensor": "Entlade-Zähler (BMS-Eingang: Energie aus der Batterie, Batterieseite)",
+          "charge_sensor": "Lade-Zähler (BMS-Ausgang: Energie in die Batterie, Batterieseite)",
+          "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
           "max_history_days": "Maximale Historie (Tage)"
-        }
+        },
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig."
       }
     },
     "error": {
-      "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor (PV oder BMS) auswählen.",
-      "sensor_in_both_input_lists": "Ein Sensor kann nicht gleichzeitig PV-Eingang und BMS-Eingang sein. Bitte aus einer der beiden Listen entfernen.",
-      "at_least_one_output": "Bitte mindestens einen Ausgangs-Sensor auswählen.",
+      "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen (PV, Netzimport oder Entladung).",
+      "sensor_in_two_roles": "Ein Sensor kann nur eine Rolle haben. Bitte aus einer der Rollen entfernen.",
+      "at_least_one_output": "Bitte mindestens einen Ausgangs-Zähler zuordnen (Ladung oder Netzexport).",
       "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren."
     }
   },
@@ -56,6 +61,11 @@
       "recalculated_from": {
         "name": "Neu berechnet ab"
       }
+    }
+  },
+  "exceptions": {
+    "outputs_not_assigned": {
+      "message": "Effy wird nicht eingerichtet: Es ist kein Lade- und kein Netzexport-Zähler zugeordnet. Bitte in den Effy-Optionen die BMS-Zähler zuordnen."
     }
   }
 }

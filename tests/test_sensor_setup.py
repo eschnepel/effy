@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from tests.support import role_options
+
 import pytest
 
 from tests.test_published_sensors import _Coordinator, _last
@@ -46,11 +48,7 @@ class _SetupEntry:
     entry_id = "entry1"
 
     def __init__(self, pv: list[str], out: list[str]) -> None:
-        self.options: dict[str, Any] = {
-            "pv_input_sensors": pv,
-            "bms_input_sensors": [],
-            "output_sensors": out,
-        }
+        self.options: dict[str, Any] = role_options(pv, (), out)
         self.unloads: list[Any] = []
 
     def async_on_unload(self, callback: Any) -> None:

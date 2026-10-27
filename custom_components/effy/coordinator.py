@@ -110,8 +110,16 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 
 from .calculation import DrainState, LossDistribution, drain_state_from_restore
-from .const import CONF_OUTPUT_SENSORS
-from .inputs import all_input_ids, bms_input_ids, pv_input_ids
+from .inputs import (
+    all_input_ids,
+    bms_input_ids,
+    charge_id,
+    discharge_id,
+    grid_export_id,
+    grid_import_id,
+    output_ids,
+    pv_input_ids,
+)
 from .history import (
     async_probe_last_slot_ready,
     async_recalculate_history,
@@ -199,7 +207,12 @@ class EffyCoordinator:
         self._pv_input_ids: list[str] = pv_input_ids(entry.options)
         self._bms_input_ids: list[str] = bms_input_ids(entry.options)
         self._input_ids: list[str] = all_input_ids(entry.options)
-        self._output_ids: list[str] = entry.options.get(CONF_OUTPUT_SENSORS, [])
+        self._output_ids: list[str] = output_ids(entry.options)
+        # one accessor per BMS counter (ADR-023 decision 1); ``None`` when unset
+        self._grid_import_id: str | None = grid_import_id(entry.options)
+        self._discharge_id: str | None = discharge_id(entry.options)
+        self._charge_id: str | None = charge_id(entry.options)
+        self._grid_export_id: str | None = grid_export_id(entry.options)
 
         # Subscriber registry: entity_id → callback
         self._subscribers: dict[str, SubscriberCallback] = {}
@@ -284,6 +297,26 @@ class EffyCoordinator:
     def bms_input_ids(self) -> list[str]:
         """Source entity IDs of the BMS inputs (ADR-019); the drain sources of ADR-018."""
         return list(self._bms_input_ids)
+
+    @property
+    def grid_import_id(self) -> str | None:
+        """The grid import counter's entity ID, or ``None`` (ADR-023)."""
+        return self._grid_import_id
+
+    @property
+    def discharge_id(self) -> str | None:
+        """The discharge counter's entity ID, or ``None`` (ADR-023)."""
+        return self._discharge_id
+
+    @property
+    def charge_id(self) -> str | None:
+        """The charge counter's entity ID, or ``None`` (ADR-023)."""
+        return self._charge_id
+
+    @property
+    def grid_export_id(self) -> str | None:
+        """The grid export counter's entity ID, or ``None`` (ADR-023)."""
+        return self._grid_export_id
 
     @property
     def standby_enabled(self) -> bool:
