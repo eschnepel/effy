@@ -337,10 +337,10 @@ class _PhaseTimings:
     """
 
     def __init__(
-        self, kind: str, level: int, *, parse_probe: bool = False, enabled: bool = True
+        self, kind: str, detail_log_level: int, *, parse_probe: bool = False, enabled: bool = True
     ) -> None:
         self.kind = kind
-        self.level = level
+        self.detail_log_level = detail_log_level
         self.enabled = enabled
         self.parse_probe = parse_probe and enabled
         self.seconds: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
@@ -547,7 +547,7 @@ class _PhaseTimings:
         self._ended = _clock()
         self.longest_block = max(self.longest_block, self._ended - self._resumed)
         self.rows = rows
-        if not _LOGGER.isEnabledFor(self.level):
+        if not _LOGGER.isEnabledFor(self.detail_log_level):
             return
         sec = self.seconds
         parts = [
@@ -570,7 +570,7 @@ class _PhaseTimings:
             )
         if self.detail:
             parts.extend(f"\n  {line}" for line in self._detail_lines())
-        _LOGGER.log(self.level, "%s", "".join(parts))
+        _LOGGER.log(self.detail_log_level, "%s", "".join(parts))
 
     def _detail_lines(self) -> list[str]:
         """The detail block: headers flush left, their items indented two spaces."""

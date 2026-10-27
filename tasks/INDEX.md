@@ -172,6 +172,7 @@ changed.
 | 2026-10-26 | TASK-0030 | cause found: Home Assistant 2026.10.4 drops `state` (and `sum`) from `statistics_during_period` when `has_sum` is false; patch-1 closed `done`; added draft TASK-0030-write-only-changed-rows-history-patch-2 with options A/B (pending Gate 2) | the Pi's record (`state stored None` in every row) and the release's source (`recorder/statistics.py`, tag 2026.10.4); the tests' fake returned `state` unconditionally |
 | 2026-10-26 | TASK-0030 | Gate 2 for patch-2 approved by the human: option A, "rewrite every hour affected, no compare is needed for the hour"; ADR-024 amended; implemented inline, reviewer PASS | human decision; 652 tests (645 before); the Pi's next record should show `rows unchanged` close to the rows read on a repeated run |
 | 2026-10-27 | TASK-0030 | patch-2 redone from the pushed state after the human rejected the first implementation (it also removed the hour rewrite's comparison and changed more than the defect needed); the hour rewrite is unchanged again | human review of `history.py`; scope of a patch is the defect and the approved rule only |
+| 2026-10-27 | TASK-0030 | verified on the Pi: a repeated history run 3.92 s (106 s before), 0 rows written, 109,762 unchanged; recent run wrote 14 rows, 4,018 unchanged | the human's record of 2026-10-27; G-perf target met; changed-rows and hour paths not yet seen on the Pi |
 
 ## Audit Groups
 

@@ -139,3 +139,22 @@ rewrite no longer comparing, `min` ignored, a tolerance on `mean`. An earlier
 version of this patch also removed the hour
 rewrite's comparison and changed `_unchanged_rows`' signature; the human
 rejected it, and it was redone from the pushed state.
+
+## Verification on the Pi (2026-10-27, HA 2026.10.4, button pressed after a run)
+
+- History run: total 3.92 s (before: 106 s). Write 0.20 s (before: 104 s),
+  `rows written 0`, `rows unchanged 109762`, `earliest change None`, no hourly
+  rows written. 109,762 is the sum of the rows read per series (46,818 effective
+  \+ 32,252 derived power + 30,692 smoothed), and each of the 14 series reads
+  `equal` = `read`, `mean differs 0`, `columns set 0`.
+- The stored-row reads cost 1.37 s (0.08 to 0.14 s per series) and are the whole
+  rise of the fetch phase (1.8 s to 2.96 s). 20 recorder queries: units, 4 raw,
+  power, 14 stored; no hourly read.
+- Event loop held at most 0.37 s (limit 1 s).
+- Recent run (slot job, with the 24-hour catch-up window because of a counter
+  jump): 14 rows written (the new slot, 14 series), 4,018 unchanged, 0.19 s.
+- Not exercised by this log: a run that writes a change (so the hours of changed
+  slots), the hour rewrite at an hour boundary, and the hours older than
+  `keep_days` (60 days kept, 28 history days).
+- Not visible to the check: the stored `state` (Home Assistant does not return
+  it).
