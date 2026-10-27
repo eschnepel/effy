@@ -136,9 +136,9 @@ so an hourly row is unchanged only if its last 5-minute row is too).
 mutants caught: `state` compared again, no hour ever unchanged, every hour
 unchanged, an uncompared slot ignored, a history run reading the hours, the hour
 rewrite no longer comparing, `min` ignored, a tolerance on `mean`. An earlier
-version of this patch also removed the hour
-rewrite's comparison and changed `_unchanged_rows`' signature; the human
-rejected it, and it was redone from the pushed state.
+version of this patch also removed the hour rewrite's comparison and changed
+`_unchanged_rows`' signature; the human rejected it, and it was redone from the
+pushed state.
 
 ## Verification on the Pi (2026-10-27, HA 2026.10.4, button pressed after a run)
 
