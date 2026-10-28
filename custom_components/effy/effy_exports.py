@@ -42,6 +42,9 @@ EFFY_PUBLISHED_SCHEMA_VERSION: Final = 1
 EFFY_RECALCULATED_FROM_ENTITY_ID: Final = "sensor.effy_recalculated_from"
 # The standby power estimate (ADR-018); also listed in ``sensors``.
 EFFY_STANDBY_POWER_ENTITY_ID: Final = "sensor.effy_standby_power"
+# The charge and discharge efficiency estimates (ADR-023); also listed in ``sensors``.
+EFFY_CHARGE_EFFICIENCY_ENTITY_ID: Final = "sensor.effy_charge_efficiency"
+EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID: Final = "sensor.effy_discharge_efficiency"
 
 # --- Attributes of the recalculated-from sensor ---------------------------------
 
@@ -69,6 +72,8 @@ EFFY_SERIES_EFFECTIVE: Final = "effective"
 EFFY_SERIES_DERIVED_POWER: Final = "derived_power"
 EFFY_SERIES_SMOOTHED: Final = "smoothed"
 EFFY_SERIES_STANDBY_POWER: Final = "standby_power"
+EFFY_SERIES_CHARGE_EFFICIENCY: Final = "charge_efficiency"
+EFFY_SERIES_DISCHARGE_EFFICIENCY: Final = "discharge_efficiency"
 
 # ``direction``: the direction of the flow the sensor stands for.
 EFFY_DIRECTION_INPUT: Final = "input"
@@ -106,7 +111,23 @@ EFFY_STANDBY_AGGREGATIONS: Final = (
     EFFY_AGGREGATION_MAX,
 )
 
-EffySeries = Literal["effective", "derived_power", "smoothed", "standby_power"]
+# The efficiency sensors are like the standby sensor in this: not written by Effy's
+# statistics writer, the recorder compiles their statistics from a measurement sensor
+# (ADR-023 decision 2, ADR-020).
+EFFY_EFFICIENCY_AGGREGATIONS: Final = (
+    EFFY_AGGREGATION_MEAN,
+    EFFY_AGGREGATION_MIN,
+    EFFY_AGGREGATION_MAX,
+)
+
+EffySeries = Literal[
+    "effective",
+    "derived_power",
+    "smoothed",
+    "standby_power",
+    "charge_efficiency",
+    "discharge_efficiency",
+]
 EffyDirection = Literal["input", "output"]
 EffyRole = Literal["pv", "bms"]
 EffyFunction = Literal["grid_import", "discharge", "charge", "grid_export"]
@@ -119,8 +140,8 @@ class EffyPublishedSensor(TypedDict):
 
     entity_id: str
     series: EffySeries
-    # The configured source sensor; ``None`` for the standby power sensor, which has
-    # no single source.
+    # The configured source sensor; ``None`` for the standby power and efficiency
+    # sensors, which have no single source.
     source_entity_id: str | None
     direction: EffyDirection
     role: EffyRole

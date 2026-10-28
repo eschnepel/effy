@@ -31,7 +31,7 @@
 | TASK-0018-function-key-on-source-series | Publish the `function` of every source series (CAP-7) | done (2026-10-27; reviewer PASS) | TASK-0017-counter-roles-in-config | worker-inline + reviewer-inline |
 | TASK-0019-efficiency-pure-run-machine | Pure machine for charge and discharge efficiency in `calculation.py`: pure runs, standby energy, decayed sums, simulator (CAP-8) | done (2026-10-27; reviewer PASS) | — | worker-inline + reviewer-inline |
 | TASK-0020-efficiency-slot-feed-and-restore | Feed that machine from the recorder after standby, restore and catch up 3 days (CAP-8) | done (2026-10-27; reviewer PASS) | TASK-0017-counter-roles-in-config, TASK-0019-efficiency-pure-run-machine | worker-inline + reviewer-inline |
-| TASK-0021-charge-and-discharge-efficiency-sensors | `sensor.effy_charge_efficiency` and `sensor.effy_discharge_efficiency`, published (CAP-8) | todo | TASK-0018-function-key-on-source-series, TASK-0020-efficiency-slot-feed-and-restore | — |
+| TASK-0021-charge-and-discharge-efficiency-sensors | `sensor.effy_charge_efficiency` and `sensor.effy_discharge_efficiency`, published (CAP-8) | done (2026-10-27; reviewer PASS) | TASK-0018-function-key-on-source-series, TASK-0020-efficiency-slot-feed-and-restore | worker-inline + reviewer-inline |
 | TASK-0022-efficiency-history-rebuild | History recalculation rebuilds charge and discharge efficiency, hooked at the call site (CAP-8) | todo | TASK-0021-charge-and-discharge-efficiency-sensors | — |
 | TASK-0023-soc-capacity-and-hysteresis-options | Options for SoC, battery capacity and valley hysteresis (CAP-9) | todo | TASK-0017-counter-roles-in-config | — |
 | TASK-0024-valley-span-machine | Pure valley and span machine for battery efficiency; settles the boundary convention by simulation (CAP-9) | todo | TASK-0019-efficiency-pure-run-machine | — |
@@ -177,6 +177,7 @@ changed.
 | 2026-10-27 | TASK-0018 | done; finding for the human: the published `aggregations: [mean, state]` of the source series cannot be read back (HA drops `state` without `has_sum`) | TASK-0030 patch 2; not changed, a published value |
 | 2026-10-27 | TASK-0019 | done; the run kinds are `charging`/`discharging` because `charge`/`discharge` are reserved for the published function | the TASK-0018 guard test caught the first spelling |
 | 2026-10-27 | TASK-0020 | done; ADR-023 Open decision 4 settled (every efficiency sensor stores the whole dump); finding: pure slots only exist in runs longer than about 2 h, because of the backward redistribution of idle counters | simulation with 10 Wh counters counted nothing; the Pi's records will show the real count |
+| 2026-10-27 | TASK-0021 | done; the efficiency sensors are published with `charge_efficiency` / `discharge_efficiency` | the TASK-0018 guard caught a second spelling of the series |
 
 ## Audit Groups
 

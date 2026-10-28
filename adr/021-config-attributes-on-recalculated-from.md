@@ -257,7 +257,7 @@ time of this restoration.
 
 ---
 
-## Amendment — 2026-10-23 (efficiency sensors and the `function` key; in force since ADR-023 was accepted, 2026-10-27; the `function` key since TASK-0018, the efficiency series with TASK-0021 and TASK-0026)
+## Amendment — 2026-10-23 (efficiency sensors and the `function` key; in force since ADR-023 was accepted, 2026-10-27; the `function` key since TASK-0018, the charge and discharge efficiency series since TASK-0021, the battery and roundtrip series with TASK-0026)
 
 **Reason:** ADR-023 (Draft) adds four sensors and gives the BMS counters named
 roles; consumers such as Chargy should pick by function, not by guessing.

@@ -165,6 +165,35 @@ class TestDescribeSourceSeries:
 
 
 class TestDescribeStandby:
+    @pytest.mark.parametrize(
+        ("entity_id", "series"),
+        [
+            ("sensor.effy_charge_efficiency", "charge_efficiency"),
+            ("sensor.effy_discharge_efficiency", "discharge_efficiency"),
+        ],
+    )
+    def test_an_efficiency_sensor_is_an_output_with_no_source_and_no_function(
+        self, entity_id: str, series: str
+    ) -> None:
+        # ADR-023 decision 2: recorded with the recorder's own mean, min and max; like
+        # the standby entry it is no series of one counter, so it has no ``function``
+        entry = catalog.describe_efficiency(entity_id, series)
+        assert entry == {
+            "entity_id": entity_id,
+            "series": series,
+            "source_entity_id": None,
+            "direction": "output",
+            "role": "bms",
+            "aggregations": ["mean", "min", "max"],
+        }
+        assert "function" not in entry
+
+    def test_the_efficiency_descriptors_do_not_share_their_aggregations_list(self) -> None:
+        a = catalog.describe_efficiency("sensor.effy_a", "charge_efficiency")
+        a["aggregations"].append("sum")
+        b = catalog.describe_efficiency("sensor.effy_b", "charge_efficiency")
+        assert b["aggregations"] == ["mean", "min", "max"]
+
     def test_the_standby_sensor_is_an_output_with_no_source(self) -> None:
         assert catalog.describe_standby("sensor.effy_standby_power") == {
             "entity_id": "sensor.effy_standby_power",

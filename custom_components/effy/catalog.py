@@ -33,6 +33,7 @@ from .effy_exports import (
     EFFY_PUBLISHED_SCHEMA_VERSION,
     EFFY_ROLE_BMS,
     EFFY_ROLE_PV,
+    EFFY_EFFICIENCY_AGGREGATIONS,
     EFFY_SERIES_STANDBY_POWER,
     EFFY_STANDBY_AGGREGATIONS,
     EffyDirection,
@@ -98,6 +99,22 @@ def describe_standby(entity_id: str) -> EffyPublishedSensor:
         EFFY_KEY_DIRECTION: EFFY_DIRECTION_OUTPUT,
         EFFY_KEY_ROLE: EFFY_ROLE_BMS,
         EFFY_KEY_AGGREGATIONS: list(EFFY_STANDBY_AGGREGATIONS),
+    }
+
+
+def describe_efficiency(entity_id: str, series: EffySeries) -> EffyPublishedSensor:
+    """Describe an efficiency sensor: an output with no single source (ADR-023).
+
+    Like the standby entry it has no ``function`` key: it is not a series of one
+    configured counter. ``series`` is ``charge_efficiency`` or ``discharge_efficiency``.
+    """
+    return {
+        EFFY_KEY_ENTITY_ID: entity_id,
+        EFFY_KEY_SERIES: series,
+        EFFY_KEY_SOURCE_ENTITY_ID: None,
+        EFFY_KEY_DIRECTION: EFFY_DIRECTION_OUTPUT,
+        EFFY_KEY_ROLE: EFFY_ROLE_BMS,
+        EFFY_KEY_AGGREGATIONS: list(EFFY_EFFICIENCY_AGGREGATIONS),
     }
 
 

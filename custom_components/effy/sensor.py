@@ -41,12 +41,16 @@ from homeassistant.util import slugify
 
 from .calculation import (
     DrainState,
+    EffEstimate,
     LossDistribution,
+    RunState,
     drain_restore_data,
     effective_in_original_unit,
+    run_restore_data,
 )
 from .catalog import (
     base_attributes,
+    describe_efficiency,
     describe_source_series,
     describe_standby,
     published_attributes,
@@ -62,8 +66,12 @@ from .effy_exports import (
     EFFY_ATTR_RESTORED_AT,
     EFFY_ATTR_SCHEMA_VERSION,
     EFFY_ATTR_SENSORS,
+    EFFY_CHARGE_EFFICIENCY_ENTITY_ID,
+    EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID,
     EFFY_RECALCULATED_FROM_ENTITY_ID,
+    EFFY_SERIES_CHARGE_EFFICIENCY,
     EFFY_SERIES_DERIVED_POWER,
+    EFFY_SERIES_DISCHARGE_EFFICIENCY,
     EFFY_SERIES_EFFECTIVE,
     EFFY_SERIES_SMOOTHED,
     EFFY_STANDBY_POWER_ENTITY_ID,
@@ -190,6 +198,7 @@ async def async_setup_entry(
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
     entities.extend(_standby_entities(hass, entry, coordinator))
+    entities.extend(_efficiency_entities(hass, entry, coordinator))
 
     async_add_entities(entities, update_before_add=False)
 
@@ -218,6 +227,32 @@ def _standby_entities(
     if stale is not None:
         registry.async_remove(stale)
     return []
+
+
+def _efficiency_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """The charge and discharge efficiency sensors, each only with its pair (ADR-023).
+
+    Charge efficiency needs the grid import and the charge counter, discharge
+    efficiency the discharge and the grid export counter. A sensor registered earlier
+    whose pair is no longer configured is removed from the registry, so it does not
+    linger as an orphan (like the standby sensor).
+    """
+    wanted = {
+        "charging": bool(coordinator.grid_import_id and coordinator.charge_id),
+        "discharging": bool(coordinator.discharge_id and coordinator.grid_export_id),
+    }
+    registry = er.async_get(hass)
+    entities: list[SensorEntity] = []
+    for kind, enabled in wanted.items():
+        if enabled:
+            entities.append(EffyEfficiencySensor(hass, entry, coordinator, kind))
+            continue
+        stale = registry.async_get_entity_id("sensor", DOMAIN, _efficiency_unique_id(entry, kind))
+        if stale is not None:
+            registry.async_remove(stale)
+    return entities
 
 
 def _build_derived_entities(
@@ -965,4 +1000,170 @@ class EffyStandbyPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     def _on_standby(self, state: DrainState) -> None:
         """The machine moved on after a slot job: take its state and publish it."""
         self._drain = state
+        self.async_write_ha_state()
+
+
+# What distinguishes the two efficiency sensors: (entity ID, series, name). The
+# machine's kinds are ``charging`` and ``discharging`` (calculation.py); the unique ID
+# is the entry ID and the series, like ``{entry_id}_standby_power``.
+_EFFICIENCY_KINDS = {
+    "charging": (
+        EFFY_CHARGE_EFFICIENCY_ENTITY_ID,
+        EFFY_SERIES_CHARGE_EFFICIENCY,
+        "Charge efficiency",
+    ),
+    "discharging": (
+        EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID,
+        EFFY_SERIES_DISCHARGE_EFFICIENCY,
+        "Discharge efficiency",
+    ),
+}
+
+
+def _efficiency_unique_id(entry: ConfigEntry, kind: str) -> str:
+    return f"{entry.entry_id}_{_EFFICIENCY_KINDS[kind][1]}"
+
+
+class _EfficiencyExtraData(ExtraStoredData):  # type: ignore[misc]
+    """What an efficiency sensor stores beside its state: the machine's whole state
+    (``calculation.run_restore_data``) with the exact sums, not the rounded state."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self._data)
+
+
+class EffyEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """The charge or the discharge efficiency of the battery system in % (ADR-023 §2).
+
+    The state is the coordinator's decayed estimate on a 0 to 100 scale, rounded to
+    0.1, never capped. The entity is *unavailable* (not unknown) until the machine has
+    its first measurement and until the standby power sensor has its first value (no
+    invented default, ADR-018). Recorded like the standby sensor (ADR-020): state class
+    measurement, the recorder compiles ``mean``, ``min`` and ``max``; Effy writes no
+    statistics for it. Every efficiency sensor stores the whole machine dump; the
+    coordinator takes the later one when two sensors restore (``restore_efficiency``).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+        kind: str,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._kind = kind
+        self._entity_id, self._series, self._attr_name = _EFFICIENCY_KINDS[kind]
+        self._attr_unique_id = _efficiency_unique_id(entry, kind)
+        self._machine: RunState | None = None
+        self._unsub_coordinator: Callable[[], None] | None = None
+        self._unsub_standby: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return self._attr_unique_id or ""
+
+    @property
+    def entity_id(self) -> str:
+        return self._entity_id
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    def _estimate(self) -> EffEstimate | None:
+        if self._machine is None:
+            return None
+        return self._machine.charge if self._kind == "charging" else self._machine.discharge
+
+    @property
+    def available(self) -> bool:
+        estimate = self._estimate()
+        standby = self._coordinator.standby_state
+        return (
+            estimate is not None
+            and estimate.value is not None
+            and standby is not None
+            and standby.estimate is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        estimate = self._estimate()
+        if estimate is None or estimate.value is None:
+            return None
+        return round(estimate.value * 100.0, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Provenance of the estimate (ADR-023 §2); the values are on the state's scale."""
+        estimate = self._estimate()
+        if estimate is None or estimate.value is None or self._machine is None:
+            return None
+        processed = self._machine.last_slot
+        return {
+            "last_counted_value": round(estimate.last_value * 100.0, 1)
+            if estimate.last_value is not None
+            else None,
+            "last_counted_end": estimate.last_end.isoformat() if estimate.last_end else None,
+            "counted_kwh": round(estimate.counted_kwh, 3),
+            "counted_runs": estimate.counted_runs,
+            "last_processed_slot": processed.isoformat() if processed else None,
+        }
+
+    @property
+    def extra_restore_state_data(self) -> _EfficiencyExtraData | None:
+        if self._machine is None:
+            return None
+        return _EfficiencyExtraData(run_restore_data(self._machine))
+
+    async def async_added_to_hass(self) -> None:
+        """Restore, hand the coordinator the restored machine, subscribe and publish.
+
+        The coordinator feeds its machine only after this ran, so the first catch-up
+        starts from the restored state instead of counting twice. The catch-up itself
+        happens later inside a slot job: nothing here waits for the recorder, so Home
+        Assistant's startup is never blocked.
+        """
+        await super().async_added_to_hass()
+        last = await self.async_get_last_extra_data()
+        self._machine = self._coordinator.restore_efficiency(last.as_dict() if last else None)
+        self._unsub_coordinator = self._coordinator.subscribe_efficiency(self._on_machine)
+        # The standby sensor's first value makes this one available (ADR-023 §2).
+        self._unsub_standby = self._coordinator.subscribe_standby(self._on_standby)
+        self._unregister_published = self._coordinator.register_published(
+            describe_efficiency(self.entity_id, self._series)  # type: ignore[arg-type]
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        for attribute in ("_unsub_coordinator", "_unsub_standby", "_unregister_published"):
+            undo = getattr(self, attribute)
+            if undo is not None:
+                undo()
+                setattr(self, attribute, None)
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_machine(self, state: RunState) -> None:
+        """The machine moved on after a slot job: take its state and publish it."""
+        self._machine = state
+        self.async_write_ha_state()
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_standby(self, _state: DrainState) -> None:
+        """The standby estimate changed: availability may have changed with it."""
         self.async_write_ha_state()

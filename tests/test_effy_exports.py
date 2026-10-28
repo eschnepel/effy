@@ -41,6 +41,8 @@ PINNED: dict[str, object] = {
     "EFFY_PUBLISHED_SCHEMA_VERSION": 1,
     "EFFY_RECALCULATED_FROM_ENTITY_ID": "sensor.effy_recalculated_from",
     "EFFY_STANDBY_POWER_ENTITY_ID": "sensor.effy_standby_power",
+    "EFFY_CHARGE_EFFICIENCY_ENTITY_ID": "sensor.effy_charge_efficiency",
+    "EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID": "sensor.effy_discharge_efficiency",
     "EFFY_ATTR_SCHEMA_VERSION": "schema_version",
     "EFFY_ATTR_MAX_HISTORY_DAYS": "max_history_days",
     "EFFY_ATTR_SENSORS": "sensors",
@@ -57,6 +59,8 @@ PINNED: dict[str, object] = {
     "EFFY_SERIES_DERIVED_POWER": "derived_power",
     "EFFY_SERIES_SMOOTHED": "smoothed",
     "EFFY_SERIES_STANDBY_POWER": "standby_power",
+    "EFFY_SERIES_CHARGE_EFFICIENCY": "charge_efficiency",
+    "EFFY_SERIES_DISCHARGE_EFFICIENCY": "discharge_efficiency",
     "EFFY_DIRECTION_INPUT": "input",
     "EFFY_DIRECTION_OUTPUT": "output",
     "EFFY_ROLE_PV": "pv",
@@ -71,6 +75,7 @@ PINNED: dict[str, object] = {
     "EFFY_AGGREGATION_STATE": "state",
     "EFFY_AGGREGATIONS": ("mean", "state"),
     "EFFY_STANDBY_AGGREGATIONS": ("mean", "min", "max"),
+    "EFFY_EFFICIENCY_AGGREGATIONS": ("mean", "min", "max"),
 }
 
 
@@ -142,6 +147,7 @@ class TestTheContractIsPinned:
         }
         assert set(exports.EFFY_AGGREGATIONS) <= names
         assert set(exports.EFFY_STANDBY_AGGREGATIONS) <= names
+        assert set(exports.EFFY_EFFICIENCY_AGGREGATIONS) <= names
 
     def test_the_schema_version_is_a_positive_integer(self) -> None:
         version = exports.EFFY_PUBLISHED_SCHEMA_VERSION
@@ -187,6 +193,8 @@ class TestTheTypesMatchTheConstants:
             exports.EFFY_SERIES_DERIVED_POWER,
             exports.EFFY_SERIES_SMOOTHED,
             exports.EFFY_SERIES_STANDBY_POWER,
+            exports.EFFY_SERIES_CHARGE_EFFICIENCY,
+            exports.EFFY_SERIES_DISCHARGE_EFFICIENCY,
         }
         assert set(typing.get_args(exports.EffyDirection)) == {
             exports.EFFY_DIRECTION_INPUT,
@@ -215,6 +223,10 @@ class TestEffyHasNoSecondCopy:
         [
             "sensor.effy_recalculated_from",
             "sensor.effy_standby_power",
+            "sensor.effy_charge_efficiency",
+            "sensor.effy_discharge_efficiency",
+            "charge_efficiency",
+            "discharge_efficiency",
             "schema_version",
             "restored_as_of",
             "restored_at",

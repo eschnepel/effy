@@ -169,17 +169,23 @@ sensors:
     direction: output
     role: bms
     aggregations: [mean, min, max]
+  - entity_id: sensor.effy_charge_efficiency
+    series: charge_efficiency
+    source_entity_id:
+    direction: output
+    role: bms
+    aggregations: [mean, min, max]
 ```
 
 | Key | Meaning |
 | -- | -- |
 | `schema_version` | Raised only when an existing key or its meaning changes; new keys do not raise it |
 | `max_history_days` | The configured number of history days |
-| `series` | `effective`, `derived_power`, `smoothed` or `standby_power` |
-| `source_entity_id` | The configured source sensor; `null` for the standby sensor |
-| `direction` | `input` or `output`; the standby sensor is an `output` |
+| `series` | `effective`, `derived_power`, `smoothed`, `standby_power`, `charge_efficiency` or `discharge_efficiency` |
+| `source_entity_id` | The configured source sensor; `null` for the standby and the efficiency sensors |
+| `direction` | `input` or `output`; the standby and efficiency sensors are `output` |
 | `role` | `pv` or `bms`; every output is `bms` |
-| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input. The standby entry has no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
+| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input. The standby and efficiency entries have no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
 | `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's series have `mean` and `state` (never `sum`) |
 
 - **Which sensors are listed:** every Effy sensor that exists, except
@@ -197,6 +203,45 @@ sensors:
   `sensors` attribute: read its absence as "not ready yet".
 - **Size:** the attributes are recorded; Home Assistant stores no attribute set
   above 16 KiB (roughly 35 sources).
+
+### Charge and discharge efficiency
+
+With the grid import and the charge counter configured Effy creates
+`sensor.effy_charge_efficiency` (**Charge efficiency**); with the discharge and
+the grid export counter `sensor.effy_discharge_efficiency` (**Discharge
+efficiency**). Both are in **%** on a 0 to 100 scale, rounded to 0.1, with state
+class measurement and no device class; Home Assistant's recorder keeps their
+`mean`, `min` and `max`, Effy writes no statistics for them. A pair that is not
+configured means no sensor.
+
+What they measure (ADR-023): how much of the energy that enters the battery
+system on one side comes out on the other, counted only in *pure* slots. A
+5-minute slot is a pure charge when exactly the grid import and the charge
+counter show flow (no PV input, no other counter), a pure discharge when exactly
+the discharge and the grid export counter do. A slot counts when it and the
+slots on both sides of it are pure of the same kind, so the first and the last
+slot of a run never count; it must also be at least **125 minutes old** (late
+counter jumps have been redistributed by then), have a recorded
+`sensor.effy_standby_power` value, and its input must be larger than its standby
+energy. Charge efficiency is the charge counter ÷ (grid import − standby),
+discharge efficiency the grid export counter ÷ (discharge − standby). The
+estimate fades: every kWh of gross input multiplies what was counted before by
+0.95, so recent slots weigh more. It is not capped: a value above 100 % is shown
+as it is, and usually means the standby is over- or underestimated.
+
+Both sensors are **unavailable** (not unknown) until their first measurement and
+until the standby power sensor has its first value. Their attributes are
+`last_counted_value` (the last counted slot on its own, in %),
+`last_counted_end`, `counted_kwh` (gross input counted since the estimate
+began), `counted_runs` (pure runs that counted at least one slot) and
+`last_processed_slot`.
+
+Because a counter that does not tick is redistributed backwards over up to two
+hours when it next ticks, the idle counters of a short charge or discharge look
+active in every slot of it: only runs longer than about two hours leave pure
+slots, and the estimate moves slowly. After a restart both sensors come back
+from Home Assistant's restored state, and Effy catches up the slots it missed,
+at most the last 3 days, inside its first slot job.
 
 ### The contract as a file you can copy
 
