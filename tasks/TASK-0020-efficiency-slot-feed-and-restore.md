@@ -1,13 +1,12 @@
 # Task: Feed the charge and discharge machine from the recorder, restore and catch up
 
-- **Status:** todo
+- **Status:** done — 2026-10-27, reviewer PASS (inline)
 - **Capability:** CAP-8
-- **Related ADRs:** \[ADR-023 (Draft) decisions 3, 9, 10, ADR-018 (activity
-  reading, slot job), ADR-021 decision 4, ADR-012\]
+- **Related ADRs:** \[ADR-023 decisions 3, 9, 10, ADR-018 (activity reading,
+  slot job), ADR-021 decision 4, ADR-012\]
 - **Dependencies:** \[TASK-0017-counter-roles-in-config,
   TASK-0019-efficiency-pure-run-machine\]
-- **Gate:** Blocked until Draft ADR-023 is **Accepted** by the human (Gate 2);
-  until then no code.
+- **Gate:** ADR-023 accepted 2026-10-27.
 
 ## Goal
 
@@ -59,24 +58,73 @@ restore and persist. Standby's pattern, with a catch-up instead of a rebuild.
 
 ## Consumed Interfaces
 
-<!-- Filled by the Lead Agent BEFORE implementation, from the Delivered Artifacts of the dependency tasks. -->
-
-- the machine's names from TASK-0019's Delivered Artifacts — **filled by the
-  Lead before start**
-- role accessors from TASK-0017 — **filled by the Lead before start**
+- From TASK-0019 (`calculation.py`): `EffRoles`, `EffSlot`, `RunState`,
+  `run_feed(state, slots, roles, now, delay)`, `run_restore_data`,
+  `run_state_from_restore`, `EFF_VALIDATION_DELAY`.
+- From TASK-0017: `inputs.grid_import_id`, `discharge_id`, `charge_id`,
+  `grid_export_id`, `all_input_ids`; the coordinator's four role properties.
 - `history.async_read_drain_activity`, `async_update_standby`,
-  `_fetch_statistics` from `custom_components/effy/history.py` (→
-  TASK-0005-standby-power-sensor)
+  `_fetch_statistics`, `_classify_sensors`, `_get_statistics_units`,
+  `_effy_power_entity_id`, `_effy_smoothed_entity_id` (→ TASK-0005).
 - `EffyCoordinator._async_update_standby`, `restore_standby`,
-  `subscribe_standby`, `_recorder_job_lock` from
-  `custom_components/effy/coordinator.py` (→ TASK-0005,
-  TASK-0006-recorder-synchronized-slot-trigger)
+  `subscribe_standby`, `_recorder_job_lock` (→ TASK-0005, TASK-0006).
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
+- `history.py`: `EFFICIENCY_CATCHUP_MAX` (3 days);
+  `efficiency_roles(options) -> EffRoles`; `efficiency_enabled(options)` (grid
+  import with charge, or discharge with grid export);
+  `async_read_efficiency_energy(hass, options, start, end) -> (energy, standby)`,
+  `energy: slot -> {counter entity -> kWh}`, `standby: slot -> kWh`;
+  `async_update_efficiency(hass, options, state, now) -> RunState`.
+- `coordinator.py`: `efficiency_enabled`, `efficiency_state`,
+  `restore_efficiency(data) -> RunState`,
+  `subscribe_efficiency(cb) -> unsubscribe`, `_async_update_efficiency(now)`,
+  called after `_async_update_standby` and before the closing step; the type
+  `EfficiencyCallback`.
+- Series read ◇: the energy of a counter is its derived power series (the series
+  before the loss is distributed) times 5 min — `effy_*_power` for an
+  energy-family sensor, the smoothed series for a power-family input, its own
+  `mean` for a power-family output; the standby energy is the recorded `mean` of
+  `sensor.effy_standby_power` (W) times 5 min. A slot lacking the activity or a
+  configured counter's statistic is not handed to the machine at all (a missing
+  slot, never a zero); one lacking the standby statistic is handed over with
+  `standby_kwh=None`.
+- Settled here: ADR-023 Open decision 4 (persistence): every efficiency sensor
+  keeps the whole machine dump, the coordinator adopts the dump with the later
+  `last_slot` (see the ADR).
+- Tests: `tests/test_efficiency_feed.py` (15, the real recent recalculation and
+  feed on a simulated battery with 1 Wh counters),
+  `tests/test_coordinator_slot.py` (`TestEfficiencyInTheSlotJob`, the closing
+  order), `tests/support.py` unchanged.
+- External dependencies added: none.
 
-ADR-023 Open decision 4 (persistence): recommended — each sensor keeps its own
-part of the state as `ExtraStoredData`, like `_StandbyExtraData`; the
-coordinator only holds the live state. Confirm or change it in the Delivered
-Artifacts.
+## Review
+
+**PASS** (inline; 773 tests, ruff, mypy on source and tests). Simulated battery
+(95 % charge, 90 % discharge, 20 W standby, 1 Wh counters), the real recent
+recalculation, standby and efficiency feed every 5 minutes: charge 95.0 %,
+discharge 89.2 %; a restart in the middle of the charge or of the discharge, a
+restart with an older state and a first start (catch-up) all give exactly the
+uninterrupted result; every existing `effy_*` series, the number and flags of
+the writes and the standby state are identical with and without the feed.
+Fourteen mutants of the glue are caught (kW read as W, no 5-minute factor,
+standby not read, standby unit ignored, a missing counter read as zero, no age
+gate, no 3-day bound, a pair as "and", a restart that re-reads from the floor,
+the earlier dump kept, a restore that resets, the feed before standby, a failure
+that moves the state, a feed without a pair).
+
+Findings that shape the next tasks and the first run on the Pi:
+
+- **Pure slots are rare in short runs.** A counter that does not tick is
+  redistributed backwards over up to 120 min when it next ticks (ADR-012), and
+  activity is "not zero" without a tolerance (ADR-023 decision 3). So in a
+  charge shorter than about two hours the idle counters (discharge, grid export)
+  look active in every slot and nothing counts; a long run keeps pure slots in
+  its early part. A first simulation with 10 Wh counters and 1-hour runs counted
+  nothing at all. This follows from the accepted decisions, not from the feed;
+  the Pi's first records will show how many slots really count (`counted_kwh`,
+  `counted_runs`).
+- The statistic ID of the standby sensor is the constant
+  `EFFY_STANDBY_POWER_ENTITY_ID`; an entity renamed in the registry would not be
+  found, and the machine would then count nothing (no slot has standby energy).

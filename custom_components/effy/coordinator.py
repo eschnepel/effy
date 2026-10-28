@@ -72,6 +72,12 @@ It owns:
     every job (subscribe_standby). Nothing is fed before the sensor has
     restored, and the first feed after a start is the replay of ADR-018 §5 —
     inside the slot job, so it never blocks Home Assistant's startup.
+  - TASK-0020 (ADR-023): the charge/discharge efficiency machine, the same way. With
+    a complete counter pair every slot job feeds it after the standby update and
+    before the closing step (history.async_update_efficiency), under the lock. The
+    state lives here; the efficiency sensors restore it (restore_efficiency) and get it
+    after every job (subscribe_efficiency). Nothing is fed before one has restored; the
+    first feed after a start catches up the slots after the restored one, at most 3 days.
   - One lock that serializes the recent recalculation and the history
     recalculation (button), see "Thread safety".
   - A small, volatile, in-memory cache of each energy-family entity's
@@ -109,7 +115,13 @@ from homeassistant.const import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 
-from .calculation import DrainState, LossDistribution, drain_state_from_restore
+from .calculation import (
+    DrainState,
+    LossDistribution,
+    RunState,
+    drain_state_from_restore,
+    run_state_from_restore,
+)
 from .inputs import (
     all_input_ids,
     bms_input_ids,
@@ -125,6 +137,7 @@ from .history import (
     async_recalculate_history,
     async_recalculate_recent,
     async_rewrite_hourly,
+    async_update_efficiency,
     async_update_standby,
     recent_trigger_since,
 )
@@ -158,6 +171,8 @@ RecalculatedFromCallback = Callable[[datetime], None]
 EntityUpdateCallback = Callable[[float | None, str | None], None]
 # The standby power machine's state after every slot job (ADR-018 §5).
 StandbyCallback = Callable[[DrainState], None]
+# The efficiency machine's state after every slot job (ADR-023 decision 9).
+EfficiencyCallback = Callable[[RunState], None]
 
 
 def _next_slot_trigger_delay(
@@ -283,6 +298,9 @@ class EffyCoordinator:
         # would replay without the restored aggregates and count twice.
         self._standby_state: DrainState | None = None
         self._standby_subscribers: list[StandbyCallback] = []
+        # Efficiency machine (ADR-023): ``None`` until an efficiency sensor restored.
+        self._efficiency_state: RunState | None = None
+        self._efficiency_subscribers: list[EfficiencyCallback] = []
         # Descriptors of the Effy sensors that exist (ADR-021): each sensor registers
         # itself when added and unregisters when removed; the recalculated-from
         # sensor reads them when the closing step writes its state.
@@ -317,6 +335,51 @@ class EffyCoordinator:
     def grid_export_id(self) -> str | None:
         """The grid export counter's entity ID, or ``None`` (ADR-023)."""
         return self._grid_export_id
+
+    @property
+    def efficiency_enabled(self) -> bool:
+        """The efficiency machine runs with a complete pair: grid import and charge,
+        or discharge and grid export (ADR-023 decision 1)."""
+        return bool(self._grid_import_id and self._charge_id) or bool(
+            self._discharge_id and self._grid_export_id
+        )
+
+    @property
+    def efficiency_state(self) -> RunState | None:
+        """The efficiency machine's state, ``None`` before a sensor restored (ADR-023)."""
+        return self._efficiency_state
+
+    def restore_efficiency(self, data: Mapping[str, Any] | None) -> RunState:
+        """Start the efficiency machine from the data a sensor restored (ADR-023 decision 9).
+
+        Every efficiency sensor stores the whole machine dump, so with two sensors the
+        coordinator gets it twice: the dump that has processed the later slot wins, and
+        unusable or missing data starts from nothing, which is correct (nothing was
+        counted yet; the first feed catches up at most 3 days). Returns the state it
+        starts from; from now on slot jobs feed it.
+        """
+        restored = run_state_from_restore(data) if data else None
+        current = self._efficiency_state
+        if restored is not None and (
+            current is None
+            or current.last_slot is None
+            or (restored.last_slot is not None and restored.last_slot > current.last_slot)
+        ):
+            self._efficiency_state = restored
+        elif current is None:
+            self._efficiency_state = RunState()
+        assert self._efficiency_state is not None
+        return self._efficiency_state
+
+    def subscribe_efficiency(self, cb: EfficiencyCallback) -> Callable[[], None]:
+        """Register an efficiency sensor's callback; it gets the state after every slot job."""
+        self._efficiency_subscribers.append(cb)
+
+        def _unsubscribe() -> None:
+            if cb in self._efficiency_subscribers:
+                self._efficiency_subscribers.remove(cb)
+
+        return _unsubscribe
 
     @property
     def standby_enabled(self) -> bool:
@@ -666,10 +729,12 @@ class EffyCoordinator:
             if slot is not None and (slot + timedelta(minutes=SLOT_MINUTES)).minute == 0:
                 await self._async_rewrite_hour(slot, last_values)
             await self._async_update_standby(now)
+            await self._async_update_efficiency(now)
             # The closing step (ADR-012 Amendment 2026-10-18, ADR-021): the update of
             # the recalculated-from sensor tells a listener that the statistics and
             # the states of this recalculation are final, so it comes last. The hour
-            # rewrite and the standby update log their own failures and cannot skip it.
+            # rewrite, the standby update and the efficiency update log their own failures
+            # and cannot skip it.
             if earliest is not None:
                 self.set_recalculated_from(earliest)
 
@@ -694,6 +759,29 @@ class EffyCoordinator:
             return
         self._standby_state = new_state
         for cb in list(self._standby_subscribers):
+            cb(new_state)
+
+    async def _async_update_efficiency(self, now: datetime) -> None:
+        """Feed the efficiency machine and tell its sensors (ADR-023).
+
+        Called with the recalculation lock held, after the standby update: the statistics
+        both of them wrote are what the machine reads. Does nothing without a complete
+        counter pair or before a sensor restored. A failure is logged and never fails
+        the slot job (ADR-000 §8): the state is left as it was, so the next job feeds
+        the same slots again.
+        """
+        state = self._efficiency_state
+        if state is None or not self.efficiency_enabled:
+            return
+        try:
+            new_state = await async_update_efficiency(self._hass, self._entry.options, state, now)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Effy: updating the charge and discharge efficiency failed")
+            return
+        self._efficiency_state = new_state
+        for cb in list(self._efficiency_subscribers):
             cb(new_state)
 
     async def _async_rewrite_hour(

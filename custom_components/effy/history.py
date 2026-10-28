@@ -176,6 +176,10 @@ except ImportError:
 from .sensor_utils import SLOT_MINUTES, effective_unit_for, is_energy_family, to_power_equivalent
 from .calculation import (
     DRAIN_LOOKBACK,
+    EFF_VALIDATION_DELAY,
+    EffRoles,
+    EffSlot,
+    RunState,
     DrainBreak,
     DrainPeak,
     DrainSeen,
@@ -193,6 +197,7 @@ from .calculation import (
     power_drain_events,
     recent_rewrite_start,
     recent_trigger_from,
+    run_feed,
     trapezoidal_jump_windows,
     trapezoidal_slot_contributions,
 )
@@ -200,7 +205,15 @@ from .const import (
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
 )
-from .inputs import all_input_ids, bms_input_ids
+from .effy_exports import EFFY_STANDBY_POWER_ENTITY_ID
+from .inputs import (
+    all_input_ids,
+    bms_input_ids,
+    charge_id,
+    discharge_id,
+    grid_export_id,
+    grid_import_id,
+)
 from .inputs import output_ids as configured_output_ids
 
 _LOGGER = logging.getLogger(__name__)
@@ -2130,6 +2143,150 @@ async def async_update_standby(
     activity_start = min(needed, first - slot_width) if needed is not None else first - slot_width
     activity = await async_read_drain_activity(hass, entry_options, activity_start, end)
     return drain_feed(state, events, slots, activity)
+
+
+# How far back the efficiency feed catches up after a first start or a restart
+# (ADR-023 decision 9): the slots after the restored ``last_slot``, at most this many.
+EFFICIENCY_CATCHUP_MAX = timedelta(days=3)
+
+
+def efficiency_roles(entry_options: dict[str, Any]) -> EffRoles:
+    """The four counters of the entry as the machine wants them (ADR-023)."""
+    return EffRoles(
+        grid_import=grid_import_id(entry_options),
+        discharge=discharge_id(entry_options),
+        charge=charge_id(entry_options),
+        grid_export=grid_export_id(entry_options),
+    )
+
+
+def efficiency_enabled(entry_options: dict[str, Any]) -> bool:
+    """The machine runs only with a complete pair: grid import and charge, or
+    discharge and grid export (ADR-023 decision 1)."""
+    roles = efficiency_roles(entry_options)
+    return bool(roles.grid_import and roles.charge) or bool(roles.discharge and roles.grid_export)
+
+
+def _slot_kwh(power: float, unit: str) -> float:
+    """The energy of one slot (kWh) of an average power in ``unit`` (W or kW)."""
+    kilowatts = power if unit == "kW" else power / 1000.0
+    return kilowatts * SLOT_MINUTES / 60.0
+
+
+async def async_read_efficiency_energy(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    start: datetime,
+    end: datetime,
+) -> tuple[dict[datetime, dict[str, float]], dict[datetime, float]]:
+    """The energy of each configured counter and the standby energy per slot of
+    ``[start, end)``, in kWh (ADR-023 decision 3).
+
+    A counter's energy is its derived power series (``effy_*_power``, before the loss is
+    distributed) times 5 min; a power-family input is read from its smoothed series and
+    a power-family output from its own ``mean``, as ``async_read_drain_activity`` reads
+    them. The standby energy is the recorded ``mean`` of ``sensor.effy_standby_power``
+    (W) times 5 min. A statistic that does not exist for a slot is absent from the
+    result: unknown is never zero. One read for all of them.
+    """
+    roles = efficiency_roles(entry_options)
+    counters = [
+        eid for eid in (roles.grid_import, roles.discharge, roles.charge, roles.grid_export) if eid
+    ]
+    if not counters:
+        return {}, {}
+    recorder = get_recorder(hass)
+    classes = await _classify_sensors(hass, recorder, counters)
+    inputs = all_input_ids(entry_options)
+    source_of: dict[str, str] = {}  # statistic id -> counter entity id
+    unit_of: dict[str, str] = {}  # statistic id -> the unit its mean is in
+    for eid in counters:
+        unit, is_energy = classes[eid]
+        if is_energy:
+            statistic_id, unit = _effy_power_entity_id(eid), effective_unit_for(unit)
+        elif eid in inputs:
+            statistic_id = _effy_smoothed_entity_id(eid)
+        else:
+            statistic_id = eid
+        source_of[statistic_id], unit_of[statistic_id] = eid, unit
+    stored: dict[str, str] = await recorder.async_add_executor_job(
+        _get_statistics_units, hass, [EFFY_STANDBY_POWER_ENTITY_ID]
+    )
+    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
+        _fetch_statistics, hass, [*source_of, EFFY_STANDBY_POWER_ENTITY_ID], start, end
+    )
+    energy: dict[datetime, dict[str, float]] = {}
+    standby: dict[datetime, float] = {}
+    standby_unit = stored.get(EFFY_STANDBY_POWER_ENTITY_ID) or "W"
+    for statistic_id, stat_rows in rows.items():
+        for row in stat_rows:
+            slot, value = row["start"], row.get("mean")
+            if value is None or not start <= slot < end:
+                continue
+            if statistic_id == EFFY_STANDBY_POWER_ENTITY_ID:
+                standby[slot] = _slot_kwh(value, standby_unit)
+            elif statistic_id in source_of:
+                energy.setdefault(slot, {})[source_of[statistic_id]] = _slot_kwh(
+                    value, unit_of[statistic_id]
+                )
+    return energy, standby
+
+
+async def async_update_efficiency(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    state: RunState,
+    now: datetime,
+) -> RunState:
+    """Feed the efficiency machine the slots it has not seen (ADR-023 decisions 3, 9).
+
+    Call after the recent recalculation and the standby update, under the same lock: the
+    statistics they just wrote are what the machine reads. The machine takes a slot only
+    when it is 125 min old, so only the slots up to ``now - 125 min`` are read: the ones
+    after ``state.last_slot``, and for a fresh state at most ``EFFICIENCY_CATCHUP_MAX``
+    back. Nothing is read without a complete counter pair or without new slots. A slot
+    that lacks a statistic of its activity or of a configured counter reaches the machine
+    as a missing slot, never as zero; one that lacks the standby statistic reaches it
+    without standby energy and does not count.
+    """
+    if not efficiency_enabled(entry_options):
+        return state
+    slot_seconds = SLOT_MINUTES * 60
+    slot_width = timedelta(seconds=slot_seconds)
+    settled = (now - EFF_VALIDATION_DELAY).timestamp()
+    last = datetime.fromtimestamp(settled - (settled % slot_seconds), tz=timezone.utc)
+    floor = last - EFFICIENCY_CATCHUP_MAX
+    first = state.last_slot + slot_width if state.last_slot is not None else floor
+    first = max(first, floor)
+    first = datetime.fromtimestamp(
+        first.timestamp() - (first.timestamp() % slot_seconds), tz=timezone.utc
+    )
+    if first > last:
+        return state
+    end = last + slot_width
+    activity = await async_read_drain_activity(hass, entry_options, first, end)
+    energy, standby = await async_read_efficiency_energy(hass, entry_options, first, end)
+    roles = efficiency_roles(entry_options)
+    configured = [
+        eid for eid in (roles.grid_import, roles.discharge, roles.charge, roles.grid_export) if eid
+    ]
+    slots: list[EffSlot] = []
+    for slot in sorted(activity):
+        known = energy.get(slot, {})
+        if any(eid not in known for eid in configured):
+            continue  # a counter without a statistic: the slot is unknown, not zero
+        slots.append(
+            EffSlot(
+                start=slot,
+                active=activity[slot],
+                grid_import_kwh=known.get(roles.grid_import or "", 0.0),
+                discharge_kwh=known.get(roles.discharge or "", 0.0),
+                charge_kwh=known.get(roles.charge or "", 0.0),
+                grid_export_kwh=known.get(roles.grid_export or "", 0.0),
+                standby_kwh=standby.get(slot),
+            )
+        )
+    return run_feed(state, slots, roles, now)
 
 
 def _fetch_statistics(

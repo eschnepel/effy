@@ -314,5 +314,10 @@ minimum of 15 for the hysteresis; half-slot boundaries for the span sums
    listener is gone) and Home Assistant raises `ValueError` if an entry has a
    listener next to `OptionsFlowWithReload`. Effy therefore has no update
    listener.
-1. **Persistence mechanism** of decision 9 (restore data of one sensor or a
-   store): left to the task; the contract is "whole state, restored, caught up".
+1. **Persistence mechanism** of decision 9 — settled 2026-10-27 (TASK-0020) for
+   the charge and discharge machine: there is no store of its own. Every
+   efficiency sensor keeps the **whole** machine dump as `ExtraStoredData`
+   (`run_restore_data`), like the standby sensor does; the coordinator holds the
+   live state, takes the dump with the later `last_slot` when two sensors
+   restore, and the first slot job after that catches up at most 3 days. The
+   valley machine decides for itself in TASK-0025.

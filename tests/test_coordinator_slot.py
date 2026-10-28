@@ -223,9 +223,31 @@ async def _fake_async_update_standby(
     return sys.modules["effy.calculation"].DrainState(estimate=12.0, count=state.count + 1)
 
 
+# The efficiency machine's feed (TASK-0020): (options, state, now, lock_held) per call.
+_efficiency_calls: list[tuple[Any, Any, datetime, bool]] = []
+_efficiency_raise_next: list[bool] = [False]
+
+
+async def _fake_async_update_efficiency(
+    hass: Any, entry_options: Any, state: Any, now: datetime
+) -> Any:
+    """Records the call and whether the lock was held; returns a state that moved on."""
+    lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
+    _efficiency_calls.append((entry_options, state, now, lock_held))
+    if _job_hook[0] is not None:
+        await _job_hook[0]("efficiency")
+    if _efficiency_raise_next[0]:
+        _efficiency_raise_next[0] = False
+        raise RuntimeError("efficiency exploded")
+    calc = _calc_mod
+    moved = calc.EffEstimate(counted_runs=state.charge.counted_runs + 1)
+    return calc.RunState(charge=moved, last_slot=now)
+
+
 _history_stub = ModuleType("effy.history")
 _history_stub.async_rewrite_hourly = _fake_async_rewrite_hourly  # type: ignore[attr-defined]
 _history_stub.async_update_standby = _fake_async_update_standby  # type: ignore[attr-defined]
+_history_stub.async_update_efficiency = _fake_async_update_efficiency  # type: ignore[attr-defined]
 _history_stub.async_probe_last_slot_ready = _fake_async_probe_last_slot_ready  # type: ignore[attr-defined]
 _history_stub.async_recalculate_history = _fake_async_recalculate_history  # type: ignore[attr-defined]
 _history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
@@ -234,7 +256,7 @@ _history_stub.__package__ = "effy"
 sys.modules["effy.history"] = _history_stub
 _effy_pkg.history = _history_stub  # type: ignore[attr-defined]
 
-_load("effy.calculation", "calculation.py")
+_calc_mod = _load("effy.calculation", "calculation.py")  # the copy the coordinator uses
 _load("effy.sensor_utils", "sensor_utils.py")
 _coord_mod = _load("effy.coordinator", "coordinator.py")
 
@@ -689,6 +711,8 @@ def _reset_slot_job_fakes() -> None:
     _hourly_raise_next[0] = False
     _standby_calls.clear()
     _standby_raise_next[0] = False
+    _efficiency_calls.clear()
+    _efficiency_raise_next[0] = False
     _lock_probe[0] = None
     _history_calls.clear()
     _history_full_calls.clear()
@@ -1344,6 +1368,216 @@ class TestStandbyInTheSlotJob(_SlotCoordinatorBase):
         assert results[0][0] and results[0][1]
 
 
+class TestEfficiencyInTheSlotJob(_SlotCoordinatorBase):
+    """TASK-0020 (ADR-023): the efficiency machine is fed like the standby machine."""
+
+    def _eff_coordinator(
+        self, *, restored: bool = True, discharge_pair: bool = False
+    ) -> EffyCoordinator:
+        _reset_slot_job_fakes()
+        entry = _FakeEntry(["sensor.pv"], ["sensor.charge"], ["sensor.grid_in"])
+        if discharge_pair:
+            entry = _FakeEntry(["sensor.pv"], [], [])
+            entry.options["discharge_sensor"] = "sensor.discharge"
+            entry.options["grid_export_sensor"] = "sensor.grid_out"
+        coord = EffyCoordinator(_FakeHass(), entry)
+        coord._probe_interval = timedelta(milliseconds=1)
+        coord.restore_standby(None)  # a grid import counter is a BMS input: it has a standby sensor
+        if restored:
+            coord.restore_efficiency(None)
+        _lock_probe[0] = lambda: coord._recorder_job_lock().locked()
+        return coord
+
+    async def _job(self, coord: EffyCoordinator, at: datetime) -> None:
+        coord._now = lambda: at  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+
+    def test_the_machine_needs_a_complete_pair(self) -> None:
+        assert self._eff_coordinator().efficiency_enabled  # grid import + charge
+        assert self._eff_coordinator(discharge_pair=True).efficiency_enabled
+        assert not self._coordinator().efficiency_enabled  # no counter at all
+        alone = self._eff_coordinator()
+        alone._charge_id = None  # grid import without charge
+        assert not alone.efficiency_enabled
+        mixed = self._eff_coordinator()
+        mixed._charge_id, mixed._grid_export_id = None, "sensor.grid_out"
+        assert not mixed.efficiency_enabled  # grid import with grid export is no pair
+
+    @pytest.mark.asyncio
+    async def test_without_a_pair_nothing_is_fed_and_nothing_costs_anything(self) -> None:
+        coord = self._coordinator()
+        coord.restore_efficiency(None)
+        await self._job(coord, _ts(12, 0, 10))
+        assert _efficiency_calls == []
+        assert len(_history_calls) == 1  # the job itself ran
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_fed_before_a_sensor_restored(self) -> None:
+        coord = self._eff_coordinator(restored=False)
+        assert coord.efficiency_state is None
+        await self._job(coord, _ts(12, 0, 10))
+        assert len(_history_calls) == 1
+        assert _efficiency_calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_job_feeds_the_machine_under_the_lock_after_standby(self) -> None:
+        coord = self._eff_coordinator()
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        await self._job(coord, _ts(12, 0, 10))
+        assert order == ["recent", "standby", "efficiency"]
+        options, state, now, lock_held = _efficiency_calls[0]
+        assert options == coord._entry.options and now == _ts(12, 0, 10) and lock_held
+        assert state.last_slot is None
+        assert coord.efficiency_state is not None
+        assert coord.efficiency_state.last_slot == _ts(12, 0, 10)
+
+    @pytest.mark.asyncio
+    async def test_the_next_job_continues_from_the_state_of_the_last(self) -> None:
+        coord = self._eff_coordinator()
+        await self._job(coord, _ts(12, 0, 10))
+        await self._job(coord, _ts(12, 5, 10))
+        assert [call[1].charge.counted_runs for call in _efficiency_calls] == [0, 1]
+
+    @pytest.mark.asyncio
+    async def test_subscribers_get_the_state_and_can_unsubscribe(self) -> None:
+        coord = self._eff_coordinator()
+        seen: list[Any] = []
+        unsubscribe = coord.subscribe_efficiency(seen.append)
+        await self._job(coord, _ts(12, 0, 10))
+        assert [state.charge.counted_runs for state in seen] == [1]
+        unsubscribe()
+        unsubscribe()  # idempotent
+        await self._job(coord, _ts(12, 5, 10))
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_feed_is_not_a_failure_and_leaves_the_state(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._eff_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_efficiency(seen.append)
+
+        async def cancel_in_the_feed(which: str) -> None:
+            if which == "efficiency":
+                raise asyncio.CancelledError
+
+        _job_hook[0] = cancel_in_the_feed
+        with caplog.at_level(logging.ERROR):
+            await self._job(coord, _ts(12, 0, 10))
+        task = coord._slot_job_task
+        assert task is not None and task.cancelled()
+        assert seen == []
+        assert coord.efficiency_state is not None and coord.efficiency_state.last_slot is None
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_feed_is_logged_and_neither_fails_the_job_nor_moves_the_state(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._eff_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_efficiency(seen.append)
+        _efficiency_raise_next[0] = True
+        with caplog.at_level(logging.ERROR):
+            await self._job(coord, _ts(12, 0, 10))
+        task = coord._slot_job_task
+        assert task is not None and task.done() and task.exception() is None
+        assert seen == [] and coord.efficiency_state is not None
+        assert coord.efficiency_state.last_slot is None
+        assert any("efficiency" in r.getMessage().lower() for r in caplog.records)
+        assert coord._last_recent_run is not None  # the recalculation itself completed
+        await self._job(coord, _ts(12, 5, 10))  # retried with the same state
+        assert [call[1].last_slot for call in _efficiency_calls] == [None, None]
+        assert coord.efficiency_state.last_slot == _ts(12, 5, 10)
+
+    @pytest.mark.asyncio
+    async def test_a_failing_efficiency_feed_does_not_skip_the_closing_step(self) -> None:
+        coord = self._eff_coordinator()
+        closed: list[datetime] = []
+        coord.subscribe_recalculated_from(closed.append)
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        _efficiency_raise_next[0] = True
+        await self._job(coord, _ts(12, 0, 10))
+        assert closed == [_ts(11, 55)]
+
+    def test_restoring_gives_the_catch_up_its_starting_state(self) -> None:
+        coord = self._eff_coordinator(restored=False)
+        calc = _calc_mod
+        state = calc.RunState(last_slot=_ts(11, 0))
+        restored = coord.restore_efficiency(calc.run_restore_data(state))
+        assert restored == state and coord.efficiency_state is restored
+        # unusable data starts empty: the first feed catches up the last 3 days
+        other = self._eff_coordinator(restored=False)
+        assert other.restore_efficiency({"charging": "x"}) == calc.RunState()
+
+    def test_two_sensors_restoring_the_same_machine_keep_the_later_dump(self) -> None:
+        coord = self._eff_coordinator(restored=False)
+        calc = _calc_mod
+        early = calc.RunState(last_slot=_ts(10, 0))
+        late = calc.RunState(last_slot=_ts(11, 0))
+        for first, second in ((early, late), (late, early)):
+            fresh = self._eff_coordinator(restored=False)
+            fresh.restore_efficiency(calc.run_restore_data(first))
+            fresh.restore_efficiency(calc.run_restore_data(second))
+            assert fresh.efficiency_state == late
+        # a sensor with nothing to restore does not throw away what another restored
+        coord.restore_efficiency(calc.run_restore_data(late))
+        coord.restore_efficiency(None)
+        assert coord.efficiency_state == late
+
+    def test_setup_and_restore_never_touch_the_recorder(self) -> None:
+        coord = self._eff_coordinator(restored=False)
+        coord.async_setup()
+        coord.restore_efficiency(None)
+        assert _efficiency_calls == [] and _history_calls == []
+        coord.async_shutdown()
+
+    @pytest.mark.asyncio
+    async def test_the_standby_and_the_recalculation_are_identical_with_and_without_the_machine(
+        self,
+    ) -> None:
+        results: list[Any] = []
+        for with_machine in (False, True):
+            _reset_slot_job_fakes()
+            bms = ["sensor.grid_in"]
+            coord = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.charge"], bms))
+            coord._probe_interval = timedelta(milliseconds=1)
+            coord.restore_standby(None)
+            if with_machine:
+                coord.restore_efficiency(None)
+            notified: list[Any] = []
+
+            def record(entity_ids: Any, values: Any = None, sink: list[Any] = notified) -> None:
+                sink.append((set(entity_ids), dict(values or {})))
+
+            coord.notify_updated = record  # type: ignore[method-assign,assignment]
+            _history_return_value[0] = (
+                1,
+                _ts(11, 55),
+                {"sensor.effy_x"},
+                {"sensor.effy_x": (1.0, "W")},
+            )
+            await self._job(coord, _ts(12, 0, 10))
+            await self._job(coord, _ts(12, 5, 10))
+            calls = [(c[2], c[3] is coord.last_valid_energy_readings) for c in _history_calls]
+            standby = [(c[2], c[1].count) for c in _standby_calls]
+            results.append((calls, notified, standby, coord.standby_state))
+        assert results[0] == results[1]
+        assert results[0][0] and results[0][1] and results[0][2]
+
+
 class TestClosingStep(_SlotCoordinatorBase):
     """TASK-0009, ADR-012 Amendment 2026-10-18, ADR-021 §4: the update of the
     recalculated-from sensor is the *last* step of both recalculation entry
@@ -1385,6 +1619,27 @@ class TestClosingStep(_SlotCoordinatorBase):
         await self._drain(coord)
         assert order == ["recent", "notify", "hourly", "standby", "closing"]
         assert coord.recalculated_from == _ts(11, 55)
+
+    @pytest.mark.asyncio
+    async def test_the_efficiency_update_comes_after_standby_and_before_the_closing_step(
+        self,
+    ) -> None:
+        coord = self._bms()
+        coord._entry.options["charge_sensor"] = "sensor.charge"
+        coord._charge_id = "sensor.charge"
+        coord._grid_import_id = "sensor.bms_discharge"  # a complete pair: grid import + charge
+        coord.restore_efficiency(None)
+        order = self._record_order(coord)
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert order == ["recent", "notify", "hourly", "standby", "efficiency", "closing"]
 
     @pytest.mark.asyncio
     async def test_the_manual_history_rewrite_closes_after_notify(self) -> None:
