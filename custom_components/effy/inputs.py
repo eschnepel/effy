@@ -18,11 +18,15 @@ from collections.abc import Mapping
 from typing import Any
 
 from .const import (
+    CONF_CAPACITY_ENTITY,
     CONF_CHARGE_SENSOR,
     CONF_DISCHARGE_SENSOR,
     CONF_GRID_EXPORT_SENSOR,
     CONF_GRID_IMPORT_SENSOR,
     CONF_PV_INPUT_SENSORS,
+    CONF_SOC_SENSOR,
+    CONF_VALLEY_HYSTERESIS,
+    DEFAULT_VALLEY_HYSTERESIS,
 )
 
 # The single input list of every entry created before ADR-019. Read only by
@@ -59,6 +63,26 @@ def charge_id(options: Mapping[str, Any]) -> str | None:
 def grid_export_id(options: Mapping[str, Any]) -> str | None:
     """The grid export counter (a BMS output), or ``None``."""
     return _role_id(options, CONF_GRID_EXPORT_SENSOR)
+
+
+def soc_id(options: Mapping[str, Any]) -> str | None:
+    """The state-of-charge sensor of the battery efficiency (ADR-023), or ``None``."""
+    return _role_id(options, CONF_SOC_SENSOR)
+
+
+def capacity_id(options: Mapping[str, Any]) -> str | None:
+    """The battery-capacity entity of the battery efficiency (ADR-023), or ``None``."""
+    return _role_id(options, CONF_CAPACITY_ENTITY)
+
+
+def valley_hysteresis(options: Mapping[str, Any]) -> float:
+    """The valley hysteresis in SoC points: the saved number, else the default (30).
+
+    The options flow keeps it at 15 or above (ADR-023 decision 1); this accessor does not
+    second-guess a stored number.
+    """
+    value = options.get(CONF_VALLEY_HYSTERESIS)
+    return float(DEFAULT_VALLEY_HYSTERESIS if value is None else value)
 
 
 def bms_input_ids(options: Mapping[str, Any]) -> list[str]:

@@ -5,13 +5,16 @@
     "step": {
       "user": {
         "title": "Configure Effy",
-        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required.",
+        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required. Optional, for the battery efficiency: the state of charge sensor together with the battery capacity entity, and the valley hysteresis.",
         "data": {
           "pv_input_sensors": "PV input sensors (PV strings)",
           "grid_import_sensor": "Grid import counter (BMS input: energy from the grid)",
           "discharge_sensor": "Discharge counter (BMS input: energy out of the battery, battery side)",
           "charge_sensor": "Charge counter (BMS output: energy into the battery, battery side)",
           "grid_export_sensor": "Grid export counter (BMS output: energy to the grid)",
+          "soc_sensor": "State of charge sensor (optional, for the battery efficiency; set together with the capacity)",
+          "capacity_entity": "Battery capacity entity (optional, in Wh or kWh: a sensor, number or input_number; set together with the state of charge)",
+          "valley_hysteresis": "Valley hysteresis (state of charge points, at least 15)",
           "max_history_days": "Maximum history (days)"
         }
       }
@@ -20,7 +23,10 @@
       "at_least_one_input": "Please select at least one input sensor (PV, grid import or discharge).",
       "sensor_in_two_roles": "A sensor can only have one role. Please remove it from one of the roles.",
       "at_least_one_output": "Please assign at least one output counter (charge or grid export).",
-      "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first."
+      "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first.",
+      "soc_and_capacity_together": "The state of charge sensor and the battery capacity entity belong together: set both or neither.",
+      "soc_needs_measurement": "The state of charge sensor must have the state class 'measurement'. Please pick a different sensor.",
+      "capacity_unit_not_energy": "The battery capacity must be in Wh or kWh. Please pick a different entity or fix its unit."
     }
   },
   "options": {
@@ -33,16 +39,22 @@
           "discharge_sensor": "Discharge counter (BMS input: energy out of the battery, battery side)",
           "charge_sensor": "Charge counter (BMS output: energy into the battery, battery side)",
           "grid_export_sensor": "Grid export counter (BMS output: energy to the grid)",
+          "soc_sensor": "State of charge sensor (optional, for the battery efficiency; set together with the capacity)",
+          "capacity_entity": "Battery capacity entity (optional, in Wh or kWh: a sensor, number or input_number; set together with the state of charge)",
+          "valley_hysteresis": "Valley hysteresis (state of charge points, at least 15)",
           "max_history_days": "Maximum history (days)"
         },
-        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required."
+        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required. Optional, for the battery efficiency: the state of charge sensor together with the battery capacity entity, and the valley hysteresis."
       }
     },
     "error": {
       "at_least_one_input": "Please select at least one input sensor (PV, grid import or discharge).",
       "sensor_in_two_roles": "A sensor can only have one role. Please remove it from one of the roles.",
       "at_least_one_output": "Please assign at least one output counter (charge or grid export).",
-      "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first."
+      "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first.",
+      "soc_and_capacity_together": "The state of charge sensor and the battery capacity entity belong together: set both or neither.",
+      "soc_needs_measurement": "The state of charge sensor must have the state class 'measurement'. Please pick a different sensor.",
+      "capacity_unit_not_energy": "The battery capacity must be in Wh or kWh. Please pick a different entity or fix its unit."
     }
   },
   "entity": {

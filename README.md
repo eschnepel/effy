@@ -61,6 +61,9 @@ All parameters are set via the UI (Config Flow + Options Flow).
 | **Discharge counter** | BMS input: energy the battery gives to the BMS (battery side) | – |
 | **Charge counter** | BMS output: energy into the battery (battery side) | – |
 | **Grid export counter** | BMS output: energy the BMS gives to the grid | – |
+| **State of charge sensor** | Optional, for the battery efficiency: the battery's SoC in %, state class `measurement`; set together with the capacity | – |
+| **Battery capacity entity** | Optional, for the battery efficiency: a sensor, number or input_number in Wh or kWh; set together with the SoC | – |
+| **Valley hysteresis** | Optional, for the battery efficiency: how far the SoC must rise out of a valley (in SoC points, at least 15) before the valley counts | 30 |
 | **Max history days** | How many days of 5-min statistics to reprocess | 28 |
 
 The four BMS counters are one optional picker each. At least one input in total
@@ -70,6 +73,17 @@ roles, and the charge and grid export sensors need a device class (power or
 energy). The loss calculation treats all inputs as one pool and the outputs as
 the other — the roles tell Effy which counter is which, for the standby power
 sensor and for the efficiency sensors.
+
+The **state of charge sensor** and the **battery capacity entity** are for the
+battery efficiency only (ADR-023): they are neither inputs nor outputs, so the
+loss calculation and every other sensor are the same with or without them. Set
+both or neither. The capacity is an entity rather than a typed number so that it
+can follow the battery's ageing. If it reports a unit, the unit must be Wh or
+kWh, otherwise saving is refused; an entity without a unit (or not yet there) is
+accepted, because Effy cannot judge it then. The **valley hysteresis** is a
+number of SoC points with a minimum of 15, so that it stays above the 10-point
+band that defines the end of a valley. An entry without these options changes
+nothing.
 
 **Upgrading:** the former BMS input list and output list are ignored; nothing is
 migrated. Until you assign the charge or grid export counter in Effy's options,

@@ -1,12 +1,14 @@
 # Task: The pure valley and span machine for battery efficiency
 
-- **Status:** todo
+- **Status:** todo — held for the human: ADR-023 Open decision 1 (an estimate
+  above 100 % for a valley span)
 - **Capability:** CAP-9
-- **Related ADRs:** \[ADR-023 (Draft) decisions 6, 7, 13 and Open decisions 1
-  and 2, ADR-000 §3/§6\]
+- **Related ADRs:** \[ADR-023 decisions 6, 7, 13 and Open decisions 1 and 2,
+  ADR-000 §3/§6\]
 - **Dependencies:** [TASK-0019-efficiency-pure-run-machine]
-- **Gate:** Blocked until Draft ADR-023 is **Accepted** by the human (Gate 2);
-  until then no code.
+- **Gate:** ADR-023 accepted 2026-10-27. Held until the human decides Open
+  decision 1 for a valley span (publish as it is / cap at 100 % / do not count);
+  the machine is built to that decision and a test pins it.
 
 ## Goal
 

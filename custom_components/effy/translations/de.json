@@ -5,13 +5,16 @@
     "step": {
       "user": {
         "title": "Effy konfigurieren",
-        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig.",
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese.",
         "data": {
           "pv_input_sensors": "PV-Eingangs-Sensoren (PV-Strings)",
           "grid_import_sensor": "Netzimport-Zähler (BMS-Eingang: Energie aus dem Netz)",
           "discharge_sensor": "Entlade-Zähler (BMS-Eingang: Energie aus der Batterie, Batterieseite)",
           "charge_sensor": "Lade-Zähler (BMS-Ausgang: Energie in die Batterie, Batterieseite)",
           "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
+          "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
+          "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
+          "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
           "max_history_days": "Maximale Historie (Tage)"
         }
       }
@@ -20,7 +23,10 @@
       "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen (PV, Netzimport oder Entladung).",
       "sensor_in_two_roles": "Ein Sensor kann nur eine Rolle haben. Bitte aus einer der Rollen entfernen.",
       "at_least_one_output": "Bitte mindestens einen Ausgangs-Zähler zuordnen (Ladung oder Netzexport).",
-      "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren."
+      "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
+      "soc_and_capacity_together": "Ladezustand-Sensor und Batteriekapazität gehören zusammen: entweder beide oder keine setzen.",
+      "soc_needs_measurement": "Der Ladezustand-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
+      "capacity_unit_not_energy": "Die Batteriekapazität muss in Wh oder kWh angegeben sein. Bitte eine andere Entität wählen oder deren Einheit korrigieren."
     }
   },
   "options": {
@@ -33,16 +39,22 @@
           "discharge_sensor": "Entlade-Zähler (BMS-Eingang: Energie aus der Batterie, Batterieseite)",
           "charge_sensor": "Lade-Zähler (BMS-Ausgang: Energie in die Batterie, Batterieseite)",
           "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
+          "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
+          "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
+          "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
           "max_history_days": "Maximale Historie (Tage)"
         },
-        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig."
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese."
       }
     },
     "error": {
       "at_least_one_input": "Bitte mindestens einen Eingangs-Sensor auswählen (PV, Netzimport oder Entladung).",
       "sensor_in_two_roles": "Ein Sensor kann nur eine Rolle haben. Bitte aus einer der Rollen entfernen.",
       "at_least_one_output": "Bitte mindestens einen Ausgangs-Zähler zuordnen (Ladung oder Netzexport).",
-      "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren."
+      "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
+      "soc_and_capacity_together": "Ladezustand-Sensor und Batteriekapazität gehören zusammen: entweder beide oder keine setzen.",
+      "soc_needs_measurement": "Der Ladezustand-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
+      "capacity_unit_not_energy": "Die Batteriekapazität muss in Wh oder kWh angegeben sein. Bitte eine andere Entität wählen oder deren Einheit korrigieren."
     }
   },
   "entity": {

@@ -40,6 +40,9 @@ GRID_IMPORT = _const.CONF_GRID_IMPORT_SENSOR
 DISCHARGE = _const.CONF_DISCHARGE_SENSOR
 CHARGE = _const.CONF_CHARGE_SENSOR
 GRID_EXPORT = _const.CONF_GRID_EXPORT_SENSOR
+SOC = _const.CONF_SOC_SENSOR
+CAPACITY = _const.CONF_CAPACITY_ENTITY
+HYSTERESIS = _const.CONF_VALLEY_HYSTERESIS
 LEGACY = _inputs.LEGACY_CONF_INPUT_SENSORS
 # the ADR-019 keys: read nowhere any more (ADR-023 decision 1), only used to show they are ignored
 OLD_BMS = "bms_input_sensors"
@@ -54,6 +57,20 @@ class TestKeys:
         assert CHARGE == "charge_sensor"
         assert GRID_EXPORT == "grid_export_sensor"
         assert LEGACY == "input_sensors"
+
+    def test_the_battery_option_keys_are_fixed_by_adr_023(self) -> None:
+        assert SOC == "soc_sensor"
+        assert CAPACITY == "capacity_entity"
+        assert HYSTERESIS == "valley_hysteresis"
+
+    def test_the_hysteresis_default_and_minimum_are_fixed_by_adr_023(self) -> None:
+        # default 30, minimum 15 so that it stays above the 10-point valley band (decision 1)
+        assert _const.DEFAULT_VALLEY_HYSTERESIS == 30
+        assert _const.MIN_VALLEY_HYSTERESIS == 15
+        assert _const.MIN_VALLEY_HYSTERESIS > 10
+
+    def test_the_capacity_units_are_wh_and_kwh_only(self) -> None:
+        assert set(_const.CAPACITY_UNITS) == {"Wh", "kWh"}
 
     def test_the_old_constants_are_gone(self) -> None:
         assert not hasattr(_const, "CONF_INPUT_SENSORS")
@@ -133,6 +150,43 @@ class TestRoleHelpers:
         assert options[PV] == ["sensor.pv"]
         assert _inputs.bms_input_ids(options) == ["sensor.grid_in", "sensor.discharge"]
         assert _inputs.output_ids(options) == ["sensor.charge", "sensor.grid_out"]
+
+
+class TestBatteryOptionAccessors:
+    """TASK-0023: the SoC sensor, the capacity entity and the valley hysteresis (ADR-023 D1)."""
+
+    def test_the_ids_are_returned_and_an_unset_or_emptied_picker_is_none(self) -> None:
+        options = {SOC: "sensor.soc", CAPACITY: "number.capacity"}
+        assert _inputs.soc_id(options) == "sensor.soc"
+        assert _inputs.capacity_id(options) == "number.capacity"
+        for accessor in (_inputs.soc_id, _inputs.capacity_id):
+            assert accessor({}) is None
+            assert accessor({SOC: None, CAPACITY: ""}) is None
+
+    def test_the_hysteresis_is_the_default_when_unset(self) -> None:
+        assert _inputs.valley_hysteresis({}) == 30
+        assert _inputs.valley_hysteresis({HYSTERESIS: None}) == 30
+        assert _inputs.valley_hysteresis({}) == _const.DEFAULT_VALLEY_HYSTERESIS
+
+    def test_a_set_hysteresis_is_returned_as_a_number(self) -> None:
+        assert _inputs.valley_hysteresis({HYSTERESIS: 45}) == 45
+        assert _inputs.valley_hysteresis({HYSTERESIS: 15.0}) == 15
+        assert isinstance(_inputs.valley_hysteresis({HYSTERESIS: 45}), float)
+
+    def test_soc_and_capacity_are_neither_inputs_nor_outputs(self) -> None:
+        # the waterfall's pools do not change (ADR-023 decision 12)
+        plain = {PV: ["sensor.pv"], **ALL_FOUR}
+        with_battery = {**plain, SOC: "sensor.soc", CAPACITY: "number.capacity", HYSTERESIS: 40}
+        assert _inputs.all_input_ids(with_battery) == _inputs.all_input_ids(plain)
+        assert _inputs.bms_input_ids(with_battery) == _inputs.bms_input_ids(plain)
+        assert _inputs.output_ids(with_battery) == _inputs.output_ids(plain)
+        assert _inputs.pv_input_ids(with_battery) == ["sensor.pv"]
+
+    def test_an_entry_without_the_options_has_none_of_them(self) -> None:
+        # "an entry without them: nothing changes" — the battery efficiency simply has no inputs
+        options = {PV: ["sensor.pv"], **ALL_FOUR}
+        assert _inputs.soc_id(options) is None
+        assert _inputs.capacity_id(options) is None
 
 
 class TestMigrateLegacyInputOptions:

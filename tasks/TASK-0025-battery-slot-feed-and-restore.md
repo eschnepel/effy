@@ -50,9 +50,17 @@ function), `coordinator.py`, `tests/test_battery_feed.py`.
 
 <!-- Filled by the Lead Agent BEFORE implementation, from the Delivered Artifacts of the dependency tasks. -->
 
-- `async_update_efficiency`, `restore_efficiency` (→ TASK-0020) · SoC/capacity
-  accessors (→ TASK-0023) · the valley machine (→ TASK-0024) — **all filled by
-  the Lead before start**
+- From TASK-0023 (done 2026-10-29, filled by the Lead):
+  `inputs.soc_id(options)`, `inputs.capacity_id(options)` (both `str | None`),
+  `inputs.valley_hysteresis(options) -> float` (default 30);
+  `const.CAPACITY_UNITS` (`("Wh", "kWh")`), `const.CONF_SOC_SENSOR`,
+  `const.CONF_CAPACITY_ENTITY`, `const.CONF_VALLEY_HYSTERESIS`,
+  `const.DEFAULT_VALLEY_HYSTERESIS`, `const.MIN_VALLEY_HYSTERESIS`. Note: the
+  options flow accepts a capacity entity **without a unit** (or without a state
+  yet); the feed must decide what a capacity of unknown unit means (see the
+  decisions of TASK-0023).
+- `async_update_efficiency`, `restore_efficiency` (→ TASK-0020) · the valley
+  machine (→ TASK-0024) — **to be filled by the Lead when TASK-0024 is done**
 
 ## Delivered Artifacts
 

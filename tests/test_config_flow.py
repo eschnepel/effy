@@ -137,6 +137,9 @@ DISCHARGE = _const.CONF_DISCHARGE_SENSOR
 CHARGE = _const.CONF_CHARGE_SENSOR
 GRID_EXPORT = _const.CONF_GRID_EXPORT_SENSOR
 COUNTERS = (GRID_IMPORT, DISCHARGE, CHARGE, GRID_EXPORT)
+SOC = _const.CONF_SOC_SENSOR
+CAPACITY = _const.CONF_CAPACITY_ENTITY
+HYSTERESIS = _const.CONF_VALLEY_HYSTERESIS
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +148,9 @@ COUNTERS = (GRID_IMPORT, DISCHARGE, CHARGE, GRID_EXPORT)
 
 
 class _FakeState:
-    def __init__(self, device_class: str | None) -> None:
-        self.attributes = {"device_class": device_class} if device_class else {}
+    def __init__(self, device_class: str | None, **attributes: Any) -> None:
+        self.attributes: dict[str, Any] = {"device_class": device_class} if device_class else {}
+        self.attributes.update(attributes)
 
 
 class _FakeStates:
@@ -168,6 +172,17 @@ def _hass_with_outputs() -> _FakeHass:
             "sensor.export": _FakeState("energy"),
             "sensor.charge": _FakeState("energy"),
             "sensor.bare": _FakeState(None),
+            # TASK-0023: the battery options
+            "sensor.soc": _FakeState("battery", state_class="measurement", unit_of_measurement="%"),
+            "sensor.soc_total": _FakeState("battery", state_class="total_increasing"),
+            "sensor.soc_no_class": _FakeState("battery", unit_of_measurement="%"),
+            "sensor.cap_kwh": _FakeState("energy_storage", unit_of_measurement="kWh"),
+            "sensor.cap_wh": _FakeState("energy_storage", unit_of_measurement="Wh"),
+            "number.cap": _FakeState(None, unit_of_measurement="kWh"),
+            "input_number.cap": _FakeState(None, unit_of_measurement="Wh"),
+            "sensor.cap_mwh": _FakeState("energy_storage", unit_of_measurement="MWh"),
+            "sensor.cap_percent": _FakeState(None, unit_of_measurement="%"),
+            "number.cap_no_unit": _FakeState(None),
         }
     )
 
@@ -438,6 +453,163 @@ class TestInputValidation:
         assert _config_flow.EffyConfigFlow.VERSION == 1
 
 
+class TestBatteryOptionsInTheForm:
+    """TASK-0023: the SoC sensor, the capacity entity and the valley hysteresis (ADR-023 D1)."""
+
+    def _form(self, step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return TestSchemaHasTheFourCounterPickers()._form(step, options)
+
+    def _by_key(self, form: dict[str, Any]) -> dict[str, Any]:
+        return {marker.schema: cfg for marker, cfg in form["data_schema"].schema.items()}
+
+    def test_both_flows_offer_the_three_options_and_all_are_optional(self) -> None:
+        for step in ("user", "init"):
+            keys = _keys(self._form(step))
+            for key in (SOC, CAPACITY, HYSTERESIS):
+                assert key in keys, (step, key)
+                assert keys[key].required is False
+
+    def test_the_soc_picker_is_one_sensor_and_the_capacity_picker_takes_three_domains(self) -> None:
+        by_key = self._by_key(self._form("user"))
+        assert by_key[SOC]["entity"]["domain"] == ["sensor"]
+        assert "multiple" not in by_key[SOC]["entity"]
+        assert by_key[CAPACITY]["entity"]["domain"] == ["sensor", "number", "input_number"]
+        assert "multiple" not in by_key[CAPACITY]["entity"]
+
+    def test_the_hysteresis_is_a_number_with_minimum_15_and_default_30(self) -> None:
+        form = self._form("user")
+        number = self._by_key(form)[HYSTERESIS]["number"]
+        assert number["min"] == 15
+        assert number["max"] == 100
+        assert _keys(form)[HYSTERESIS].default == 30
+
+    def test_the_options_flow_defaults_to_the_saved_hysteresis_and_suggests_the_pickers(
+        self,
+    ) -> None:
+        options = {
+            GRID_IMPORT: "sensor.g",
+            CHARGE: "sensor.c",
+            SOC: "sensor.soc",
+            CAPACITY: "number.cap",
+            HYSTERESIS: 45,
+        }
+        keys = _keys(self._form("init", options))
+        assert keys[SOC].description == {"suggested_value": "sensor.soc"}
+        assert keys[CAPACITY].description == {"suggested_value": "number.cap"}
+        assert keys[HYSTERESIS].default == 45
+
+    def test_an_entry_without_the_options_gets_no_suggestion_and_the_default_hysteresis(
+        self,
+    ) -> None:
+        keys = _keys(self._form("init", {PV: ["sensor.pv"], CHARGE: "sensor.c"}))
+        for key in (SOC, CAPACITY):
+            assert keys[key].description is None
+            assert keys[key].default is _MISSING  # a default would bring a cleared picker back
+        assert keys[HYSTERESIS].default == 30
+
+
+class TestBatteryOptionsValidation:
+    BASE: dict[str, Any] = {GRID_IMPORT: "sensor.g", CHARGE: "sensor.charge"}
+
+    def _submit(self, extra: dict[str, Any], step: str = "user") -> dict[str, Any]:
+        user_input = {**self.BASE, **extra}
+        if step == "user":
+            flow = _config_flow.EffyConfigFlow()
+            flow.hass = _hass_with_outputs()
+            return asyncio.run(flow.async_step_user(user_input))
+        entry = type("Entry", (), {"options": {}})()
+        options_flow = _config_flow.EffyOptionsFlow(entry)
+        options_flow.hass = _hass_with_outputs()
+        return asyncio.run(options_flow.async_step_init(user_input))
+
+    def _errors(self, extra: dict[str, Any]) -> dict[str, str]:
+        result = self._submit(extra)
+        return dict(result.get("errors", {})) if result["type"] == "form" else {}
+
+    def test_soc_without_capacity_is_rejected_on_the_missing_field(self) -> None:
+        assert self._errors({SOC: "sensor.soc"}) == {CAPACITY: "soc_and_capacity_together"}
+
+    def test_capacity_without_soc_is_rejected_on_the_missing_field(self) -> None:
+        assert self._errors({CAPACITY: "sensor.cap_kwh"}) == {SOC: "soc_and_capacity_together"}
+
+    def test_an_emptied_picker_counts_as_unset(self) -> None:
+        assert self._errors({SOC: "sensor.soc", CAPACITY: ""}) == {
+            CAPACITY: "soc_and_capacity_together"
+        }
+        assert self._errors({SOC: "", CAPACITY: ""}) == {}
+
+    def test_both_together_with_a_valid_pair_are_saved(self) -> None:
+        result = self._submit({SOC: "sensor.soc", CAPACITY: "sensor.cap_kwh"})
+        assert result["type"] == "create_entry"
+        assert result["options"][SOC] == "sensor.soc"
+        assert result["options"][CAPACITY] == "sensor.cap_kwh"
+
+    def test_a_soc_sensor_must_have_state_class_measurement(self) -> None:
+        for bad in ("sensor.soc_total", "sensor.soc_no_class"):
+            errors = self._errors({SOC: bad, CAPACITY: "sensor.cap_kwh"})
+            assert errors == {SOC: "soc_needs_measurement"}, bad
+
+    def test_a_soc_sensor_without_a_state_counts_as_without_state_class(self) -> None:
+        errors = self._errors({SOC: "sensor.unknown", CAPACITY: "sensor.cap_kwh"})
+        assert errors == {SOC: "soc_needs_measurement"}
+
+    def test_the_sensor_number_and_input_number_domains_are_accepted_for_the_capacity(self) -> None:
+        for capacity in ("sensor.cap_kwh", "sensor.cap_wh", "number.cap", "input_number.cap"):
+            assert self._errors({SOC: "sensor.soc", CAPACITY: capacity}) == {}, capacity
+
+    def test_a_capacity_with_another_unit_is_an_error(self) -> None:
+        for capacity in ("sensor.cap_mwh", "sensor.cap_percent"):
+            errors = self._errors({SOC: "sensor.soc", CAPACITY: capacity})
+            assert errors == {CAPACITY: "capacity_unit_not_energy"}, capacity
+
+    def test_a_capacity_without_a_unit_or_state_is_not_an_error(self) -> None:
+        # the task: an error only "when the entity has a unit"; an entity that does not exist
+        # yet (or has no unit attribute) cannot be judged here
+        for capacity in ("number.cap_no_unit", "number.not_yet_there"):
+            assert self._errors({SOC: "sensor.soc", CAPACITY: capacity}) == {}, capacity
+
+    def test_soc_and_capacity_take_part_in_the_one_role_per_sensor_rule(self) -> None:
+        # the error sits on the later field, as for the counters
+        assert self._errors({SOC: "sensor.g", CAPACITY: "sensor.cap_kwh"}) == {
+            SOC: "sensor_in_two_roles"
+        }
+        assert self._errors({SOC: "sensor.soc", CAPACITY: "sensor.soc"}) == {
+            CAPACITY: "sensor_in_two_roles"
+        }
+        assert self._errors(
+            {PV: ["sensor.soc"], SOC: "sensor.soc", CAPACITY: "sensor.cap_kwh"}
+        ) == {SOC: "sensor_in_two_roles"}
+        assert self._errors({SOC: "sensor.soc", CAPACITY: "sensor.charge"}) == {
+            CAPACITY: "sensor_in_two_roles"
+        }
+
+    def test_the_first_failing_check_wins(self) -> None:
+        # a missing output beats a battery error; the pair check beats the state class check
+        no_output = {GRID_IMPORT: "sensor.g", SOC: "sensor.soc_total"}
+        flow = _config_flow.EffyConfigFlow()
+        flow.hass = _hass_with_outputs()
+        assert asyncio.run(flow.async_step_user(no_output))["errors"] == {
+            CHARGE: "at_least_one_output"
+        }
+        assert self._errors({SOC: "sensor.soc_total"}) == {CAPACITY: "soc_and_capacity_together"}
+
+    def test_the_options_flow_validates_the_battery_options_the_same_way(self) -> None:
+        bad = self._submit({SOC: "sensor.soc"}, step="init")
+        assert bad["errors"] == {CAPACITY: "soc_and_capacity_together"}
+        ok = self._submit({SOC: "sensor.soc", CAPACITY: "number.cap", HYSTERESIS: 40}, step="init")
+        assert ok["type"] == "create_entry"
+        assert ok["data"][HYSTERESIS] == 40
+
+    def test_unset_battery_options_are_not_saved(self) -> None:
+        # an entry without them is unchanged: nothing is invented for the battery options
+        options = self._submit({SOC: "", CAPACITY: None})["options"]
+        assert SOC not in options and CAPACITY not in options and HYSTERESIS not in options
+
+    def test_the_hysteresis_is_saved_as_submitted(self) -> None:
+        options = self._submit({HYSTERESIS: 40.0})["options"]
+        assert options[HYSTERESIS] == 40.0
+
+
 class TestTranslations:
     def _load(self, lang: str) -> dict[str, Any]:
         import json
@@ -464,3 +636,18 @@ class TestTranslations:
                 ):
                     assert errors[error], (lang, section, error)
                 assert "sensor_in_both_input_lists" not in errors
+
+    def test_en_and_de_carry_the_battery_options_and_their_errors_in_both_flows(self) -> None:
+        for lang in ("en", "de"):
+            data = self._load(lang)
+            for section, step in (("config", "user"), ("options", "init")):
+                fields = data[section]["step"][step]["data"]
+                for key in (SOC, CAPACITY, HYSTERESIS):
+                    assert fields[key], (lang, section, key)
+                errors = data[section]["error"]
+                for error in (
+                    "soc_and_capacity_together",
+                    "soc_needs_measurement",
+                    "capacity_unit_not_energy",
+                ):
+                    assert errors[error], (lang, section, error)

@@ -1,8 +1,9 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-10-27 (ADR-023 accepted; the ADR-019 amendment is in force:
-four counter pickers, no update listener; `effy_exports.py` added). Keep this
-concise; ADRs in `adr/` are authoritative.
+Last updated: 2026-10-29 (TASK-0023: SoC, capacity and hysteresis options;
+ADR-023 accepted 2026-10-27; the ADR-019 amendment is in force: four counter
+pickers, no update listener; `effy_exports.py` added). Keep this concise; ADRs
+in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -117,7 +118,11 @@ concise; ADRs in `adr/` are authoritative.
   TASK-0017: the options hold `grid_import_sensor`, `discharge_sensor`,
   `charge_sensor`, `grid_export_sensor` (the old lists are ignored); an entry
   without a charge or grid export counter refuses to set up; the entry is
-  reloaded by `OptionsFlowWithReload`, Effy has no update listener.
+  reloaded by `OptionsFlowWithReload`, Effy has no update listener. Also in
+  force since TASK-0023: the optional `soc_sensor` (state class `measurement`),
+  `capacity_entity` (sensor, number or input_number; Wh or kWh if it reports a
+  unit) — set together — and `valley_hysteresis` (default 30, minimum 15); they
+  are neither inputs nor outputs of the waterfall.
 - **ADR-024 (Accepted, 2026-10-25):** the write phase is 98 % of a history
   recalculation (104 s of 107 s at 28 days on the Pi, about 1 ms per short-term
   row: Home Assistant's import does one `SELECT` and one `UPDATE`/`INSERT` per
