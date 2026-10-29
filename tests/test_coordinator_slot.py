@@ -244,10 +244,27 @@ async def _fake_async_update_efficiency(
     return calc.RunState(charge=moved, last_slot=now)
 
 
+# The rebuild after a history recalculation (TASK-0022): (options, now, lock_held).
+_rebuild_calls: list[tuple[Any, datetime, bool]] = []
+_rebuild_raise_next: list[bool] = [False]
+
+
+async def _fake_async_rebuild_efficiency(hass: Any, entry_options: Any, now: datetime) -> Any:
+    lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
+    _rebuild_calls.append((entry_options, now, lock_held))
+    if _job_hook[0] is not None:
+        await _job_hook[0]("rebuild")
+    if _rebuild_raise_next[0]:
+        _rebuild_raise_next[0] = False
+        raise RuntimeError("rebuild exploded")
+    return _calc_mod.RunState(charge=_calc_mod.EffEstimate(counted_runs=99), last_slot=_ts(1, 0))
+
+
 _history_stub = ModuleType("effy.history")
 _history_stub.async_rewrite_hourly = _fake_async_rewrite_hourly  # type: ignore[attr-defined]
 _history_stub.async_update_standby = _fake_async_update_standby  # type: ignore[attr-defined]
 _history_stub.async_update_efficiency = _fake_async_update_efficiency  # type: ignore[attr-defined]
+_history_stub.async_rebuild_efficiency = _fake_async_rebuild_efficiency  # type: ignore[attr-defined]
 _history_stub.async_probe_last_slot_ready = _fake_async_probe_last_slot_ready  # type: ignore[attr-defined]
 _history_stub.async_recalculate_history = _fake_async_recalculate_history  # type: ignore[attr-defined]
 _history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
@@ -713,6 +730,8 @@ def _reset_slot_job_fakes() -> None:
     _standby_raise_next[0] = False
     _efficiency_calls.clear()
     _efficiency_raise_next[0] = False
+    _rebuild_calls.clear()
+    _rebuild_raise_next[0] = False
     _lock_probe[0] = None
     _history_calls.clear()
     _history_full_calls.clear()
@@ -1576,6 +1595,125 @@ class TestEfficiencyInTheSlotJob(_SlotCoordinatorBase):
             results.append((calls, notified, standby, coord.standby_state))
         assert results[0] == results[1]
         assert results[0][0] and results[0][1] and results[0][2]
+
+
+class TestEfficiencyRebuildAfterHistory(_SlotCoordinatorBase):
+    """TASK-0022 (ADR-023 decision 9): a history recalculation resets the efficiency
+    machine and replays it; the hook sits at the caller, in the coordinator."""
+
+    def _coordinator_with_pair(self, *, restored: bool = True) -> EffyCoordinator:
+        _reset_slot_job_fakes()
+        coord = EffyCoordinator(
+            _FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.charge"], ["sensor.grid_in"])
+        )
+        coord._probe_interval = timedelta(milliseconds=1)
+        if restored:
+            coord.restore_efficiency(None)
+        _lock_probe[0] = lambda: coord._recorder_job_lock().locked()
+        return coord
+
+    def _order(self, coord: EffyCoordinator) -> list[str]:
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        coord.subscribe_updates("sensor.effy_x", lambda _value, _unit: order.append("notify"))
+        coord.subscribe_recalculated_from(lambda _ts: order.append("closing"))
+        coord.subscribe_efficiency(lambda _state: order.append("subscriber"))
+        return order
+
+    @staticmethod
+    def _full_result() -> None:
+        _history_full_return_value[0] = (
+            3,
+            _ts(9, 0),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_rebuild_comes_after_notify_under_the_lock_and_before_the_closing_step(
+        self,
+    ) -> None:
+        coord = self._coordinator_with_pair()
+        order = self._order(coord)
+        self._full_result()
+        written = await coord.async_recalculate_history_and_report()
+        assert written == 3
+        assert order == ["history", "notify", "rebuild", "subscriber", "closing"]
+        options, now, lock_held = _rebuild_calls[0]
+        assert options == coord._entry.options and lock_held
+        assert now.tzinfo is not None
+
+    @pytest.mark.asyncio
+    async def test_the_old_state_is_replaced_and_the_sensors_are_told(self) -> None:
+        coord = self._coordinator_with_pair()
+        seen: list[Any] = []
+        coord.subscribe_efficiency(seen.append)
+        old = coord.efficiency_state
+        self._full_result()
+        await coord.async_recalculate_history_and_report()
+        assert coord.efficiency_state is not old
+        assert coord.efficiency_state is not None
+        assert coord.efficiency_state.charge.counted_runs == 99  # what the rebuild returned
+        assert seen == [coord.efficiency_state]
+
+    @pytest.mark.asyncio
+    async def test_without_a_pair_or_before_a_restore_nothing_is_rebuilt(self) -> None:
+        plain = self._coordinator()
+        plain.restore_efficiency(None)
+        assert not plain.efficiency_enabled  # restored, but no complete pair
+        self._full_result()
+        await plain.async_recalculate_history_and_report()
+        assert _rebuild_calls == []  # checked here: building the next one resets the fakes
+        unrestored = self._coordinator_with_pair(restored=False)
+        self._full_result()
+        await unrestored.async_recalculate_history_and_report()
+        assert _rebuild_calls == [] and unrestored.efficiency_state is None
+
+    @pytest.mark.asyncio
+    async def test_a_failing_rebuild_is_logged_keeps_the_old_state_and_the_history_succeeds(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._coordinator_with_pair()
+        order = self._order(coord)
+        old = coord.efficiency_state
+        self._full_result()
+        _rebuild_raise_next[0] = True
+        with caplog.at_level(logging.ERROR):
+            written = await coord.async_recalculate_history_and_report()
+        assert written == 3  # the recalculation itself succeeded
+        assert coord.efficiency_state is old
+        assert any("rebuilding" in r.getMessage() for r in caplog.records)
+        assert "subscriber" not in order and order[-1] == "closing"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_rebuild_propagates_and_is_no_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._coordinator_with_pair()
+
+        async def cancel(which: str) -> None:
+            if which == "rebuild":
+                raise asyncio.CancelledError
+
+        _job_hook[0] = cancel
+        self._full_result()
+        with caplog.at_level(logging.ERROR), pytest.raises(asyncio.CancelledError):
+            await coord.async_recalculate_history_and_report()
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    @pytest.mark.asyncio
+    async def test_the_history_recalculation_without_an_efficiency_machine_is_as_before(
+        self,
+    ) -> None:
+        coord = self._coordinator()
+        order = self._order(coord)
+        self._full_result()
+        assert await coord.async_recalculate_history_and_report() == 3
+        assert order == ["history", "notify", "closing"]
 
 
 class TestClosingStep(_SlotCoordinatorBase):

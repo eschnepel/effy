@@ -12,6 +12,7 @@ the catch-up, and that the feed only reads.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from datetime import datetime, timedelta
 from typing import Any
@@ -40,29 +41,35 @@ run_restore_data = _calc["run_restore_data"]
 DrainState = _history.DrainState
 
 
+POLL_SECONDS = 30  # a real integration reports every few seconds to a minute, not on every Wh
+
+
 def _counter(
     segments: list[tuple[datetime, datetime, int]], start: datetime, end: datetime
 ) -> list[tuple[datetime, str]]:
-    """Raw states of a kWh counter that ticks in 1 Wh (three decimals), fed by
-    piecewise-constant power ``segments`` (they add up). A coarser counter would tick so
-    rarely at the standby power that its next tick is spread back over a whole charge,
-    and an idle counter would then look active in every slot (the glossary's activity has
-    no tolerance, ADR-023 decision 3). Integer arithmetic: jump times are exact."""
+    """Raw states of a kWh counter that ticks in 1 Wh (three decimals) and is *polled*
+    every ``POLL_SECONDS``: a state exists only when a poll sees a new value, as with a
+    real integration (at 3 kW a bare 1 Wh counter would change every 1.2 s, 60 times
+    denser than anything Home Assistant records, and the simulation would spend its time
+    in the redistribution of those readings). The segments' powers add up. A coarser
+    *resolution* would tick so rarely at the standby power that its next tick is spread
+    back over a whole charge, and an idle counter would then look active in every slot
+    (the glossary's activity has no tolerance, ADR-023 decision 3). Integer arithmetic:
+    the times of the polls are exact."""
     total = int((end - start).total_seconds())
     watts = [0] * total
     for seg_start, seg_end, w in segments:
-        for i in range(
-            int((seg_start - start).total_seconds()), int((seg_end - start).total_seconds())
-        ):
-            if 0 <= i < total:
-                watts[i] += w
+        first = max(int((seg_start - start).total_seconds()), 0)
+        last = min(int((seg_end - start).total_seconds()), total)
+        for i in range(first, last):
+            watts[i] += w
     states = [(start, "12.300")]
-    energy_ws, ticks, quantum = 0, 0, 3600  # 1 Wh in watt-seconds
+    energy_ws, reported, quantum = 0, 0, 3600  # 1 Wh in watt-seconds
     for i in range(total):
         energy_ws += watts[i]
-        if energy_ws // quantum > ticks:
-            ticks = energy_ws // quantum
-            states.append((start + timedelta(seconds=i + 1), f"{12.3 + ticks / 1000:.3f}"))
+        if (i + 1) % POLL_SECONDS == 0 and energy_ws // quantum > reported:
+            reported = energy_ws // quantum
+            states.append((start + timedelta(seconds=i + 1), f"{12.3 + reported / 1000:.3f}"))
     return states
 
 
@@ -197,6 +204,31 @@ async def _baseline(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, _World]:
     world = copy.deepcopy(kept)
     _rig(monkeypatch, world)
     return efficiency, standby, world
+
+
+class TestTheSimulationStaysCheap:
+    """The simulation runs the real recalculation 109 times per pass, and its cost grows
+    with the number of raw readings (the trapezoidal redistribution). At one reading per
+    Wh (about 9,000 per counter) one pass took 9.5 s and the file 130 s; polled every
+    30 s (a few hundred) it takes 0.2 s. Guard the density, not the clock."""
+
+    def test_the_counters_are_polled_not_ticked_on_every_wh(self) -> None:
+        world = _world()
+        for entity_id, readings in world.energy.items():
+            assert len(readings) < 600, (entity_id, len(readings))
+        # and they are still fine enough for the idle counters to tick during a charge
+        # run's neighbours: the discharge counter sees its 20 W standby every few minutes
+        idle = [t for t, _v in world.energy[DIS] if t < T0 + timedelta(hours=0.4)]
+        assert len(idle) >= 5
+
+    def test_a_poll_sees_a_reading_only_when_the_value_changed(self) -> None:
+        readings = _counter([(T0, T0 + timedelta(hours=1), 3600)], T0, T0 + timedelta(hours=2))
+        values = [v for _t, v in readings]
+        assert values == sorted(set(values), key=values.index)  # no duplicate states
+        gaps = {
+            (b[0] - a[0]).total_seconds() for a, b in zip(readings[1:], readings[2:], strict=False)
+        }
+        assert gaps <= {float(POLL_SECONDS) * k for k in range(1, 4)}  # a multiple of the poll
 
 
 class TestTheWholeChain:
@@ -413,3 +445,123 @@ class TestNothingElseChanges:
             len(with_world.write_calls),
             with_world.write_flags,
         )
+
+
+class TestRebuildAfterTheHistoryRecalculation:
+    """TASK-0022 (ADR-023 decision 9): reset and replay over the history window."""
+
+    def test_the_window_is_the_smaller_of_the_history_days_and_the_recorder_retention(
+        self,
+    ) -> None:
+        window = _history.efficiency_rebuild_window
+        assert window({"max_history_days": 28}, 60) == timedelta(days=28)
+        assert window({"max_history_days": 28}, 10) == timedelta(days=10)
+        assert window({"max_history_days": 5}, 5) == timedelta(days=5)
+        assert window({}, 60) == timedelta(days=28)  # the default of max_history_days
+        assert window({}, 10) == timedelta(days=10)
+
+    @pytest.mark.asyncio
+    async def test_the_rebuild_equals_a_replay_from_empty_over_the_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        whole, _standby, world = await _baseline(monkeypatch)
+        rebuilt = await _history.async_rebuild_efficiency(object(), _opts(), LAST)
+        assert rebuilt == whole  # incremental operation and a replay from empty agree
+        window = _history.efficiency_rebuild_window(
+            _opts(), _history._get_short_term_retention_days(None)
+        )
+        replay = await _history.async_update_efficiency(
+            object(), _opts(), RunState(), LAST, window=window
+        )
+        assert rebuilt == replay
+
+    @pytest.mark.asyncio
+    async def test_the_rebuild_replays_from_empty_over_the_history_window_not_the_catch_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the simulation is shorter than either window, so the result alone cannot tell
+        # a 5-day rebuild from a 3-day catch-up: look at what the replay is asked for
+        _state, _standby, _world_ = await _baseline(monkeypatch)
+        asked: list[tuple[Any, timedelta]] = []
+        real = _history.async_update_efficiency
+
+        async def spy(
+            hass: Any, options: Any, state: Any, now: datetime, window: timedelta | None = None
+        ) -> Any:
+            asked.append((state, window))  # type: ignore[arg-type]
+            return await real(
+                hass, options, state, now, **({} if window is None else {"window": window})
+            )
+
+        monkeypatch.setattr(_history, "async_update_efficiency", spy)
+        await _history.async_rebuild_efficiency(object(), _opts(), LAST)
+        assert asked == [(RunState(), timedelta(days=5))]  # empty, and max_history_days = 5
+
+    @pytest.mark.asyncio
+    async def test_the_rebuild_forgets_what_the_machine_had_counted_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # a reconfigured system: the old state describes other counters; it is not an input
+        whole, _standby, _world_ = await _baseline(monkeypatch)
+        stale = RunState(
+            charge=_calc["EffEstimate"](
+                ratio=_calc["DecayedRatio"](num=1.0, den=2.0), counted_kwh=500.0, counted_runs=77
+            ),
+            last_slot=T0 + timedelta(days=30),
+        )
+        assert stale != whole
+        assert await _history.async_rebuild_efficiency(object(), _opts(), LAST) == whole
+
+    @pytest.mark.asyncio
+    async def test_the_slot_job_continues_from_the_rebuild_and_agrees_with_a_new_replay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _state, _standby, world = await _baseline(monkeypatch)
+        earlier = LAST - timedelta(hours=1)
+        rebuilt = await _history.async_rebuild_efficiency(object(), _opts(), earlier)
+        assert rebuilt.last_slot is not None
+        for step in (5, 35, 65):  # the next jobs
+            later = earlier + timedelta(minutes=step)
+            rebuilt = await _history.async_update_efficiency(object(), _opts(), rebuilt, later)
+            assert rebuilt == await _history.async_rebuild_efficiency(object(), _opts(), later)
+        # nothing the replay had counted is counted again
+        again = await _history.async_update_efficiency(object(), _opts(), rebuilt, later)
+        assert again == rebuilt
+
+    @pytest.mark.asyncio
+    async def test_slots_without_a_standby_statistic_do_not_count_and_do_not_fail_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        whole, _standby, world = await _baseline(monkeypatch)
+        for slot in list(world.store[STANDBY_ID]):
+            if slot < T0 + timedelta(hours=2):
+                del world.store[STANDBY_ID][slot]
+        rebuilt = await _history.async_rebuild_efficiency(object(), _opts(), LAST)
+        assert rebuilt.charge.counted_kwh < whole.charge.counted_kwh
+        assert rebuilt.discharge == whole.discharge  # the discharge was not touched
+        for slot in list(world.store[STANDBY_ID]):
+            del world.store[STANDBY_ID][slot]
+        none = await _history.async_rebuild_efficiency(object(), _opts(), LAST)
+        assert none.charge.counted_kwh == 0 and none.discharge.counted_kwh == 0
+        assert none.last_slot == whole.last_slot  # it still read every slot
+
+    @pytest.mark.asyncio
+    async def test_it_reads_only_inside_the_window_and_never_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _state, _standby, world = await _baseline(monkeypatch)
+        writes = len(world.write_calls)
+        world.stats_calls.clear()
+        later = LAST + timedelta(days=40)  # far later: the window decides what is read
+        await _history.async_rebuild_efficiency(object(), _opts(), later)
+        window = _history.efficiency_rebuild_window(
+            _opts(), _history._get_short_term_retention_days(None)
+        )
+        assert window == timedelta(days=5)
+        floor = later - timedelta(minutes=125) - window
+        assert world.stats_calls and all(start >= floor - SLOT for start, _end in world.stats_calls)
+        assert len(world.write_calls) == writes
+
+    def test_the_hook_is_at_the_caller_not_inside_the_history_recalculation(self) -> None:
+        source = inspect.getsource(_history.async_recalculate_history)
+        assert "efficiency" not in source.lower()

@@ -2237,16 +2237,18 @@ async def async_update_efficiency(
     entry_options: dict[str, Any],
     state: RunState,
     now: datetime,
+    window: timedelta = EFFICIENCY_CATCHUP_MAX,
 ) -> RunState:
     """Feed the efficiency machine the slots it has not seen (ADR-023 decisions 3, 9).
 
     Call after the recent recalculation and the standby update, under the same lock: the
     statistics they just wrote are what the machine reads. The machine takes a slot only
     when it is 125 min old, so only the slots up to ``now - 125 min`` are read: the ones
-    after ``state.last_slot``, and for a fresh state at most ``EFFICIENCY_CATCHUP_MAX``
-    back. Nothing is read without a complete counter pair or without new slots. A slot
-    that lacks a statistic of its activity or of a configured counter reaches the machine
-    as a missing slot, never as zero; one that lacks the standby statistic reaches it
+    after ``state.last_slot``, and for a fresh state at most ``window`` back (3 days
+    unless a rebuild asks for more). Nothing is read without a complete counter pair or
+    without new slots. A slot that lacks a statistic of its activity or of a configured
+    counter reaches the machine as a missing slot, never as zero; one that lacks the
+    standby statistic reaches it
     without standby energy and does not count.
     """
     if not efficiency_enabled(entry_options):
@@ -2255,7 +2257,7 @@ async def async_update_efficiency(
     slot_width = timedelta(seconds=slot_seconds)
     settled = (now - EFF_VALIDATION_DELAY).timestamp()
     last = datetime.fromtimestamp(settled - (settled % slot_seconds), tz=timezone.utc)
-    floor = last - EFFICIENCY_CATCHUP_MAX
+    floor = last - window
     first = state.last_slot + slot_width if state.last_slot is not None else floor
     first = max(first, floor)
     first = datetime.fromtimestamp(
@@ -2287,6 +2289,34 @@ async def async_update_efficiency(
             )
         )
     return run_feed(state, slots, roles, now)
+
+
+def efficiency_rebuild_window(entry_options: dict[str, Any], keep_days: int) -> timedelta:
+    """How far back a history rebuild replays: ``min(max_history_days, keep_days)`` days.
+
+    The short-term statistics the machine reads exist only as long as the recorder keeps
+    them (ADR-023 decision 9), and the history recalculation only rewrites
+    ``max_history_days`` of them.
+    """
+    configured = int(entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS))
+    return timedelta(days=min(configured, keep_days))
+
+
+async def async_rebuild_efficiency(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    now: datetime,
+) -> RunState:
+    """Replay the efficiency machine from empty over the history window (ADR-023 decision 9).
+
+    Called after a history recalculation (by its caller, not inside it), when the
+    statistics it rewrote are what the machine reads: a reconfigured system gets values
+    at once instead of after weeks. The result is exactly what a first start with this
+    window would catch up; the slot job then continues from its ``last_slot``. Slots
+    without a standby statistic do not count and are no failure.
+    """
+    window = efficiency_rebuild_window(entry_options, _get_short_term_retention_days(hass))
+    return await async_update_efficiency(hass, entry_options, RunState(), now, window=window)
 
 
 def _fetch_statistics(

@@ -93,8 +93,9 @@ restore and persist. Standby's pattern, with a catch-up instead of a rebuild.
 - Settled here: ADR-023 Open decision 4 (persistence): every efficiency sensor
   keeps the whole machine dump, the coordinator adopts the dump with the later
   `last_slot` (see the ADR).
-- Tests: `tests/test_efficiency_feed.py` (15, the real recent recalculation and
-  feed on a simulated battery with 1 Wh counters),
+- Tests: `tests/test_efficiency_feed.py` (the real recent recalculation and feed
+  on a simulated battery with 1 Wh counters polled every 30 s; they were first
+  ticked on every Wh and the file took 130 s, see TASK-0022's record),
   `tests/test_coordinator_slot.py` (`TestEfficiencyInTheSlotJob`, the closing
   order), `tests/support.py` unchanged.
 - External dependencies added: none.

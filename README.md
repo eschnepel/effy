@@ -243,6 +243,11 @@ slots, and the estimate moves slowly. After a restart both sensors come back
 from Home Assistant's restored state, and Effy catches up the slots it missed,
 at most the last 3 days, inside its first slot job.
 
+A history recalculation (the button) resets both estimates and replays them over
+the window `min(max history days, recorder keep_days)` from the statistics the
+recorder holds, so a changed configuration shows its own values at once; slots
+without a standby value in that window simply do not count.
+
 ### The contract as a file you can copy
 
 `custom_components/effy/effy_exports.py` holds every fixed entity ID, attribute

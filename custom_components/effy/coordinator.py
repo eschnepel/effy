@@ -136,6 +136,7 @@ from .history import (
     async_probe_last_slot_ready,
     async_recalculate_history,
     async_recalculate_recent,
+    async_rebuild_efficiency,
     async_rewrite_hourly,
     async_update_efficiency,
     async_update_standby,
@@ -818,10 +819,34 @@ class EffyCoordinator:
             )
             if touched:
                 self.notify_updated(touched, last_values)
+            # The efficiency machine is rebuilt over the rewritten statistics (ADR-023
+            # decision 9); here, at the caller, not inside the recalculation.
+            await self._async_rebuild_efficiency()
             # The closing step comes last (ADR-012 Amendment 2026-10-18, ADR-021).
             if recalculated_from is not None:
                 self.set_recalculated_from(recalculated_from)
             return written
+
+    async def _async_rebuild_efficiency(self) -> None:
+        """Reset the efficiency machine and replay it over the history window (ADR-023).
+
+        Called by the history recalculation's caller with the recalculation lock held,
+        so the statistics it just rewrote are what is replayed. Does nothing without a
+        complete counter pair or before a sensor restored. A failure is logged and the
+        old state stays: it never fails the history recalculation (ADR-000 §8).
+        """
+        if self._efficiency_state is None or not self.efficiency_enabled:
+            return
+        try:
+            rebuilt = await async_rebuild_efficiency(self._hass, self._entry.options, self._now())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Effy: rebuilding the charge and discharge efficiency failed")
+            return
+        self._efficiency_state = rebuilt
+        for cb in list(self._efficiency_subscribers):
+            cb(rebuilt)
 
     def _schedule_next_slot_timer(self) -> None:
         """(Re)schedule the slot-aligned timer for its next trigger point."""
