@@ -1347,3 +1347,485 @@ def run_state_from_restore(data: Mapping[str, Any]) -> RunState | None:
         run_counted=run_counted,
         last_slot=last_slot,
     )
+
+
+# ---------------------------------------------------------------------------
+# Battery efficiency over valley spans (ADR-023 decision 6)
+# ---------------------------------------------------------------------------
+# The machine measures how much of the energy that a battery used up (its charge less
+# the change in the energy stored) it gave back, between two valleys of the state of
+# charge. A *valley* is a zigzag of the SoC with a threshold, the valley hysteresis H:
+#
+#   seek:  track the lowest point L; every slot at or below L + 10 (the band) is in the
+#          valley; when the SoC has risen to L + H the valley is real and ends at the
+#          last slot in the band. A *span* opens there.
+#   span:  track the peak; after it, the running minima (``records``) of the SoC. The
+#          lowest one is L2. When L2 has fallen H below the peak and the SoC then rises to
+#          L2 + H, the next valley is real, begins at the first record in the band of L2,
+#          and the span closes there: it is measured, and the next span opens at the end
+#          of the new valley.
+#
+# Only the sums are kept, never the slots: the sums since the last slot in the band (the
+# next span's start), the sums at each record (the span's end) and the sums since the
+# span's start. A slot enters, as for the pure runs, only when it is 125 min old (a late
+# counter jump has redistributed its energy by then): so a span can only close on a rise
+# whose valley begins long before it is old enough, and the closing "waits until the next
+# valley is real and its beginning is 125 min old" (decision 6) without a clock here.
+
+# The band of a valley: the slots within this many points of its lowest point (a constant).
+VALLEY_BAND = 10.0
+# A span is dropped when its capacity differs from the one at its start by more than this.
+CAPACITY_TOLERANCE = 0.01
+
+# Why a span was dropped (only the span: the estimate is never reset by one).
+SPAN_DROP_MISSING_ENERGY: Literal["missing_energy"] = "missing_energy"
+SPAN_DROP_CAPACITY_UNAVAILABLE: Literal["capacity_unavailable"] = "capacity_unavailable"
+SPAN_DROP_CAPACITY_CHANGED: Literal["capacity_changed"] = "capacity_changed"
+SPAN_DROP_NO_NET_INPUT: Literal["no_net_input"] = "no_net_input"
+SpanDrop = Literal["missing_energy", "capacity_unavailable", "capacity_changed", "no_net_input"]
+_SPAN_DROPS = (
+    SPAN_DROP_MISSING_ENERGY,
+    SPAN_DROP_CAPACITY_UNAVAILABLE,
+    SPAN_DROP_CAPACITY_CHANGED,
+    SPAN_DROP_NO_NET_INPUT,
+)
+
+
+@dataclass(frozen=True)
+class BatSlot:
+    """One slot of the battery's statistics. ``soc`` is the mean state of charge in points,
+    ``None`` when the slot has none; ``charge_kwh`` and ``discharge_kwh`` are the energies of
+    the charge and discharge counters, ``None`` when the slot has no statistic of one;
+    ``capacity_kwh`` is the battery capacity in effect in the slot, ``None`` when unavailable.
+    """
+
+    start: datetime
+    soc: float | None
+    charge_kwh: float | None
+    discharge_kwh: float | None
+    capacity_kwh: float | None
+
+
+@dataclass(frozen=True)
+class SpanSums:
+    """The sums from the middle of the slot ``start`` to the end of the last slot processed:
+    half of the first slot and all of the others. ``soc`` and ``capacity`` are those of the
+    first slot (a capacity that is not a positive number is ``None``); ``problem`` is the
+    first reason the span cannot be measured, if any slot since had one."""
+
+    start: datetime
+    soc: float
+    capacity: float | None
+    charge: float
+    discharge: float
+    problem: SpanDrop | None = None
+
+
+@dataclass(frozen=True)
+class SpanPoint:
+    """A candidate for the span's end: the slot ``start`` with its own ``soc`` and
+    ``capacity``, and the span's sums from its start to the *middle* of this slot."""
+
+    start: datetime
+    soc: float
+    capacity: float | None
+    charge: float
+    discharge: float
+    problem: SpanDrop | None = None
+
+
+@dataclass(frozen=True)
+class ValleyEstimate:
+    """The battery efficiency: the decayed sums and what the sensor shows as attributes."""
+
+    ratio: DecayedRatio = field(default_factory=DecayedRatio)
+    # Σ (charge − Δstored) of the counted spans since the estimate began (ADR-023 decision 2).
+    counted_kwh: float = 0.0
+    counted_spans: int = 0
+    # The last counted span's own ratio (not the estimate), where it began and where it ended
+    # (the starts of its boundary slots).
+    last_value: float | None = None
+    last_span_begin: datetime | None = None
+    last_span_end: datetime | None = None
+
+    @property
+    def value(self) -> float | None:
+        return ratio_value(self.ratio)
+
+
+@dataclass(frozen=True)
+class ValleyState:
+    """The whole state of the valley machine; every field is plain data (ADR-023 decision 9).
+
+    ``span is None``: seeking the first valley; ``low`` is the lowest point of the valley
+    candidate and ``band`` the sums since its last slot in the band. ``span`` is set: the
+    span is open since a valley that is real; ``peak`` is the highest SoC since, ``records``
+    the running minima after it (only those within the band of the last one) and, when there
+    are any, ``low`` the lowest and ``band`` the sums since its last slot in the band."""
+
+    estimate: ValleyEstimate = field(default_factory=ValleyEstimate)
+    low: float | None = None
+    band: SpanSums | None = None
+    span: SpanSums | None = None
+    peak: float | None = None
+    records: tuple[SpanPoint, ...] = ()
+    last_slot: datetime | None = None
+    # Spans that could not be measured, and why the last one could not.
+    dropped_spans: int = 0
+    last_drop: SpanDrop | None = None
+
+
+def _valid_capacity(capacity: float | None) -> float | None:
+    return capacity if capacity is not None and capacity > 0 else None
+
+
+def _slot_problem(slot: BatSlot, reference: float | None) -> SpanDrop | None:
+    """Why ``slot`` spoils a span whose capacity at its start is ``reference``, if it does."""
+    if slot.charge_kwh is None or slot.discharge_kwh is None:
+        return SPAN_DROP_MISSING_ENERGY
+    capacity = _valid_capacity(slot.capacity_kwh)
+    if capacity is None or reference is None:
+        return SPAN_DROP_CAPACITY_UNAVAILABLE
+    if abs(capacity - reference) > CAPACITY_TOLERANCE * reference:
+        return SPAN_DROP_CAPACITY_CHANGED
+    return None
+
+
+def _sums_start(slot: BatSlot, soc: float) -> SpanSums:
+    """The sums of a span that begins in the middle of ``slot``: half of it."""
+    capacity = _valid_capacity(slot.capacity_kwh)
+    return SpanSums(
+        start=slot.start,
+        soc=soc,
+        capacity=capacity,
+        charge=0.5 * (slot.charge_kwh or 0.0),
+        discharge=0.5 * (slot.discharge_kwh or 0.0),
+        problem=_slot_problem(slot, capacity),
+    )
+
+
+def _sums_add(sums: SpanSums, slot: BatSlot, soc: float) -> SpanSums:
+    """``sums`` with all of ``slot`` added."""
+    return SpanSums(
+        start=sums.start,
+        soc=sums.soc,
+        capacity=sums.capacity,
+        charge=sums.charge + (slot.charge_kwh or 0.0),
+        discharge=sums.discharge + (slot.discharge_kwh or 0.0),
+        problem=sums.problem or _slot_problem(slot, sums.capacity),
+    )
+
+
+def _point(sums: SpanSums, slot: BatSlot, soc: float) -> SpanPoint:
+    """The span's end candidate at ``slot``: the sums so far and half of ``slot``."""
+    return SpanPoint(
+        start=slot.start,
+        soc=soc,
+        capacity=_valid_capacity(slot.capacity_kwh),
+        charge=sums.charge + 0.5 * (slot.charge_kwh or 0.0),
+        discharge=sums.discharge + 0.5 * (slot.discharge_kwh or 0.0),
+        problem=sums.problem or _slot_problem(slot, sums.capacity),
+    )
+
+
+def _measure_span(state: ValleyState, begin: SpanSums, end: SpanPoint) -> ValleyState:
+    """The state with the span ``begin`` to ``end`` counted, or counted as dropped."""
+    problem = end.problem
+    gross = 0.0
+    if problem is None:
+        # a capacity that is missing is a problem of the slot, so there is none here
+        assert begin.capacity is not None and end.capacity is not None
+        delta = (end.soc * end.capacity - begin.soc * begin.capacity) / 100
+        gross = end.charge - delta
+        if gross <= 0:
+            problem = SPAN_DROP_NO_NET_INPUT
+    if problem is not None:
+        return replace(state, dropped_spans=state.dropped_spans + 1, last_drop=problem)
+    estimate = state.estimate
+    return replace(
+        state,
+        estimate=ValleyEstimate(
+            ratio=decay_add(estimate.ratio, gross, end.discharge, gross),
+            counted_kwh=estimate.counted_kwh + gross,
+            counted_spans=estimate.counted_spans + 1,
+            last_value=end.discharge / gross,
+            last_span_begin=begin.start,
+            last_span_end=end.start,
+        ),
+    )
+
+
+def valley_step(state: ValleyState, slot: BatSlot, hysteresis: float) -> ValleyState:
+    """The one transition of the machine: a slot that has settled enters.
+
+    Slots must arrive in time order; one at or before the last processed slot is ignored.
+    A slot that does not directly follow the last one (a gap), and a slot without a state of
+    charge, reset the detection (never the estimate): a span never contains one. The
+    ``hysteresis`` must be above the 10-point band, else a real valley could not be told from
+    its own band.
+    """
+    if hysteresis <= VALLEY_BAND:
+        raise ValueError(f"the valley hysteresis must be above {VALLEY_BAND:g} points")
+    if state.last_slot is not None and slot.start <= state.last_slot:
+        return state
+    if state.last_slot is None or slot.start != state.last_slot + _DRAIN_SLOT or slot.soc is None:
+        state = ValleyState(
+            estimate=state.estimate,
+            dropped_spans=state.dropped_spans,
+            last_drop=state.last_drop,
+        )
+    if slot.soc is None:
+        return replace(state, last_slot=slot.start)
+    if state.span is None:
+        return _seek_step(state, slot, slot.soc, hysteresis)
+    return _span_step(state, slot, slot.soc, hysteresis)
+
+
+def _seek_step(state: ValleyState, slot: BatSlot, soc: float, hysteresis: float) -> ValleyState:
+    """No span is open: track the valley candidate; when it is real the span opens at its end."""
+    low = soc if state.low is None else min(state.low, soc)
+    # In the band of the lowest point: the span could begin at this slot. Else it goes on (a
+    # valley candidate that has a lowest point has a band: the first slot is in its own).
+    if soc <= low + VALLEY_BAND:
+        band = _sums_start(slot, soc)
+    else:
+        assert state.band is not None
+        band = _sums_add(state.band, slot, soc)
+    if soc >= low + hysteresis:
+        return replace(
+            state, low=None, band=None, span=band, peak=soc, records=(), last_slot=slot.start
+        )
+    return replace(state, low=low, band=band, last_slot=slot.start)
+
+
+def _span_step(state: ValleyState, slot: BatSlot, soc: float, hysteresis: float) -> ValleyState:
+    """A span is open: track the peak and the minima after it; close on the next valley."""
+    span, peak, records = state.span, state.peak, state.records
+    assert span is not None and peak is not None
+    if records:
+        low = records[-1].soc
+        if peak - low >= hysteresis and soc >= low + hysteresis:
+            # the next valley is real: it began at the first record in its band
+            assert state.band is not None  # the records have a band
+            closed = _measure_span(state, span, records[0])
+            return replace(
+                closed,
+                low=None,
+                span=_sums_add(state.band, slot, soc),
+                band=None,
+                peak=soc,
+                records=(),
+                last_slot=slot.start,
+            )
+    # A new peak (the latest of equal ones): what came after the old one was a wobble.
+    if soc >= peak:
+        return replace(
+            state,
+            low=None,
+            band=None,
+            span=_sums_add(span, slot, soc),
+            peak=soc,
+            records=(),
+            last_slot=slot.start,
+        )
+    low = records[-1].soc if records else soc
+    if not records or soc < low:
+        low = soc
+        records = tuple(
+            r for r in (*records, _point(span, slot, soc)) if r.soc <= low + VALLEY_BAND
+        )
+    if soc <= low + VALLEY_BAND:
+        band = _sums_start(slot, soc)
+    else:
+        assert state.band is not None  # not the first slot after the peak: the records have one
+        band = _sums_add(state.band, slot, soc)
+    return replace(
+        state,
+        low=low,
+        band=band,
+        span=_sums_add(span, slot, soc),
+        records=records,
+        last_slot=slot.start,
+    )
+
+
+def valley_feed(
+    state: ValleyState,
+    slots: Iterable[BatSlot],
+    now: datetime,
+    hysteresis: float,
+    delay: timedelta = EFF_VALIDATION_DELAY,
+) -> ValleyState:
+    """Feed time-ordered slots; only those at least ``delay`` old at ``now`` enter.
+
+    A slot that is too young stops the feed (every later one is younger): it enters at a
+    later call, so feeding slot by slot or in batches gives the same result.
+    """
+    cutoff = now - delay
+    for slot in sorted(slots, key=lambda s: s.start):
+        if slot.start > cutoff:
+            break
+        state = valley_step(state, slot, hysteresis)
+    return state
+
+
+def _sums_data(sums: SpanSums | SpanPoint | None) -> dict[str, Any] | None:
+    if sums is None:
+        return None
+    return {
+        "start": sums.start.isoformat(),
+        "soc": sums.soc,
+        "capacity": sums.capacity,
+        "charge_kwh": sums.charge,
+        "discharge_kwh": sums.discharge,
+        "problem": sums.problem,
+    }
+
+
+def valley_restore_data(state: ValleyState, hysteresis: float) -> dict[str, Any]:
+    """The whole state as plain JSON types, with the hysteresis it was made with (a state
+    made with another one is no state to continue from)."""
+    estimate = state.estimate
+    return {
+        "hysteresis": hysteresis,
+        "estimate": {
+            "num": estimate.ratio.num,
+            "den": estimate.ratio.den,
+            "counted_kwh": estimate.counted_kwh,
+            "counted_spans": estimate.counted_spans,
+            "last_value": estimate.last_value,
+            "last_span_begin": (
+                estimate.last_span_begin.isoformat() if estimate.last_span_begin else None
+            ),
+            "last_span_end": (
+                estimate.last_span_end.isoformat() if estimate.last_span_end else None
+            ),
+        },
+        "low": state.low,
+        "band": _sums_data(state.band),
+        "span": _sums_data(state.span),
+        "peak": state.peak,
+        "records": [_sums_data(r) for r in state.records],
+        "last_slot": state.last_slot.isoformat() if state.last_slot else None,
+        "dropped_spans": state.dropped_spans,
+        "last_drop": state.last_drop,
+    }
+
+
+def _sums_fields(
+    data: Any,
+) -> tuple[datetime, float, float | None, float, float, SpanDrop | None] | None:
+    """The fields of a stored ``SpanSums`` or ``SpanPoint``, or ``None`` when unusable."""
+    if not isinstance(data, Mapping):
+        return None
+    start = _restore_time(data.get("start"))
+    soc = _restore_number(data.get("soc"))
+    charge = _restore_number(data.get("charge_kwh"), minimum=-float("inf"))
+    discharge = _restore_number(data.get("discharge_kwh"), minimum=-float("inf"))
+    raw_capacity, problem = data.get("capacity"), data.get("problem")
+    capacity = _restore_number(raw_capacity)
+    if start is None or soc is None or charge is None or discharge is None:
+        return None
+    if raw_capacity is not None and (capacity is None or capacity <= 0):
+        return None
+    if problem is not None and problem not in _SPAN_DROPS:
+        return None
+    return start, soc, capacity, charge, discharge, problem
+
+
+def _sums_from_data(data: Any) -> SpanSums | None:
+    fields = _sums_fields(data)
+    return None if fields is None else SpanSums(*fields)
+
+
+def _point_from_data(data: Any) -> SpanPoint | None:
+    fields = _sums_fields(data)
+    return None if fields is None else SpanPoint(*fields)
+
+
+def _valley_estimate_from_data(data: Any) -> ValleyEstimate | None:
+    if not isinstance(data, Mapping):
+        return None
+    num, den = _restore_number(data.get("num")), _restore_number(data.get("den"))
+    kwh, spans = _restore_number(data.get("counted_kwh")), data.get("counted_spans")
+    if num is None or den is None or kwh is None:
+        return None
+    if isinstance(spans, bool) or not isinstance(spans, int) or spans < 0:
+        return None
+    begin, end = data.get("last_span_begin"), data.get("last_span_end")
+    if (begin is not None and _restore_time(begin) is None) or (
+        end is not None and _restore_time(end) is None
+    ):
+        return None
+    return ValleyEstimate(
+        ratio=DecayedRatio(num, den),
+        counted_kwh=kwh,
+        counted_spans=spans,
+        last_value=_restore_number(data.get("last_value"), minimum=-float("inf")),
+        last_span_begin=_restore_time(begin),
+        last_span_end=_restore_time(end),
+    )
+
+
+def valley_state_from_restore(data: Mapping[str, Any], hysteresis: float) -> ValleyState | None:
+    """The state to continue from, or ``None`` when ``data`` is unusable or was made with
+    another hysteresis (the caller then starts from nothing, which is correct: a replay of the
+    last days finds the valleys again)."""
+    if data.get("hysteresis") != hysteresis or isinstance(data.get("hysteresis"), bool):
+        return None
+    estimate = _valley_estimate_from_data(data.get("estimate"))
+    last_slot = _restore_time(data.get("last_slot"))
+    dropped, last_drop = data.get("dropped_spans"), data.get("last_drop")
+    if estimate is None or last_slot is None:
+        return None
+    if isinstance(dropped, bool) or not isinstance(dropped, int) or dropped < 0:
+        return None
+    if last_drop is not None and last_drop not in _SPAN_DROPS:
+        return None
+    low, peak = data.get("low"), data.get("peak")
+    low = None if low is None else _restore_number(low)
+    peak = None if peak is None else _restore_number(peak)
+    raw_band, raw_span, raw_records = data.get("band"), data.get("span"), data.get("records")
+    band = None if raw_band is None else _sums_from_data(raw_band)
+    span = None if raw_span is None else _sums_from_data(raw_span)
+    if not isinstance(raw_records, list):
+        return None
+    records = tuple(_point_from_data(r) for r in raw_records)
+    if (
+        (data.get("low") is not None and low is None)
+        or (data.get("peak") is not None and peak is None)
+        or (raw_band is not None and band is None)
+        or (raw_span is not None and span is None)
+        or any(r is None for r in records)
+    ):
+        return None
+    points = tuple(r for r in records if r is not None)
+    # The pieces must belong together: a valley candidate has its lowest point and its band; a
+    # span has its peak; the records, the lowest point and the band after the peak go together
+    # and the lowest point is the last record, each one lower than the one before.
+    if span is None and (peak is not None or points):
+        return None
+    if span is not None and peak is None:
+        return None
+    if span is None and (low is None) != (band is None):
+        return None
+    if span is not None and (
+        bool(points) != (low is not None) or bool(points) != (band is not None)
+    ):
+        return None
+    if points and (
+        low != points[-1].soc
+        or any(a.soc <= b.soc for a, b in zip(points, points[1:], strict=False))
+    ):
+        return None
+    return ValleyState(
+        estimate=estimate,
+        low=low,
+        band=band,
+        span=span,
+        peak=peak,
+        records=points,
+        last_slot=last_slot,
+        dropped_spans=dropped,
+        last_drop=last_drop,
+    )

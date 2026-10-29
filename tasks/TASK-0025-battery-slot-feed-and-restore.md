@@ -59,8 +59,20 @@ function), `coordinator.py`, `tests/test_battery_feed.py`.
   options flow accepts a capacity entity **without a unit** (or without a state
   yet); the feed must decide what a capacity of unknown unit means (see the
   decisions of TASK-0023).
-- `async_update_efficiency`, `restore_efficiency` (→ TASK-0020) · the valley
-  machine (→ TASK-0024) — **to be filled by the Lead when TASK-0024 is done**
+- From TASK-0024 (done 2026-10-29, filled by the Lead; `calculation.py`):
+  `BatSlot(start, soc, charge_kwh, discharge_kwh, capacity_kwh)`, `ValleyState`,
+  `ValleyEstimate` (`.value`, `ratio`, `counted_kwh`, `counted_spans`,
+  `last_value`, `last_span_begin`, `last_span_end`),
+  `valley_feed(state, slots, now, hysteresis, delay)`, `valley_step`,
+  `valley_restore_data(state, hysteresis)`,
+  `valley_state_from_restore(data, hysteresis)` (`None` for unusable data,
+  another hysteresis, or a state that processed nothing), `SpanDrop` and the
+  `SPAN_DROP_*` reasons, `VALLEY_BAND`, `CAPACITY_TOLERANCE`. The capacity goes
+  in **kWh**; the hysteresis must be above 10 (`valley_step` raises `ValueError`
+  otherwise); slots are consecutive 5-minute slots, a gap or a missing SoC
+  resets the detection.
+- `async_update_efficiency`, `restore_efficiency` (→ TASK-0020) — filled by the
+  Lead from the Delivered Artifacts of TASK-0020 when the task starts.
 
 ## Delivered Artifacts
 

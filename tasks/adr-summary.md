@@ -1,9 +1,9 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-10-29 (TASK-0023: SoC, capacity and hysteresis options;
-ADR-023 accepted 2026-10-27; the ADR-019 amendment is in force: four counter
-pickers, no update listener; `effy_exports.py` added). Keep this concise; ADRs
-in `adr/` are authoritative.
+Last updated: 2026-10-29 (TASK-0024: the valley and span machine; TASK-0023:
+SoC, capacity and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019
+amendment is in force: four counter pickers, no update listener;
+`effy_exports.py` added). Keep this concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -122,7 +122,15 @@ in `adr/` are authoritative.
   force since TASK-0023: the optional `soc_sensor` (state class `measurement`),
   `capacity_entity` (sensor, number or input_number; Wh or kWh if it reports a
   unit) — set together — and `valley_hysteresis` (default 30, minimum 15); they
-  are neither inputs nor outputs of the waterfall.
+  are neither inputs nor outputs of the waterfall. The pure valley and span
+  machine is in `calculation.py` since TASK-0024: a zigzag of the SoC with
+  threshold H and a 10-point band; battery efficiency = Σ discharge ÷ (Σ charge
+  − Δstored) per span, half of each boundary slot, weight Σ charge − Δstored,
+  the decay of the pure runs; a span is dropped (the estimate is never reset)
+  for a capacity change above 1 %, an unavailable capacity, a missing charge or
+  discharge statistic or a net input of 0 or less; an estimate above 100 % is
+  published as it is (human, 2026-10-29); the half-slot convention has a bias of
+  −0.05 points in simulation (Open decision 2 settled).
 - **ADR-024 (Accepted, 2026-10-25):** the write phase is 98 % of a history
   recalculation (104 s of 107 s at 28 days on the Pi, about 1 ms per short-term
   row: Home Assistant's import does one `SELECT` and one `UPDATE`/`INSERT` per

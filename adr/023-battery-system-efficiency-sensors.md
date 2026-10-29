@@ -300,9 +300,40 @@ minimum of 15 for the hysteresis; half-slot boundaries for the span sums
    %. Option C: do not count a measurement above 100 %. Recommended: A for
    charge and discharge (sums average the noise); the human decides for a valley
    span.
+
+   ## Amendment — 2026-10-29
+
+   **Reason:** The ADR left the case of a valley span open (the recommendation
+   for charge and discharge was A; the human decides for a valley span).
+   **Decision:** Option A for the **valley span** too: a battery efficiency
+   above 100 % is published as it is, never capped and never discarded; the span
+   counts with its measured value. This holds for all three estimates. **Decided
+   by:** human (2026-10-29), settled for TASK-0024.
+
 1. **The boundary convention of decision 6** (half boundary slots) is the Lead
    Agent's; the simulator of decision 13 must show a bias below 0.5 points
    before the task is done, or the convention changes.
+
+   ## Amendment — 2026-10-29
+
+   **Reason:** Open decision 2 required the simulator of decision 13 to show a
+   bias below 0.5 points for the half-boundary-slot convention of decision 6.
+   **Decision:** The convention stays (TASK-0024). A simulated battery of known
+   efficiency (5-minute slots, SoC a whole number of points, counters that tick
+   in 10 Wh, clouds that make the SoC dip, a capacity that jitters by 0.3 %)
+   over 150 days, for eight batteries of 85 % to 97 %: half boundary slots give
+   a bias of −0.05 points on average (−0.13 to +0.05, the worst single estimate
+   0.62 points off); no boundary slot gives +0.19 (up to +0.31); whole boundary
+   slots give −0.28 (down to −0.45). Details decided with it (◇, TASK-0024): of
+   several equal highest SoC values the **latest** is the peak, so a dip between
+   two equal tops is not "after the peak"; the first valley found after a reset
+   may have begun before it (its end is still a valid boundary: the balance
+   holds for any two boundaries); the machine takes only slots that are 125 min
+   old, so a span closes at the rise slot's own age, not at the age of the
+   valley's beginning (later by the rise, never earlier than decision 6 says).
+   **Decided by:** Lead Agent (confirmed by the simulator; the human confirms at
+   the next Gate).
+
 1. **Options flow on a failed entry — settled 2026-10-27 (TASK-0017 stage 0,
    from the source of Home Assistant 2026.10.4 and 2026.3.0).** (a) The options
    flow is created without a check of the entry's state and `supports_options`
@@ -314,6 +345,7 @@ minimum of 15 for the hysteresis; half-slot boundaries for the span sums
    listener is gone) and Home Assistant raises `ValueError` if an entry has a
    listener next to `OptionsFlowWithReload`. Effy therefore has no update
    listener.
+
 1. **Persistence mechanism** of decision 9 — settled 2026-10-27 (TASK-0020) for
    the charge and discharge machine: there is no store of its own. Every
    efficiency sensor keeps the **whole** machine dump as `ExtraStoredData`
