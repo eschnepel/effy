@@ -1,12 +1,11 @@
 # Task: The history recalculation rebuilds battery and roundtrip efficiency too
 
-- **Status:** todo
+- **Status:** done — 2026-10-30 (inline)
 - **Capability:** CAP-9
-- **Related ADRs:** [ADR-023 (Draft) decision 9]
+- **Related ADRs:** [ADR-023 decision 9]
 - **Dependencies:** \[TASK-0022-efficiency-history-rebuild,
   TASK-0026-battery-and-roundtrip-efficiency-sensors\]
-- **Gate:** Blocked until Draft ADR-023 is **Accepted** by the human (Gate 2);
-  until then no code.
+- **Gate:** ADR-023 accepted 2026-10-27.
 
 ## Goal
 
@@ -64,4 +63,16 @@ the real recorder, and the README. Do not build the same thing twice.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
+- No production code: the replay (`history.async_rebuild_battery`,
+  `coordinator._async_rebuild_battery`, called after the efficiency rebuild and
+  before the closing step) was delivered by TASK-0025, see the note above.
+- Test added:
+  `test_a_history_rebuild_replaces_both_machines_and_the_roundtrip_follows` in
+  `tests/test_efficiency_sensor.py` (the roundtrip sensor takes the rebuilt
+  efficiency and valley states, and is unavailable, not stale, when the rebuild
+  finds no span). The other criteria stay pinned by `TestTheRebuild` and
+  `TestBatteryRebuildAfterHistory`.
+- README: the rebuild of the battery and roundtrip efficiency.
+- Not verifiable here: the rebuild against a real recorder; only the faked
+  recorder reads of the tests were exercised.
+- External dependencies added: none.

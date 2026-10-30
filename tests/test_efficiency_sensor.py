@@ -645,6 +645,24 @@ class TestBatteryAndRoundtripSensors:
         assert entity.writes == 3 and entity.native_value == 75.3
 
     @pytest.mark.asyncio
+    async def test_a_history_rebuild_replaces_both_machines_and_the_roundtrip_follows(
+        self,
+    ) -> None:
+        coordinator = _FakeCoordinator()
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        await entity.async_added_to_hass()
+        coordinator.subscribers[0](_machine())
+        coordinator.battery_subscribers[0](_valley())
+        assert entity.native_value == 75.3
+        # the rebuild notifies the efficiency machine, then the valley machine
+        coordinator.subscribers[0](_machine(charge=0.9, discharge=0.8))
+        coordinator.battery_subscribers[0](_valley(0.85))
+        assert entity.native_value == 61.2
+        # a rebuild that found no span leaves the roundtrip unavailable, not stale
+        coordinator.battery_subscribers[0](_valley(None))
+        assert entity.available is False and entity.native_value is None
+
+    @pytest.mark.asyncio
     async def test_removing_the_roundtrip_sensor_twice_is_harmless(self) -> None:
         coordinator = _FakeCoordinator()
         entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)

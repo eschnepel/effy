@@ -37,7 +37,7 @@
 | TASK-0024-valley-span-machine | Pure valley and span machine for battery efficiency; settles the boundary convention by simulation (CAP-9) | done (2026-10-29; reviewer PASS) | TASK-0019-efficiency-pure-run-machine | worker-inline + reviewer-inline |
 | TASK-0025-battery-slot-feed-and-restore | Feed the valley machine from SoC statistics and capacity history, restore and catch up (CAP-9) | done (2026-10-29; reviewer PASS) | TASK-0020-efficiency-slot-feed-and-restore, TASK-0023-soc-capacity-and-hysteresis-options, TASK-0024-valley-span-machine | worker-inline + reviewer-inline |
 | TASK-0026-battery-and-roundtrip-efficiency-sensors | `sensor.effy_battery_efficiency` and `sensor.effy_roundtrip_efficiency`, published (CAP-9) | done (2026-10-30) | TASK-0021-charge-and-discharge-efficiency-sensors, TASK-0025-battery-slot-feed-and-restore | worker-inline |
-| TASK-0027-battery-history-rebuild | History recalculation rebuilds battery and roundtrip efficiency (CAP-9) | todo | TASK-0022-efficiency-history-rebuild, TASK-0026-battery-and-roundtrip-efficiency-sensors | — |
+| TASK-0027-battery-history-rebuild | History recalculation rebuilds battery and roundtrip efficiency (CAP-9) | done (2026-10-30) | TASK-0022-efficiency-history-rebuild, TASK-0026-battery-and-roundtrip-efficiency-sensors | worker-inline |
 | TASK-0028-branch-coverage-non-defensive-code | Investigate which branches no test reaches, classify them (non-defensive / defensive / dead / needs real Home Assistant), then cover the non-defensive ones; one worker, file by file in slices, no gate in between; tests and coverage configuration only (human request 2026-10-24) | done | — | worker-inline + reviewer-inline |
 
 ADR-023 tasks (TASK-0017 to TASK-0027, proposed 2026-10-23; ADR-023 accepted

@@ -279,6 +279,13 @@ The roundtrip estimate runs slightly high because battery-fed standby is counted
 as output by battery efficiency while discharge efficiency removes standby only
 inside pure discharge runs.
 
+A history recalculation also resets the battery efficiency and replays it over
+the same window, `min(max history days, recorder keep_days)`. Only valley spans
+that lie wholly inside the window count, and a capacity entity with no history
+in it gives no span rather than an error. The roundtrip efficiency follows both
+rebuilt estimates. If the replay fails the previous estimate stays and the
+recalculation still succeeds.
+
 ### The contract as a file you can copy
 
 `custom_components/effy/effy_exports.py` holds every fixed entity ID, attribute
