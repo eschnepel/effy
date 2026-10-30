@@ -72,6 +72,12 @@
       },
       "recalculated_from": {
         "name": "Recalculated from"
+      },
+      "battery_efficiency": {
+        "name": "Battery efficiency"
+      },
+      "roundtrip_efficiency": {
+        "name": "Roundtrip efficiency"
       }
     }
   },

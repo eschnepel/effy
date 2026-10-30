@@ -1,13 +1,12 @@
 # Task: The battery efficiency and roundtrip efficiency sensors
 
-- **Status:** todo
+- **Status:** done — 2026-10-30 (inline)
 - **Capability:** CAP-9
-- **Related ADRs:** \[ADR-023 (Draft) decisions 2 and 8, ADR-021 (Amendments
+- **Related ADRs:** \[ADR-023 decisions 2 and 8, ADR-021 (Amendments
   2026-10-23)\]
 - **Dependencies:** \[TASK-0021-charge-and-discharge-efficiency-sensors,
   TASK-0025-battery-slot-feed-and-restore\]
-- **Gate:** Blocked until Draft ADR-023 is **Accepted** by the human (Gate 2);
-  until then no code.
+- **Gate:** ADR-023 accepted 2026-10-27.
 
 ## Goal
 
@@ -69,3 +68,22 @@ README, `tests/test_efficiency_sensor.py`, `tests/test_effy_exports.py`.
 ## Delivered Artifacts
 
 <!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
+
+- `effy_exports.py`: fixed entity IDs and series symbols for battery and
+  roundtrip efficiency; both values added to `EffySeries` and the pinned,
+  copyability-tested contract. Schema version remains 1 (additive).
+- `catalog.py`: `describe_efficiency` now covers all four efficiency series;
+  both new descriptors are output/BMS, have no source or `function`, and use
+  `[mean, min, max]`.
+- `sensor.py`: `EffyBatteryEfficiencySensor` restores and subscribes to the
+  valley machine, publishes span attributes, and does not depend on standby.
+  `EffyRoundtripEfficiencySensor` restores both machines and publishes the
+  product of the three displayed percentage values; its availability follows all
+  three components, including standby availability for charge/discharge. Battery
+  entity creation requires charge, discharge, SoC and capacity; roundtrip
+  additionally requires grid import and grid export.
+- `translations/en.json` and `translations/de.json`: names for both entities.
+- README: measurement, availability, restore and the accepted roundtrip limit.
+- Tests: `test_efficiency_sensor.py`, `test_catalog.py`, `test_effy_exports.py`,
+  and `test_sensor_setup.py` cover the new contract and lifecycle.
+- External dependencies added: none.

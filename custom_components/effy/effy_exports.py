@@ -45,6 +45,8 @@ EFFY_STANDBY_POWER_ENTITY_ID: Final = "sensor.effy_standby_power"
 # The charge and discharge efficiency estimates (ADR-023); also listed in ``sensors``.
 EFFY_CHARGE_EFFICIENCY_ENTITY_ID: Final = "sensor.effy_charge_efficiency"
 EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID: Final = "sensor.effy_discharge_efficiency"
+EFFY_BATTERY_EFFICIENCY_ENTITY_ID: Final = "sensor.effy_battery_efficiency"
+EFFY_ROUNDTRIP_EFFICIENCY_ENTITY_ID: Final = "sensor.effy_roundtrip_efficiency"
 
 # --- Attributes of the recalculated-from sensor ---------------------------------
 
@@ -74,6 +76,8 @@ EFFY_SERIES_SMOOTHED: Final = "smoothed"
 EFFY_SERIES_STANDBY_POWER: Final = "standby_power"
 EFFY_SERIES_CHARGE_EFFICIENCY: Final = "charge_efficiency"
 EFFY_SERIES_DISCHARGE_EFFICIENCY: Final = "discharge_efficiency"
+EFFY_SERIES_BATTERY_EFFICIENCY: Final = "battery_efficiency"
+EFFY_SERIES_ROUNDTRIP_EFFICIENCY: Final = "roundtrip_efficiency"
 
 # ``direction``: the direction of the flow the sensor stands for.
 EFFY_DIRECTION_INPUT: Final = "input"
@@ -127,6 +131,8 @@ EffySeries = Literal[
     "standby_power",
     "charge_efficiency",
     "discharge_efficiency",
+    "battery_efficiency",
+    "roundtrip_efficiency",
 ]
 EffyDirection = Literal["input", "output"]
 EffyRole = Literal["pv", "bms"]

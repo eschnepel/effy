@@ -195,12 +195,12 @@ sensors:
 | -- | -- |
 | `schema_version` | Raised only when an existing key or its meaning changes; new keys do not raise it |
 | `max_history_days` | The configured number of history days |
-| `series` | `effective`, `derived_power`, `smoothed`, `standby_power`, `charge_efficiency` or `discharge_efficiency` |
+| `series` | `effective`, `derived_power`, `smoothed`, `standby_power`, `charge_efficiency`, `battery_efficiency`, `discharge_efficiency` or `roundtrip_efficiency` |
 | `source_entity_id` | The configured source sensor; `null` for the standby and the efficiency sensors |
 | `direction` | `input` or `output`; the standby and efficiency sensors are `output` |
 | `role` | `pv` or `bms`; every output is `bms` |
 | `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input. The standby and efficiency entries have no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
-| `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's series have `mean` and `state` (never `sum`) |
+| `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's written series have `mean` and `state` (never `sum`), while standby and efficiency sensors have `mean`, `min` and `max` |
 
 - **Which sensors are listed:** every Effy sensor that exists, except
   `sensor.effy_recalculated_from` itself. A sensor that is created late (its
@@ -261,6 +261,23 @@ A history recalculation (the button) resets both estimates and replays them over
 the window `min(max history days, recorder keep_days)` from the statistics the
 recorder holds, so a changed configuration shows its own values at once; slots
 without a standby value in that window simply do not count.
+
+### Battery and roundtrip efficiency
+
+With charge and discharge counters, a SoC sensor and a capacity entity
+configured, Effy creates `sensor.effy_battery_efficiency`; it is unavailable
+until its first valley span and does not wait for standby. Its attributes use
+`counted_runs` for counted spans and include `last_valley_span_begin` and
+`last_valley_span_end`. When charge, battery and discharge efficiencies all
+exist, Effy also creates `sensor.effy_roundtrip_efficiency`, the product of
+those three published values; it is unavailable whenever any component is
+unavailable. Both sensors are percent measurements recorded by Home Assistant
+with `mean`, `min` and `max`, and both restore their machine state after a
+restart.
+
+The roundtrip estimate runs slightly high because battery-fed standby is counted
+as output by battery efficiency while discharge efficiency removes standby only
+inside pure discharge runs.
 
 ### The contract as a file you can copy
 

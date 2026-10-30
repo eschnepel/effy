@@ -26,7 +26,7 @@ least one BMS input is configured.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -44,9 +44,11 @@ from .calculation import (
     EffEstimate,
     LossDistribution,
     RunState,
+    ValleyState,
     drain_restore_data,
     effective_in_original_unit,
     run_restore_data,
+    valley_restore_data,
 )
 from .catalog import (
     base_attributes,
@@ -60,19 +62,24 @@ from .const import (
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
 )
+from .coordinator import EffyCoordinator
 from .effy_exports import (
     EFFY_ATTR_MAX_HISTORY_DAYS,
     EFFY_ATTR_RESTORED_AS_OF,
     EFFY_ATTR_RESTORED_AT,
     EFFY_ATTR_SCHEMA_VERSION,
     EFFY_ATTR_SENSORS,
+    EFFY_BATTERY_EFFICIENCY_ENTITY_ID,
     EFFY_CHARGE_EFFICIENCY_ENTITY_ID,
     EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID,
     EFFY_RECALCULATED_FROM_ENTITY_ID,
+    EFFY_ROUNDTRIP_EFFICIENCY_ENTITY_ID,
+    EFFY_SERIES_BATTERY_EFFICIENCY,
     EFFY_SERIES_CHARGE_EFFICIENCY,
     EFFY_SERIES_DERIVED_POWER,
     EFFY_SERIES_DISCHARGE_EFFICIENCY,
     EFFY_SERIES_EFFECTIVE,
+    EFFY_SERIES_ROUNDTRIP_EFFICIENCY,
     EFFY_SERIES_SMOOTHED,
     EFFY_STANDBY_POWER_ENTITY_ID,
     EffyPublishedSensor,
@@ -80,7 +87,6 @@ from .effy_exports import (
 )
 from .inputs import all_input_ids
 from .inputs import output_ids as configured_output_ids
-from .coordinator import EffyCoordinator
 from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
 
 
@@ -109,7 +115,7 @@ _EFFECTIVE_ATTRIBUTE_KEYS = ("source_entity", "total_loss_w", "loss_share_w")
 
 def _utcnow() -> datetime:
     """The restoration time; a module function so a test can fix it."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _async_restore_measurement(
@@ -199,6 +205,7 @@ async def async_setup_entry(
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
     entities.extend(_standby_entities(hass, entry, coordinator))
     entities.extend(_efficiency_entities(hass, entry, coordinator))
+    entities.extend(_battery_efficiency_entities(hass, entry, coordinator))
 
     async_add_entities(entities, update_before_add=False)
 
@@ -250,6 +257,37 @@ def _efficiency_entities(
             entities.append(EffyEfficiencySensor(hass, entry, coordinator, kind))
             continue
         stale = registry.async_get_entity_id("sensor", DOMAIN, _efficiency_unique_id(entry, kind))
+        if stale is not None:
+            registry.async_remove(stale)
+    return entities
+
+
+def _battery_efficiency_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """Create the battery sensor and, when all three inputs exist, roundtrip."""
+    battery_enabled = coordinator.battery_enabled
+    roundtrip_enabled = bool(
+        battery_enabled
+        and coordinator.grid_import_id
+        and coordinator.charge_id
+        and coordinator.discharge_id
+        and coordinator.grid_export_id
+    )
+    registry = er.async_get(hass)
+    entities: list[SensorEntity] = []
+    if battery_enabled:
+        entities.append(EffyBatteryEfficiencySensor(hass, entry, coordinator))
+    else:
+        stale = registry.async_get_entity_id("sensor", DOMAIN, _battery_efficiency_unique_id(entry))
+        if stale is not None:
+            registry.async_remove(stale)
+    if roundtrip_enabled:
+        entities.append(EffyRoundtripEfficiencySensor(hass, entry, coordinator))
+    else:
+        stale = registry.async_get_entity_id(
+            "sensor", DOMAIN, _roundtrip_efficiency_unique_id(entry)
+        )
         if stale is not None:
             registry.async_remove(stale)
     return entities
@@ -1166,4 +1204,286 @@ class EffyEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     @callback  # type: ignore[untyped-decorator]
     def _on_standby(self, _state: DrainState) -> None:
         """The standby estimate changed: availability may have changed with it."""
+        self.async_write_ha_state()
+
+
+def _battery_efficiency_unique_id(entry: ConfigEntry) -> str:
+    return f"{entry.entry_id}_{EFFY_SERIES_BATTERY_EFFICIENCY}"
+
+
+def _roundtrip_efficiency_unique_id(entry: ConfigEntry) -> str:
+    return f"{entry.entry_id}_{EFFY_SERIES_ROUNDTRIP_EFFICIENCY}"
+
+
+class _BatteryEfficiencyExtraData(ExtraStoredData):  # type: ignore[misc]
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self._data)
+
+
+class EffyBatteryEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """Battery efficiency from closed valley spans; independent of standby."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = EFFY_SERIES_BATTERY_EFFICIENCY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._machine: ValleyState | None = coordinator.battery_state
+        self._unsub_coordinator: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return _battery_efficiency_unique_id(self._entry)
+
+    @property
+    def entity_id(self) -> str:
+        return EFFY_BATTERY_EFFICIENCY_ENTITY_ID
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    @property
+    def available(self) -> bool:
+        return (
+            self._machine is not None
+            and self._machine.estimate is not None
+            and self._machine.estimate.value is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        if not self.available or self._machine is None or self._machine.estimate is None:
+            return None
+        return round(self._machine.estimate.value * 100.0, 1)  # type: ignore[operator]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if not self.available or self._machine is None or self._machine.estimate is None:
+            return None
+        estimate = self._machine.estimate
+        return {
+            "last_counted_value": round(estimate.last_value * 100.0, 1)
+            if estimate.last_value is not None
+            else None,
+            "last_counted_end": estimate.last_span_end.isoformat()
+            if estimate.last_span_end
+            else None,
+            "counted_kwh": round(estimate.counted_kwh, 3),
+            "counted_runs": estimate.counted_spans,
+            "last_processed_slot": self._machine.last_slot.isoformat()
+            if self._machine.last_slot
+            else None,
+            "last_valley_span_begin": estimate.last_span_begin.isoformat()
+            if estimate.last_span_begin
+            else None,
+            "last_valley_span_end": estimate.last_span_end.isoformat()
+            if estimate.last_span_end
+            else None,
+        }
+
+    @property
+    def extra_restore_state_data(self) -> _BatteryEfficiencyExtraData | None:
+        if self._machine is None:
+            return None
+        return _BatteryEfficiencyExtraData(
+            valley_restore_data(self._machine, self._coordinator.battery_hysteresis)
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_extra_data()
+        self._machine = self._coordinator.restore_battery(last.as_dict() if last else None)
+        self._unsub_coordinator = self._coordinator.subscribe_battery(self._on_battery)
+        self._unregister_published = self._coordinator.register_published(
+            describe_efficiency(self.entity_id, EFFY_SERIES_BATTERY_EFFICIENCY)
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_coordinator is not None:
+            self._unsub_coordinator()
+            self._unsub_coordinator = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_battery(self, state: ValleyState) -> None:
+        self._machine = state
+        self.async_write_ha_state()
+
+
+class _RoundtripExtraData(ExtraStoredData):  # type: ignore[misc]
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self._data)
+
+
+class EffyRoundtripEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """Product of the published charge, battery, and discharge efficiencies."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = EFFY_SERIES_ROUNDTRIP_EFFICIENCY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._run_machine: RunState | None = coordinator.efficiency_state
+        self._battery_machine: ValleyState | None = coordinator.battery_state
+        self._standby = coordinator.standby_state
+        self._unsubscribers: list[Callable[[], None]] = []
+        self._unregister_published: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return _roundtrip_efficiency_unique_id(self._entry)
+
+    @property
+    def entity_id(self) -> str:
+        return EFFY_ROUNDTRIP_EFFICIENCY_ENTITY_ID
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    def _component_values(self) -> tuple[float, float, float] | None:
+        run = self._run_machine
+        battery = self._battery_machine
+        standby = self._standby
+        if (
+            run is None
+            or battery is None
+            or battery.estimate is None
+            or battery.estimate.value is None
+            or run.charge.value is None
+            or run.discharge.value is None
+            or standby is None
+            or standby.estimate is None
+        ):
+            return None
+        return (
+            round(run.charge.value * 100.0, 1),
+            round(battery.estimate.value * 100.0, 1),
+            round(run.discharge.value * 100.0, 1),
+        )
+
+    @property
+    def available(self) -> bool:
+        return self._component_values() is not None
+
+    @property
+    def native_value(self) -> float | None:
+        values = self._component_values()
+        if values is None:
+            return None
+        charge, battery, discharge = values
+        return round(charge * battery * discharge / 10000.0, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        values = self._component_values()
+        battery = self._battery_machine
+        if values is None or battery is None or battery.estimate is None:
+            return None
+        charge, battery_value, discharge = values
+        estimate = battery.estimate
+        return {
+            "last_counted_value": round(charge * battery_value * discharge / 10000.0, 1),
+            "last_counted_end": estimate.last_span_end.isoformat()
+            if estimate.last_span_end
+            else None,
+            "counted_kwh": round(estimate.counted_kwh, 3),
+            "counted_runs": estimate.counted_spans,
+            "last_processed_slot": battery.last_slot.isoformat() if battery.last_slot else None,
+        }
+
+    @property
+    def extra_restore_state_data(self) -> _RoundtripExtraData | None:
+        if self._run_machine is None or self._battery_machine is None:
+            return None
+        return _RoundtripExtraData(
+            {
+                "efficiency": run_restore_data(self._run_machine),
+                "battery": valley_restore_data(
+                    self._battery_machine, self._coordinator.battery_hysteresis
+                ),
+            }
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_extra_data()
+        restored = last.as_dict() if last else {}
+        run_data = restored.get("efficiency")
+        battery_data = restored.get("battery")
+        self._run_machine = self._coordinator.restore_efficiency(
+            run_data if isinstance(run_data, dict) else None
+        )
+        self._battery_machine = self._coordinator.restore_battery(
+            battery_data if isinstance(battery_data, dict) else None
+        )
+        self._standby = self._coordinator.standby_state
+        self._unsubscribers = [
+            self._coordinator.subscribe_efficiency(self._on_efficiency),
+            self._coordinator.subscribe_battery(self._on_battery),
+            self._coordinator.subscribe_standby(self._on_standby),
+        ]
+        self._unregister_published = self._coordinator.register_published(
+            describe_efficiency(self.entity_id, EFFY_SERIES_ROUNDTRIP_EFFICIENCY)
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        for unsubscribe in self._unsubscribers:
+            unsubscribe()
+        self._unsubscribers.clear()
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_efficiency(self, state: RunState) -> None:
+        self._run_machine = state
+        self.async_write_ha_state()
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_battery(self, state: ValleyState) -> None:
+        self._battery_machine = state
+        self.async_write_ha_state()
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_standby(self, state: DrainState) -> None:
+        self._standby = state
         self.async_write_ha_state()

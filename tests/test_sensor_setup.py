@@ -9,14 +9,13 @@ whose states say what each source sensor is, and the late-binding listener
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
-from tests.support import role_options
-
 import pytest
 
+from tests.support import role_options
 from tests.test_published_sensors import _Coordinator, _last
 from tests.test_standby_sensor import _sensor
 
@@ -38,6 +37,11 @@ class _SetupCoordinator(_Coordinator):
     def __init__(self) -> None:
         super().__init__()
         self.standby_enabled = False
+        self.battery_enabled = False
+        self.grid_import_id = None
+        self.charge_id = None
+        self.discharge_id = None
+        self.grid_export_id = None
         self.refreshes = 0
 
     def force_refresh(self) -> None:
@@ -417,8 +421,8 @@ class TestIdentityOfTheFixedSensors:
 
 class TestRestorationTime:
     def test_it_is_the_current_time_in_utc(self) -> None:
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         restored_at = _sensor._utcnow()
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
         assert before <= restored_at <= after
         assert restored_at.utcoffset() == timedelta(0)

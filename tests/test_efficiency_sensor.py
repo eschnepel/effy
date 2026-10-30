@@ -12,7 +12,8 @@ from __future__ import annotations
 import importlib.util
 import sys
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC as UTC_TZ
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -21,7 +22,7 @@ import pytest
 
 _BASE = Path(__file__).resolve().parent.parent / "custom_components" / "effy"
 _PKG = "effy_efficiency_sensor_under_test"
-UTC = timezone.utc
+UTC = UTC_TZ
 
 
 class _Stub:
@@ -196,15 +197,23 @@ class _FakeCoordinator:
         discharge: str | None = "sensor.discharge",
         grid_export: str | None = "sensor.grid_out",
         standby_estimate: float | None = 20.0,
+        battery_enabled: bool = True,
     ) -> None:
         self.grid_import_id, self.charge_id = grid_import, charge
         self.discharge_id, self.grid_export_id = discharge, grid_export
         self.standby_state = _calc.DrainState(estimate=standby_estimate)
+        self.battery_enabled = battery_enabled
+        self.battery_hysteresis = 30.0
+        self.efficiency_state: Any = None
+        self.battery_state: Any = None
         self.restore_calls: list[Any] = []
+        self.battery_restore_calls: list[Any] = []
         self.subscribers: list[Callable[[Any], None]] = []
         self.standby_subscribers: list[Callable[[Any], None]] = []
+        self.battery_subscribers: list[Callable[[Any], None]] = []
         self.unsubscribed = 0
         self.standby_unsubscribed = 0
+        self.battery_unsubscribed = 0
         self.published: list[dict[str, Any]] = []
         self.unpublished = 0
 
@@ -219,7 +228,14 @@ class _FakeCoordinator:
     def restore_efficiency(self, data: Any) -> Any:
         self.restore_calls.append(data)
         restored = _calc.run_state_from_restore(data) if data else None
-        return restored if restored is not None else _calc.RunState()
+        self.efficiency_state = restored if restored is not None else _calc.RunState()
+        return self.efficiency_state
+
+    def restore_battery(self, data: Any) -> Any:
+        self.battery_restore_calls.append(data)
+        restored = _calc.valley_state_from_restore(data, self.battery_hysteresis) if data else None
+        self.battery_state = restored if restored is not None else _calc.ValleyState()
+        return self.battery_state
 
     def subscribe_efficiency(self, cb: Callable[[Any], None]) -> Callable[[], None]:
         self.subscribers.append(cb)
@@ -234,6 +250,14 @@ class _FakeCoordinator:
 
         def unsubscribe() -> None:
             self.standby_unsubscribed += 1
+
+        return unsubscribe
+
+    def subscribe_battery(self, cb: Callable[[Any], None]) -> Callable[[], None]:
+        self.battery_subscribers.append(cb)
+
+        def unsubscribe() -> None:
+            self.battery_unsubscribed += 1
 
         return unsubscribe
 
@@ -259,6 +283,25 @@ def _machine(charge: float | None = 0.9512, discharge: float | None = 0.8801) ->
     return _calc.RunState(
         charge=estimate(charge, 12.34567, 4, 0.94321, 3),
         discharge=estimate(discharge, 20.5, 7, 0.87654, 4),
+        last_slot=datetime(2026, 1, 11, 5, 0, tzinfo=UTC),
+    )
+
+
+def _valley(value: float | None = 0.9) -> Any:
+    if value is None:
+        return _calc.ValleyState()
+    begin = datetime(2026, 1, 11, 1, 0, tzinfo=UTC)
+    end = datetime(2026, 1, 11, 3, 0, tzinfo=UTC)
+    estimate = _calc.ValleyEstimate(
+        ratio=_calc.DecayedRatio(num=value, den=1.0),
+        counted_kwh=42.34567,
+        counted_spans=6,
+        last_value=0.92345,
+        last_span_begin=begin,
+        last_span_end=end,
+    )
+    return _calc.ValleyState(
+        estimate=estimate,
         last_slot=datetime(2026, 1, 11, 5, 0, tzinfo=UTC),
     )
 
@@ -450,9 +493,205 @@ class TestLifecycle:
         assert coordinator.unpublished == 1
 
 
+class TestBatteryAndRoundtripSensors:
+    def test_battery_sensor_is_a_measurement_and_does_not_wait_for_standby(self) -> None:
+        coordinator = _FakeCoordinator(standby_estimate=None)
+        entity = _sensor.EffyBatteryEfficiencySensor(object(), _Entry(), coordinator)
+        assert entity.entity_id == "sensor.effy_battery_efficiency"
+        assert entity.unique_id == "entry1_battery_efficiency"
+        assert entity._attr_translation_key == "battery_efficiency"
+        assert entity._attr_native_unit_of_measurement == "%"
+        assert entity._attr_state_class == "measurement"
+        assert not hasattr(entity, "_attr_device_class")
+        assert entity.available is False and entity.native_value is None
+        entity._machine = _valley()
+        assert entity.available and entity.native_value == 90.0
+        assert entity.extra_state_attributes == {
+            "last_counted_value": 92.3,
+            "last_counted_end": "2026-01-11T03:00:00+00:00",
+            "counted_kwh": 42.346,
+            "counted_runs": 6,
+            "last_processed_slot": "2026-01-11T05:00:00+00:00",
+            "last_valley_span_begin": "2026-01-11T01:00:00+00:00",
+            "last_valley_span_end": "2026-01-11T03:00:00+00:00",
+        }
+
+    def test_roundtrip_is_the_product_of_the_three_published_percent_values(self) -> None:
+        coordinator = _FakeCoordinator()
+        coordinator.efficiency_state = _machine()
+        coordinator.battery_state = _valley()
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        assert entity.entity_id == "sensor.effy_roundtrip_efficiency"
+        assert entity.unique_id == "entry1_roundtrip_efficiency"
+        assert entity._attr_translation_key == "roundtrip_efficiency"
+        assert entity.available and entity.native_value == 75.3
+
+    def test_roundtrip_is_unavailable_when_any_component_is_unavailable(self) -> None:
+        coordinator = _FakeCoordinator(standby_estimate=None)
+        coordinator.efficiency_state = _machine()
+        coordinator.battery_state = _valley()
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        assert entity.available is False and entity.native_value is None
+        coordinator.standby_state = _calc.DrainState(estimate=20.0)
+        entity._standby = coordinator.standby_state
+        entity._battery_machine = _valley(None)
+        assert entity.available is False and entity.native_value is None
+
+    @pytest.mark.asyncio
+    async def test_battery_sensor_restores_the_valley_machine_and_publishes_it(self) -> None:
+        coordinator = _FakeCoordinator(standby_estimate=None)
+        entity = _sensor.EffyBatteryEfficiencySensor(object(), _Entry(), coordinator)
+        dump = _calc.valley_restore_data(_valley(), coordinator.battery_hysteresis)
+        entity.restored = dump
+        await entity.async_added_to_hass()
+        assert coordinator.battery_restore_calls == [dump]
+        assert entity.available and entity.native_value == 90.0
+        assert coordinator.published[0]["series"] == "battery_efficiency"
+        assert coordinator.published[0]["aggregations"] == ["mean", "min", "max"]
+        assert entity.extra_restore_state_data.as_dict() == dump
+        await entity.async_will_remove_from_hass()
+        assert coordinator.battery_unsubscribed == 1 and coordinator.unpublished == 1
+
+    @pytest.mark.asyncio
+    async def test_roundtrip_restores_both_machines_and_publishes_itself(self) -> None:
+        coordinator = _FakeCoordinator()
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        data = {
+            "efficiency": _calc.run_restore_data(_machine()),
+            "battery": _calc.valley_restore_data(_valley(), coordinator.battery_hysteresis),
+        }
+        entity.restored = data
+        await entity.async_added_to_hass()
+        assert coordinator.restore_calls == [data["efficiency"]]
+        assert coordinator.battery_restore_calls == [data["battery"]]
+        assert entity.available and entity.native_value == 75.3
+        assert coordinator.published[0]["series"] == "roundtrip_efficiency"
+        assert entity.extra_restore_state_data.as_dict() == data
+        assert len(coordinator.subscribers) == 1
+        assert len(coordinator.battery_subscribers) == 1
+        assert len(coordinator.standby_subscribers) == 1
+        await entity.async_will_remove_from_hass()
+        assert coordinator.unpublished == 1
+
+    @pytest.mark.parametrize(
+        ("sensor_class", "entity_id"),
+        [
+            ("EffyBatteryEfficiencySensor", "sensor.effy_battery_efficiency"),
+            ("EffyRoundtripEfficiencySensor", "sensor.effy_roundtrip_efficiency"),
+        ],
+    )
+    def test_the_entity_id_is_fixed_and_the_device_is_effy(
+        self, sensor_class: str, entity_id: str
+    ) -> None:
+        entity = getattr(_sensor, sensor_class)(object(), _Entry(), _FakeCoordinator())
+        entity.entity_id = "sensor.something_else"
+        assert entity.entity_id == entity_id
+        assert entity.device_info["identifiers"] == {("effy", "entry1")}
+
+    def test_battery_without_an_estimate_has_no_attributes_and_nothing_to_restore(self) -> None:
+        entity = _sensor.EffyBatteryEfficiencySensor(object(), _Entry(), _FakeCoordinator())
+        assert entity.extra_restore_state_data is None  # no machine restored yet
+        entity._machine = _valley(None)
+        assert entity.extra_state_attributes is None
+
+    def test_roundtrip_attributes_follow_the_battery_spans(self) -> None:
+        coordinator = _FakeCoordinator()
+        coordinator.efficiency_state = _machine()
+        coordinator.battery_state = _valley()
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        assert entity.extra_state_attributes == {
+            "last_counted_value": 75.3,
+            "last_counted_end": "2026-01-11T03:00:00+00:00",
+            "counted_kwh": 42.346,
+            "counted_runs": 6,
+            "last_processed_slot": "2026-01-11T05:00:00+00:00",
+        }
+        entity._battery_machine = _valley(None)
+        assert entity.extra_state_attributes is None
+
+    def test_roundtrip_has_nothing_to_restore_until_both_machines_exist(self) -> None:
+        coordinator = _FakeCoordinator()
+        coordinator.efficiency_state = _machine()
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        assert entity.extra_restore_state_data is None  # no battery machine yet
+
+    @pytest.mark.asyncio
+    async def test_a_new_battery_state_is_published(self) -> None:
+        coordinator = _FakeCoordinator(standby_estimate=None)
+        entity = _sensor.EffyBatteryEfficiencySensor(object(), _Entry(), coordinator)
+        await entity.async_added_to_hass()
+        coordinator.battery_subscribers[0](_valley())
+        assert entity.writes == 1 and entity.native_value == 90.0
+
+    @pytest.mark.asyncio
+    async def test_removing_the_battery_sensor_twice_is_harmless(self) -> None:
+        coordinator = _FakeCoordinator()
+        entity = _sensor.EffyBatteryEfficiencySensor(object(), _Entry(), coordinator)
+        await entity.async_will_remove_from_hass()  # never added
+        await entity.async_added_to_hass()
+        await entity.async_will_remove_from_hass()
+        await entity.async_will_remove_from_hass()
+        assert (coordinator.battery_unsubscribed, coordinator.unpublished) == (1, 1)
+
+    @pytest.mark.asyncio
+    async def test_every_component_change_updates_the_roundtrip_sensor(self) -> None:
+        coordinator = _FakeCoordinator(standby_estimate=None)
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        await entity.async_added_to_hass()
+        coordinator.subscribers[0](_machine())
+        coordinator.battery_subscribers[0](_valley())
+        assert entity.writes == 2 and entity.available is False  # standby still missing
+        coordinator.standby_subscribers[0](_calc.DrainState(estimate=18.0))
+        assert entity.writes == 3 and entity.native_value == 75.3
+
+    @pytest.mark.asyncio
+    async def test_removing_the_roundtrip_sensor_twice_is_harmless(self) -> None:
+        coordinator = _FakeCoordinator()
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        await entity.async_added_to_hass()
+        await entity.async_will_remove_from_hass()
+        await entity.async_will_remove_from_hass()
+        assert coordinator.unsubscribed == 1 and coordinator.battery_unsubscribed == 1
+        assert coordinator.standby_unsubscribed == 1 and coordinator.unpublished == 1
+
+
 def _created(coordinator: _FakeCoordinator) -> list[str]:
     entities = _sensor._efficiency_entities(object(), _Entry(), coordinator)
     return [e.entity_id for e in entities]
+
+
+def _battery_created(coordinator: _FakeCoordinator) -> list[str]:
+    entities = _sensor._battery_efficiency_entities(object(), _Entry(), coordinator)
+    return [e.entity_id for e in entities]
+
+
+class TestBatteryEntityExistence:
+    def test_battery_requires_its_four_configured_inputs_and_roundtrip_all_three(self) -> None:
+        _registry[0] = _Registry({})
+        assert _battery_created(_FakeCoordinator()) == [
+            "sensor.effy_battery_efficiency",
+            "sensor.effy_roundtrip_efficiency",
+        ]
+        _registry[0] = _Registry({})
+        partial = _FakeCoordinator(grid_import=None)
+        assert _battery_created(partial) == ["sensor.effy_battery_efficiency"]
+        _registry[0] = _Registry({})
+        assert _battery_created(_FakeCoordinator(battery_enabled=False)) == []
+
+    def test_sensors_are_removed_when_their_required_inputs_disappear(self) -> None:
+        _registry[0] = _Registry(
+            {
+                ("sensor", "effy", "entry1_battery_efficiency"): "sensor.effy_battery_efficiency",
+                ("sensor", "effy", "entry1_roundtrip_efficiency"): (
+                    "sensor.effy_roundtrip_efficiency"
+                ),
+            }
+        )
+        assert _battery_created(_FakeCoordinator(battery_enabled=False)) == []
+        assert sorted(_registry[0].removed) == [
+            "sensor.effy_battery_efficiency",
+            "sensor.effy_roundtrip_efficiency",
+        ]
 
 
 class TestExistsOnlyWithItsPair:

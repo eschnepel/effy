@@ -36,7 +36,7 @@
 | TASK-0023-soc-capacity-and-hysteresis-options | Options for SoC, battery capacity and valley hysteresis (CAP-9) | done (2026-10-29; reviewer PASS) | TASK-0017-counter-roles-in-config | worker-inline + reviewer-inline |
 | TASK-0024-valley-span-machine | Pure valley and span machine for battery efficiency; settles the boundary convention by simulation (CAP-9) | done (2026-10-29; reviewer PASS) | TASK-0019-efficiency-pure-run-machine | worker-inline + reviewer-inline |
 | TASK-0025-battery-slot-feed-and-restore | Feed the valley machine from SoC statistics and capacity history, restore and catch up (CAP-9) | done (2026-10-29; reviewer PASS) | TASK-0020-efficiency-slot-feed-and-restore, TASK-0023-soc-capacity-and-hysteresis-options, TASK-0024-valley-span-machine | worker-inline + reviewer-inline |
-| TASK-0026-battery-and-roundtrip-efficiency-sensors | `sensor.effy_battery_efficiency` and `sensor.effy_roundtrip_efficiency`, published (CAP-9) | todo | TASK-0021-charge-and-discharge-efficiency-sensors, TASK-0025-battery-slot-feed-and-restore | — |
+| TASK-0026-battery-and-roundtrip-efficiency-sensors | `sensor.effy_battery_efficiency` and `sensor.effy_roundtrip_efficiency`, published (CAP-9) | done (2026-10-30) | TASK-0021-charge-and-discharge-efficiency-sensors, TASK-0025-battery-slot-feed-and-restore | worker-inline |
 | TASK-0027-battery-history-rebuild | History recalculation rebuilds battery and roundtrip efficiency (CAP-9) | todo | TASK-0022-efficiency-history-rebuild, TASK-0026-battery-and-roundtrip-efficiency-sensors | — |
 | TASK-0028-branch-coverage-non-defensive-code | Investigate which branches no test reaches, classify them (non-defensive / defensive / dead / needs real Home Assistant), then cover the non-defensive ones; one worker, file by file in slices, no gate in between; tests and coverage configuration only (human request 2026-10-24) | done | — | worker-inline + reviewer-inline |
 
@@ -182,6 +182,7 @@ changed.
 | 2026-10-29 | TASK-0023 | done; the three battery options are in the options flow, validated, translated and documented; decisions ◇ listed in the task for the human (hysteresis max 100, a unit-less capacity accepted at save, a SoC without state rejected). TASK-0024 is **held** at Gate: ADR-023 Open decision 1 (an estimate above 100 % for a valley span) is the human's, and TASK-0025 to TASK-0027 depend on it | the human's instruction to work TASK-0017 to TASK-0027 in order; ADR-023 says "the human decides for a valley span" |
 | 2026-10-29 | TASK-0024 | done; the valley and span machine is in `calculation.py`; Open decision 1 settled by the human (option A) and Open decision 2 settled by simulation (half boundary slots stay, bias −0.05 points); both recorded as amendments in ADR-023 | Gate of 2026-10-29 |
 | 2026-10-29 | TASK-0025 | done; the valley machine is fed from the recorder, restored, caught up (3 days) and rebuilt after a history recalculation; the rebuild is TASK-0027's replay half, built here on purpose (see the note in TASK-0027) | ADR-023 decision 9: one machinery for feed and rebuild |
+| 2026-10-30 | TASK-0026 | battery and roundtrip sensors added, published, translated and documented; battery availability is independent of standby; roundtrip uses the product of the three displayed component values | next sequential CAP-9 task after TASK-0025 |
 
 ## Audit Groups
 

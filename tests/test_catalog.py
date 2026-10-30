@@ -170,6 +170,8 @@ class TestDescribeStandby:
         [
             ("sensor.effy_charge_efficiency", "charge_efficiency"),
             ("sensor.effy_discharge_efficiency", "discharge_efficiency"),
+            ("sensor.effy_battery_efficiency", "battery_efficiency"),
+            ("sensor.effy_roundtrip_efficiency", "roundtrip_efficiency"),
         ],
     )
     def test_an_efficiency_sensor_is_an_output_with_no_source_and_no_function(

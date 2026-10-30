@@ -72,6 +72,12 @@
       },
       "recalculated_from": {
         "name": "Neu berechnet ab"
+      },
+      "battery_efficiency": {
+        "name": "Batterie-Wirkungsgrad"
+      },
+      "roundtrip_efficiency": {
+        "name": "Gesamtwirkungsgrad"
       }
     }
   },
