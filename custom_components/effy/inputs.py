@@ -27,6 +27,7 @@ from .const import (
     CONF_SOC_SENSOR,
     CONF_VALLEY_HYSTERESIS,
     DEFAULT_VALLEY_HYSTERESIS,
+    MIN_VALLEY_HYSTERESIS,
 )
 
 # The single input list of every entry created before ADR-019. Read only by
@@ -83,6 +84,20 @@ def valley_hysteresis(options: Mapping[str, Any]) -> float:
     """
     value = options.get(CONF_VALLEY_HYSTERESIS)
     return float(DEFAULT_VALLEY_HYSTERESIS if value is None else value)
+
+
+def battery_hysteresis(options: Mapping[str, Any]) -> float:
+    """The valley hysteresis the battery machine runs with (ADR-023 decision 1).
+
+    The saved number, never below the minimum of 15: the options flow keeps it there, and a
+    value edited by hand (or one that is no number) must not make the slot job raise, for the
+    machine refuses a hysteresis of 10 or less. ``valley_hysteresis`` stays what is saved.
+    """
+    try:
+        configured = valley_hysteresis(options)
+    except (TypeError, ValueError):
+        return float(DEFAULT_VALLEY_HYSTERESIS)
+    return max(float(MIN_VALLEY_HYSTERESIS), configured)
 
 
 def bms_input_ids(options: Mapping[str, Any]) -> list[str]:

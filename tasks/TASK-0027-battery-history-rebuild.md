@@ -25,6 +25,21 @@ rewritten slots, continue.
 - Given an error, then the old state stays and the history recalculation
   succeeds.
 
+## Note from the Lead (2026-10-29, while finishing TASK-0025)
+
+The replay half of this task was built inside TASK-0025, because the feed, the
+rebuild and their coordinator hook are one piece of machinery (ADR-023 decision
+9): `history.async_rebuild_battery` and `coordinator._async_rebuild_battery`,
+tested in `tests/test_battery_feed.py` (`TestTheRebuild`) and
+`tests/test_coordinator_slot.py` (`TestBatteryRebuildAfterHistory`). Of the
+acceptance criteria below those tests already pin: the state equals a replay
+from empty over `min(max_history_days, retention)` days with no span before the
+window; no capacity history means no span and no failure; the next slot job is
+idempotent over what the rebuild replayed; an error keeps the old state and the
+history recalculation succeeds. What this task still has to do: the roundtrip
+sensor updating after a rebuild (needs TASK-0026), a review of the above against
+the real recorder, and the README. Do not build the same thing twice.
+
 ## Estimated File / Module Footprint (hint, not a commitment)
 
 `history.py`, `coordinator.py`/`button.py` (call site),

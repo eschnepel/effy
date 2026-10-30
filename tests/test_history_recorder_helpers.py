@@ -307,6 +307,45 @@ class TestFetchRawEnergyStates:
         assert _history._fetch_raw_energy_states(object(), "sensor.e", self.START, self.END) == []
 
 
+class TestFetchCapacityStates:
+    """The capacity entity's raw states with their units (TASK-0025, ADR-023 decision 6)."""
+
+    START, END = _ts(10, 0), _ts(11, 0)
+
+    @staticmethod
+    def _with_units(*entries: tuple[datetime, str, dict[str, Any]]) -> list[SimpleNamespace]:
+        return [SimpleNamespace(last_changed=t, state=s, attributes=a) for t, s, a in entries]
+
+    def test_every_state_comes_back_in_order_with_the_unit_of_that_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An ``unavailable`` state stays (a capacity that is not known is not a capacity) and
+        the unit is the one the state had when it was recorded, so a changed unit is seen."""
+        states = self._with_units(
+            (_ts(10, 0), "10000", {"unit_of_measurement": "Wh", "friendly_name": "Cap"}),
+            (_ts(10, 20), "unavailable", {}),
+            (_ts(10, 40), "10", {"unit_of_measurement": "kWh"}),
+        )
+        calls = _stub_history(monkeypatch, lambda *_a, **_k: {"number.cap": states})
+
+        result = _history._fetch_capacity_states(object(), "number.cap", self.START, self.END)
+
+        assert result == [
+            (_ts(10, 0), "10000", "Wh"),
+            (_ts(10, 20), "unavailable", None),
+            (_ts(10, 40), "10", "kWh"),
+        ]
+        ((start, end, entity_id, kwargs),) = calls
+        assert (start, end, entity_id) == (self.START, self.END, "number.cap")
+        assert kwargs == {"no_attributes": False}  # the unit lives in the attributes
+
+    def test_an_entity_the_recorder_has_no_states_for_gives_an_empty_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_history(monkeypatch, lambda *_a, **_k: {})
+        assert _history._fetch_capacity_states(object(), "number.cap", self.START, self.END) == []
+
+
 class TestFetchLastValidStateBefore:
     """The staged lookback for an offline anchor (ADR-013, ADR-014, ADR-015)."""
 

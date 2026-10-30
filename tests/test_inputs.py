@@ -189,6 +189,28 @@ class TestBatteryOptionAccessors:
         assert _inputs.capacity_id(options) is None
 
 
+class TestTheHysteresisTheMachineRuns:
+    """TASK-0025: the machine raises on a hysteresis of 10 or less; the options flow keeps it
+    at 15 or above, and a hand-edited value must not make the slot job fail."""
+
+    def test_the_configured_value_is_used(self) -> None:
+        assert _inputs.battery_hysteresis({HYSTERESIS: 45}) == 45
+        assert _inputs.battery_hysteresis({HYSTERESIS: 15}) == 15
+        assert isinstance(_inputs.battery_hysteresis({HYSTERESIS: 45}), float)
+
+    def test_it_is_the_default_when_unset_or_unusable(self) -> None:
+        for options in ({}, {HYSTERESIS: None}, {HYSTERESIS: "high"}, {HYSTERESIS: [3]}):
+            assert _inputs.battery_hysteresis(options) == 30, options
+
+    def test_a_value_below_the_minimum_is_raised_to_it(self) -> None:
+        for value in (14.9, 12, 10, 0, -5):
+            assert _inputs.battery_hysteresis({HYSTERESIS: value}) == 15, value
+
+    def test_the_stored_value_is_still_reported_as_stored(self) -> None:
+        # the options form shows what is saved; only the machine's copy is raised
+        assert _inputs.valley_hysteresis({HYSTERESIS: 12}) == 12
+
+
 class TestMigrateLegacyInputOptions:
     def test_returns_none_when_there_is_no_old_key(self) -> None:
         assert _inputs.migrate_legacy_input_options({PV: ["sensor.pv"], CHARGE: "sensor.c"}) is None

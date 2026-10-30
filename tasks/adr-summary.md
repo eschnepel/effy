@@ -1,9 +1,10 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-10-29 (TASK-0024: the valley and span machine; TASK-0023:
-SoC, capacity and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019
-amendment is in force: four counter pickers, no update listener;
-`effy_exports.py` added). Keep this concise; ADRs in `adr/` are authoritative.
+Last updated: 2026-10-29 (TASK-0025: the battery feed; TASK-0024: the valley and
+span machine; TASK-0023: SoC, capacity and hysteresis options; ADR-023 accepted
+2026-10-27; the ADR-019 amendment is in force: four counter pickers, no update
+listener; `effy_exports.py` added). Keep this concise; ADRs in `adr/` are
+authoritative.
 
 ## Tech stack
 
@@ -130,7 +131,14 @@ amendment is in force: four counter pickers, no update listener;
   for a capacity change above 1 %, an unavailable capacity, a missing charge or
   discharge statistic or a net input of 0 or less; an estimate above 100 % is
   published as it is (human, 2026-10-29); the half-slot convention has a bias of
-  −0.05 points in simulation (Open decision 2 settled).
+  −0.05 points in simulation (Open decision 2 settled). The valley machine is
+  fed from the recorder since TASK-0025 (`history.async_update_battery`, in the
+  slot job right after the efficiency feed): the SoC `mean`, the derived charge
+  and discharge power series and the capacity entity's raw states (in effect at
+  the middle of the slot, kWh from Wh or kWh, anything else unknown); it needs
+  charge, discharge, SoC and capacity, no pair; it restores (a dump made with
+  another hysteresis is refused), catches up at most 3 days (a longer-open span
+  is lost, never miscounted) and is rebuilt after a history recalculation.
 - **ADR-024 (Accepted, 2026-10-25):** the write phase is 98 % of a history
   recalculation (104 s of 107 s at 28 days on the Pi, about 1 ms per short-term
   row: Home Assistant's import does one `SELECT` and one `UPDATE`/`INSERT` per

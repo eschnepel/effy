@@ -78,6 +78,13 @@ It owns:
     state lives here; the efficiency sensors restore it (restore_efficiency) and get it
     after every job (subscribe_efficiency). Nothing is fed before one has restored; the
     first feed after a start catches up the slots after the restored one, at most 3 days.
+  - TASK-0025 (ADR-023): the valley machine of the battery efficiency, the same way and
+    right after the efficiency machine (history.async_update_battery); it needs the
+    charge and discharge counters, the SoC sensor and the capacity entity, and no
+    pair. The state lives here; the battery sensors restore it (restore_battery, with the
+    hysteresis in force: a dump made with another one is refused) and get it after every
+    job (subscribe_battery). A history recalculation replays it (async_rebuild_battery).
+    A span that could not be measured is logged at INFO with its reason.
   - One lock that serializes the recent recalculation and the history
     recalculation (button), see "Thread safety".
   - A small, volatile, in-memory cache of each energy-family entity's
@@ -119,25 +126,32 @@ from .calculation import (
     DrainState,
     LossDistribution,
     RunState,
+    ValleyState,
     drain_state_from_restore,
     run_state_from_restore,
+    valley_state_from_restore,
 )
 from .inputs import (
     all_input_ids,
+    battery_hysteresis,
     bms_input_ids,
+    capacity_id,
     charge_id,
     discharge_id,
     grid_export_id,
     grid_import_id,
     output_ids,
     pv_input_ids,
+    soc_id,
 )
 from .history import (
     async_probe_last_slot_ready,
     async_recalculate_history,
     async_recalculate_recent,
+    async_rebuild_battery,
     async_rebuild_efficiency,
     async_rewrite_hourly,
+    async_update_battery,
     async_update_efficiency,
     async_update_standby,
     recent_trigger_since,
@@ -174,6 +188,8 @@ EntityUpdateCallback = Callable[[float | None, str | None], None]
 StandbyCallback = Callable[[DrainState], None]
 # The efficiency machine's state after every slot job (ADR-023 decision 9).
 EfficiencyCallback = Callable[[RunState], None]
+# The valley machine's state after every slot job (ADR-023 decision 9).
+BatteryCallback = Callable[[ValleyState], None]
 
 
 def _next_slot_trigger_delay(
@@ -302,6 +318,12 @@ class EffyCoordinator:
         # Efficiency machine (ADR-023): ``None`` until an efficiency sensor restored.
         self._efficiency_state: RunState | None = None
         self._efficiency_subscribers: list[EfficiencyCallback] = []
+        # Valley machine (ADR-023): ``None`` until a battery sensor restored.
+        self._soc_id: str | None = soc_id(entry.options)
+        self._capacity_id: str | None = capacity_id(entry.options)
+        self._battery_hysteresis: float = battery_hysteresis(entry.options)
+        self._battery_state: ValleyState | None = None
+        self._battery_subscribers: list[BatteryCallback] = []
         # Descriptors of the Effy sensors that exist (ADR-021): each sensor registers
         # itself when added and unregisters when removed; the recalculated-from
         # sensor reads them when the closing step writes its state.
@@ -379,6 +401,54 @@ class EffyCoordinator:
         def _unsubscribe() -> None:
             if cb in self._efficiency_subscribers:
                 self._efficiency_subscribers.remove(cb)
+
+        return _unsubscribe
+
+    @property
+    def battery_enabled(self) -> bool:
+        """The valley machine runs with the charge and discharge counters, the SoC sensor and
+        the capacity entity (ADR-023 decision 2); no complete pair is needed."""
+        return bool(self._charge_id and self._discharge_id and self._soc_id and self._capacity_id)
+
+    @property
+    def battery_hysteresis(self) -> float:
+        """The valley hysteresis the machine runs with, never below the minimum (ADR-023)."""
+        return self._battery_hysteresis
+
+    @property
+    def battery_state(self) -> ValleyState | None:
+        """The valley machine's state, ``None`` before a sensor restored (ADR-023)."""
+        return self._battery_state
+
+    def restore_battery(self, data: Mapping[str, Any] | None) -> ValleyState:
+        """Start the valley machine from the data a sensor restored (ADR-023 decision 9).
+
+        Every battery sensor stores the whole machine dump, so with two sensors the
+        coordinator gets it twice: the dump that has processed the later slot wins. Unusable
+        or missing data, and a dump made with another hysteresis (the options changed: the
+        valleys would be different ones), start from nothing: the first feed then replays at
+        most 3 days. Returns the state it starts from; from now on slot jobs feed it.
+        """
+        restored = valley_state_from_restore(data, self._battery_hysteresis) if data else None
+        current = self._battery_state
+        if restored is not None and (
+            current is None
+            or current.last_slot is None
+            or (restored.last_slot is not None and restored.last_slot > current.last_slot)
+        ):
+            self._battery_state = restored
+        elif current is None:
+            self._battery_state = ValleyState()
+        assert self._battery_state is not None
+        return self._battery_state
+
+    def subscribe_battery(self, cb: BatteryCallback) -> Callable[[], None]:
+        """Register a battery sensor's callback; it gets the state after every slot job."""
+        self._battery_subscribers.append(cb)
+
+        def _unsubscribe() -> None:
+            if cb in self._battery_subscribers:
+                self._battery_subscribers.remove(cb)
 
         return _unsubscribe
 
@@ -731,6 +801,7 @@ class EffyCoordinator:
                 await self._async_rewrite_hour(slot, last_values)
             await self._async_update_standby(now)
             await self._async_update_efficiency(now)
+            await self._async_update_battery(now)
             # The closing step (ADR-012 Amendment 2026-10-18, ADR-021): the update of
             # the recalculated-from sensor tells a listener that the statistics and
             # the states of this recalculation are final, so it comes last. The hour
@@ -785,6 +856,39 @@ class EffyCoordinator:
         for cb in list(self._efficiency_subscribers):
             cb(new_state)
 
+    async def _async_update_battery(self, now: datetime) -> None:
+        """Feed the valley machine and tell its sensors (ADR-023).
+
+        Called with the recalculation lock held, after the efficiency update: the statistics
+        both of them wrote are what the machine reads. Does nothing without the full battery
+        configuration or before a sensor restored. A failure is logged and never fails the
+        slot job (ADR-000 §8): the state is left as it was, so the next job feeds the same
+        slots again. A span that could not be measured is logged with its reason: it costs
+        a day of the estimate and the user can do something about its cause (a capacity
+        entity without a Wh or kWh unit, a missing statistic).
+        """
+        state = self._battery_state
+        if state is None or not self.battery_enabled:
+            return
+        try:
+            new_state = await async_update_battery(self._hass, self._entry.options, state, now)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Effy: updating the battery efficiency failed")
+            return
+        dropped = new_state.dropped_spans - state.dropped_spans
+        if dropped > 0:
+            _LOGGER.info(
+                "Effy: %d valley span%s of the battery not counted (last reason: %s)",
+                dropped,
+                "" if dropped == 1 else "s",
+                new_state.last_drop,
+            )
+        self._battery_state = new_state
+        for cb in list(self._battery_subscribers):
+            cb(new_state)
+
     async def _async_rewrite_hour(
         self, slot: datetime, last_values: dict[str, tuple[float, str]]
     ) -> None:
@@ -822,6 +926,7 @@ class EffyCoordinator:
             # The efficiency machine is rebuilt over the rewritten statistics (ADR-023
             # decision 9); here, at the caller, not inside the recalculation.
             await self._async_rebuild_efficiency()
+            await self._async_rebuild_battery()
             # The closing step comes last (ADR-012 Amendment 2026-10-18, ADR-021).
             if recalculated_from is not None:
                 self.set_recalculated_from(recalculated_from)
@@ -846,6 +951,27 @@ class EffyCoordinator:
             return
         self._efficiency_state = rebuilt
         for cb in list(self._efficiency_subscribers):
+            cb(rebuilt)
+
+    async def _async_rebuild_battery(self) -> None:
+        """Reset the valley machine and replay it over the history window (ADR-023).
+
+        Called by the history recalculation's caller with the recalculation lock held, after
+        the efficiency rebuild. Does nothing without the full battery configuration or before
+        a sensor restored. A failure is logged and the old state stays: it never fails the
+        history recalculation (ADR-000 §8).
+        """
+        if self._battery_state is None or not self.battery_enabled:
+            return
+        try:
+            rebuilt = await async_rebuild_battery(self._hass, self._entry.options, self._now())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Effy: rebuilding the battery efficiency failed")
+            return
+        self._battery_state = rebuilt
+        for cb in list(self._battery_subscribers):
             cb(rebuilt)
 
     def _schedule_next_slot_timer(self) -> None:

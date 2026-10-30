@@ -1829,3 +1829,54 @@ def valley_state_from_restore(data: Mapping[str, Any], hysteresis: float) -> Val
         dropped_spans=dropped,
         last_drop=last_drop,
     )
+
+
+# ---------------------------------------------------------------------------
+# The capacity entity's history as the machine's capacity per slot (ADR-023 decision 6)
+# ---------------------------------------------------------------------------
+
+# The two units the options flow accepts for the capacity entity, as a factor to kWh.
+_CAPACITY_TO_KWH = {"Wh": 0.001, "kWh": 1.0}
+
+
+def capacity_kwh(state: str, unit: str | None) -> float | None:
+    """A capacity entity's raw state in kWh, or ``None`` when it is none.
+
+    Only Wh and kWh are known: an entity without a unit is accepted by the options flow (it
+    cannot be judged there), but the feed cannot tell Wh from kWh and does not guess. A state
+    that is not a positive, finite number (``unavailable``, ``unknown``, text) is none too.
+    """
+    factor = _CAPACITY_TO_KWH.get(unit) if unit is not None else None
+    if factor is None:
+        return None
+    try:
+        value = float(state)
+    except ValueError:
+        return None
+    if not 0 < value < float("inf"):
+        return None
+    return value * factor
+
+
+def capacity_by_slot(
+    rows: Iterable[tuple[datetime, str, str | None]], slots: Iterable[datetime]
+) -> dict[datetime, float | None]:
+    """The capacity (kWh) of each slot from the entity's raw states ``(time, state, unit)``.
+
+    The capacity of a slot is the state in effect in its *middle*: the slot's SoC is a mean and
+    describes its middle (decision 6), so does its capacity; a state that comes a moment after
+    the middle belongs to the next slot. A state is in effect from its time on; a slot before
+    the first state has none. A change that lasts less than the slot is not seen (a flicker of
+    the BMS is what the 1 % tolerance of the machine is for). ``None`` means unknown.
+    """
+    ordered = sorted(rows, key=lambda row: row[0])
+    result: dict[datetime, float | None] = {}
+    index, current = 0, None
+    for slot in sorted(slots):
+        middle = slot + _DRAIN_SLOT / 2
+        while index < len(ordered) and ordered[index][0] <= middle:
+            _time, state, unit = ordered[index]
+            current = capacity_kwh(state, unit)
+            index += 1
+        result[slot] = current
+    return result

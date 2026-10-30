@@ -52,8 +52,19 @@ README, `tests/test_efficiency_sensor.py`, `tests/test_effy_exports.py`.
 
 <!-- Filled by the Lead Agent BEFORE implementation, from the Delivered Artifacts of the dependency tasks. -->
 
-- the efficiency sensor base and restore pattern (→ TASK-0021) · the battery
-  feed's restore/subscribe (→ TASK-0025) — **filled by the Lead before start**
+- From TASK-0025 (done 2026-10-29, filled by the Lead): `EffyCoordinator`:
+  `battery_enabled`, `battery_hysteresis`, `battery_state`
+  (`ValleyState | None`), `restore_battery(data) -> ValleyState`,
+  `subscribe_battery(cb) -> unsubscribe`
+  (`BatteryCallback = Callable[[ValleyState], None]`, called after every slot
+  job and after a history rebuild). The dump to store is
+  `calculation.valley_restore_data(state, coordinator.battery_hysteresis)`;
+  `ValleyState.estimate` (`ValleyEstimate`: `value`, `counted_kwh`,
+  `counted_spans`, `last_value`, `last_span_begin`, `last_span_end`),
+  `ValleyState.last_slot`, `dropped_spans`, `last_drop`. The battery machine
+  needs the charge and discharge counters, the SoC and the capacity entity only.
+- the efficiency sensor base and restore pattern (→ TASK-0021) — **filled by the
+  Lead before start**
 
 ## Delivered Artifacts
 

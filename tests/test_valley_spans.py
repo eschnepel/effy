@@ -48,6 +48,15 @@ DROP_MISSING_ENERGY: str = _calculation.SPAN_DROP_MISSING_ENERGY
 DROP_CAPACITY_UNAVAILABLE: str = _calculation.SPAN_DROP_CAPACITY_UNAVAILABLE
 DROP_CAPACITY_CHANGED: str = _calculation.SPAN_DROP_CAPACITY_CHANGED
 DROP_NO_NET_INPUT: str = _calculation.SPAN_DROP_NO_NET_INPUT
+capacity_kwh = _calculation.capacity_kwh
+capacity_by_slot = _calculation.capacity_by_slot
+
+_const_path = _calc_path.parent / "const.py"
+_const_spec = importlib.util.spec_from_file_location("effy_const_for_capacity", _const_path)
+assert _const_spec is not None and _const_spec.loader is not None
+_const_module = importlib.util.module_from_spec(_const_spec)
+sys.modules["effy_const_for_capacity"] = _const_module
+_const_spec.loader.exec_module(_const_module)
 
 UTC = timezone.utc
 SLOT = timedelta(minutes=5)
@@ -242,6 +251,102 @@ class TestTheValley:
     def test_the_band_is_ten_points(self) -> None:
         assert VALLEY_BAND == 10
         assert CAPACITY_TOLERANCE == 0.01
+
+
+class TestTheCapacityHistory:
+    """TASK-0025: the capacity entity's raw states as the machine's per-slot capacity (kWh)."""
+
+    def test_the_two_energy_units_become_kilowatt_hours(self) -> None:
+        assert capacity_kwh("10", "kWh") == 10.0
+        assert capacity_kwh("10.5", "kWh") == 10.5
+        assert capacity_kwh("10000", "Wh") == 10.0
+        assert capacity_kwh("5120", "Wh") == pytest.approx(5.12)
+
+    def test_the_units_are_the_ones_the_options_flow_accepts(self) -> None:
+        assert set(_const_module.CAPACITY_UNITS) == {"Wh", "kWh"}
+        for unit in _const_module.CAPACITY_UNITS:
+            assert capacity_kwh("1", unit) is not None
+
+    @pytest.mark.parametrize("unit", [None, "", "MWh", "%", "W", "kwh", "wh"])
+    def test_a_capacity_without_a_known_unit_is_unknown(self, unit: str | None) -> None:
+        # an entity without a unit is accepted by the options flow, but the feed cannot tell
+        # Wh from kWh: it is no capacity (the span is dropped, never guessed)
+        assert capacity_kwh("10", unit) is None
+
+    @pytest.mark.parametrize(
+        "state", ["unavailable", "unknown", "", "abc", "nan", "inf", "-inf", "0", "-5", "0.0"]
+    )
+    def test_a_state_that_is_no_positive_number_is_unknown(self, state: str) -> None:
+        assert capacity_kwh(state, "kWh") is None
+
+    def _rows(self, *rows: tuple[int, str, str | None]) -> list[tuple[datetime, str, str | None]]:
+        """(minutes after T0, state, unit) rows."""
+        return [(T0 + timedelta(minutes=m), state, unit) for m, state, unit in rows]
+
+    def test_the_capacity_of_a_slot_is_the_state_in_effect_in_its_middle(self) -> None:
+        rows = self._rows((0, "10", "kWh"), (12, "15", "kWh"))
+        slots = [when(i) for i in range(5)]  # 0, 5, 10, 15, 20 minutes
+        # slot 10 min has its middle at 12:30: the state of minute 12 is already in effect
+        assert capacity_by_slot(rows, slots) == {
+            when(0): 10.0,
+            when(1): 10.0,
+            when(2): 15.0,
+            when(3): 15.0,
+            when(4): 15.0,
+        }
+
+    def test_a_change_just_after_the_middle_waits_for_the_next_slot(self) -> None:
+        rows = [(T0, "10", "kWh"), (T0 + timedelta(minutes=2, seconds=31), "15", "kWh")]
+        got = capacity_by_slot(rows, [when(0), when(1)])
+        assert got == {when(0): 10.0, when(1): 15.0}
+
+    def test_a_change_at_the_middle_itself_counts_for_its_slot(self) -> None:
+        rows = [(T0, "10", "kWh"), (T0 + timedelta(minutes=2, seconds=30), "15", "kWh")]
+        assert capacity_by_slot(rows, [when(0)]) == {when(0): 15.0}
+
+    def test_several_states_within_a_slot_the_last_before_the_middle_counts(self) -> None:
+        rows = self._rows((0, "10", "kWh"), (1, "11", "kWh"), (2, "12", "kWh"), (4, "99", "kWh"))
+        assert capacity_by_slot(rows, [when(0)]) == {when(0): 12.0}
+
+    def test_the_unit_may_change_between_states(self) -> None:
+        rows = self._rows((0, "10000", "Wh"), (10, "10", "kWh"), (20, "10", "MWh"))
+        slots = [when(0), when(2), when(4)]
+        assert capacity_by_slot(rows, slots) == {when(0): 10.0, when(2): 10.0, when(4): None}
+
+    def test_an_unavailable_stretch_is_unknown_and_the_value_comes_back(self) -> None:
+        rows = self._rows((0, "10", "kWh"), (5, "unavailable", None), (15, "10", "kWh"))
+        slots = [when(i) for i in range(4)]
+        assert capacity_by_slot(rows, slots) == {
+            when(0): 10.0,
+            when(1): None,
+            when(2): None,
+            when(3): 10.0,
+        }
+
+    def test_slots_before_the_first_state_have_no_capacity(self) -> None:
+        rows = self._rows((12, "10", "kWh"))
+        assert capacity_by_slot(rows, [when(0), when(1), when(3)]) == {
+            when(0): None,
+            when(1): None,
+            when(3): 10.0,
+        }
+
+    def test_no_states_at_all_is_unknown_for_every_slot(self) -> None:
+        assert capacity_by_slot([], [when(0), when(1)]) == {when(0): None, when(1): None}
+
+    def test_the_order_of_rows_and_slots_does_not_matter(self) -> None:
+        rows = self._rows((0, "10", "kWh"), (12, "15", "kWh"), (30, "20", "kWh"))
+        slots = [when(i) for i in range(8)]
+        expected = capacity_by_slot(rows, slots)
+        assert capacity_by_slot(list(reversed(rows)), list(reversed(slots))) == expected
+        assert expected[when(6)] == 20.0
+
+    def test_a_long_history_is_swept_once(self) -> None:
+        rows = [(T0 + timedelta(minutes=i), str(10 + i % 7), "kWh") for i in range(0, 4000)]
+        slots = [when(i) for i in range(0, 800)]
+        got = capacity_by_slot(rows, slots)
+        assert got[when(799)] == 10 + (799 * 5 + 2) % 7  # the minute-2 state of its slot
+        assert len(got) == 800
 
 
 class TestTheMissingSoc:

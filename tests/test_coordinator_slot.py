@@ -260,11 +260,59 @@ async def _fake_async_rebuild_efficiency(hass: Any, entry_options: Any, now: dat
     return _calc_mod.RunState(charge=_calc_mod.EffEstimate(counted_runs=99), last_slot=_ts(1, 0))
 
 
+# The valley machine's feed (TASK-0025): (options, state, now, lock_held) per call.
+_battery_calls: list[tuple[Any, Any, datetime, bool]] = []
+_battery_raise_next: list[bool] = [False]
+_battery_drop_next: list[bool] = [False]  # the next feed reports one more dropped span
+
+
+async def _fake_async_update_battery(
+    hass: Any, entry_options: Any, state: Any, now: datetime
+) -> Any:
+    """Records the call and whether the lock was held; returns a state that moved on."""
+    lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
+    _battery_calls.append((entry_options, state, now, lock_held))
+    if _job_hook[0] is not None:
+        await _job_hook[0]("battery")
+    if _battery_raise_next[0]:
+        _battery_raise_next[0] = False
+        raise RuntimeError("battery exploded")
+    calc = _calc_mod
+    dropped = _battery_drop_next[0]
+    _battery_drop_next[0] = False
+    return calc.ValleyState(
+        estimate=calc.ValleyEstimate(counted_spans=state.estimate.counted_spans + 1),
+        last_slot=now,
+        dropped_spans=state.dropped_spans + (1 if dropped else 0),
+        last_drop="capacity_changed" if dropped else state.last_drop,
+    )
+
+
+# The rebuild of the valley machine after a history recalculation: (options, now, lock_held).
+_rebuild_battery_calls: list[tuple[Any, datetime, bool]] = []
+_rebuild_battery_raise_next: list[bool] = [False]
+
+
+async def _fake_async_rebuild_battery(hass: Any, entry_options: Any, now: datetime) -> Any:
+    lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
+    _rebuild_battery_calls.append((entry_options, now, lock_held))
+    if _job_hook[0] is not None:
+        await _job_hook[0]("rebuild_battery")
+    if _rebuild_battery_raise_next[0]:
+        _rebuild_battery_raise_next[0] = False
+        raise RuntimeError("battery rebuild exploded")
+    return _calc_mod.ValleyState(
+        estimate=_calc_mod.ValleyEstimate(counted_spans=77), last_slot=_ts(1, 0)
+    )
+
+
 _history_stub = ModuleType("effy.history")
 _history_stub.async_rewrite_hourly = _fake_async_rewrite_hourly  # type: ignore[attr-defined]
 _history_stub.async_update_standby = _fake_async_update_standby  # type: ignore[attr-defined]
 _history_stub.async_update_efficiency = _fake_async_update_efficiency  # type: ignore[attr-defined]
 _history_stub.async_rebuild_efficiency = _fake_async_rebuild_efficiency  # type: ignore[attr-defined]
+_history_stub.async_update_battery = _fake_async_update_battery  # type: ignore[attr-defined]
+_history_stub.async_rebuild_battery = _fake_async_rebuild_battery  # type: ignore[attr-defined]
 _history_stub.async_probe_last_slot_ready = _fake_async_probe_last_slot_ready  # type: ignore[attr-defined]
 _history_stub.async_recalculate_history = _fake_async_recalculate_history  # type: ignore[attr-defined]
 _history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
@@ -732,6 +780,11 @@ def _reset_slot_job_fakes() -> None:
     _efficiency_raise_next[0] = False
     _rebuild_calls.clear()
     _rebuild_raise_next[0] = False
+    _battery_calls.clear()
+    _battery_raise_next[0] = False
+    _battery_drop_next[0] = False
+    _rebuild_battery_calls.clear()
+    _rebuild_battery_raise_next[0] = False
     _lock_probe[0] = None
     _history_calls.clear()
     _history_full_calls.clear()
@@ -1714,6 +1767,431 @@ class TestEfficiencyRebuildAfterHistory(_SlotCoordinatorBase):
         self._full_result()
         assert await coord.async_recalculate_history_and_report() == 3
         assert order == ["history", "notify", "closing"]
+
+
+class _BatteryBase(_SlotCoordinatorBase):
+    def _battery_coordinator(
+        self,
+        *,
+        restored: bool = True,
+        efficiency_pair: bool = True,
+        **options: Any,
+    ) -> EffyCoordinator:
+        """A system with a battery machine; with ``efficiency_pair`` it has grid import and
+        charge too (so both machines are enabled), without it only charge and discharge."""
+        _reset_slot_job_fakes()
+        if efficiency_pair:
+            entry = _FakeEntry(
+                ["sensor.pv"], ["sensor.charge"], ["sensor.grid_in", "sensor.discharge"]
+            )
+        else:
+            entry = _FakeEntry(["sensor.pv"], [], [])
+            entry.options["charge_sensor"] = "sensor.charge"
+            entry.options["discharge_sensor"] = "sensor.discharge"
+        entry.options["soc_sensor"] = "sensor.soc"
+        entry.options["capacity_entity"] = "number.capacity"
+        entry.options.update(options)
+        coord = EffyCoordinator(_FakeHass(), entry)
+        coord._probe_interval = timedelta(milliseconds=1)
+        coord.restore_standby(None)
+        if restored:
+            coord.restore_battery(None)
+            if efficiency_pair:
+                coord.restore_efficiency(None)
+        _lock_probe[0] = lambda: coord._recorder_job_lock().locked()
+        return coord
+
+    async def _job(self, coord: EffyCoordinator, at: datetime) -> None:
+        coord._now = lambda: at  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+
+
+class TestBatteryInTheSlotJob(_BatteryBase):
+    """TASK-0025 (ADR-023 decisions 6, 9): the valley machine is fed like the efficiency
+    machine, right after it."""
+
+    def test_the_machine_needs_charge_discharge_soc_and_capacity(self) -> None:
+        assert self._battery_coordinator().battery_enabled
+        assert self._battery_coordinator(efficiency_pair=False).battery_enabled
+        for key in ("charge_sensor", "discharge_sensor", "soc_sensor", "capacity_entity"):
+            coord = self._battery_coordinator()
+            del coord._entry.options[key]
+            rebuilt = EffyCoordinator(_FakeHass(), coord._entry)
+            assert not rebuilt.battery_enabled, key
+        assert not self._coordinator().battery_enabled
+
+    @pytest.mark.asyncio
+    async def test_without_the_configuration_nothing_is_fed(self) -> None:
+        coord = self._coordinator()
+        coord.restore_battery(None)
+        await self._job(coord, _ts(12, 0, 10))
+        assert _battery_calls == []
+        assert len(_history_calls) == 1  # the job itself ran
+
+    @pytest.mark.asyncio
+    async def test_the_pair_of_the_efficiency_machine_without_a_soc_feeds_no_battery(self) -> None:
+        coord = self._battery_coordinator()
+        del coord._entry.options["soc_sensor"]
+        coord = EffyCoordinator(_FakeHass(), coord._entry)
+        coord._probe_interval = timedelta(milliseconds=1)
+        coord.restore_standby(None)
+        coord.restore_battery(None)
+        coord.restore_efficiency(None)
+        await self._job(coord, _ts(12, 0, 10))
+        assert _battery_calls == [] and len(_efficiency_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_fed_before_a_sensor_restored(self) -> None:
+        coord = self._battery_coordinator(restored=False)
+        assert coord.battery_state is None
+        await self._job(coord, _ts(12, 0, 10))
+        assert len(_history_calls) == 1 and _battery_calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_job_feeds_it_under_the_lock_after_the_efficiency_machine(self) -> None:
+        coord = self._battery_coordinator()
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        await self._job(coord, _ts(12, 0, 10))
+        assert order == ["recent", "standby", "efficiency", "battery"]
+        options, state, now, lock_held = _battery_calls[0]
+        assert options == coord._entry.options and now == _ts(12, 0, 10) and lock_held
+        assert state.last_slot is None
+        assert coord.battery_state is not None and coord.battery_state.last_slot == _ts(12, 0, 10)
+
+    @pytest.mark.asyncio
+    async def test_it_runs_without_an_efficiency_pair_and_the_efficiency_machine_without_it(
+        self,
+    ) -> None:
+        coord = self._battery_coordinator(efficiency_pair=False)
+        assert not coord.efficiency_enabled and coord.battery_enabled
+        await self._job(coord, _ts(12, 0, 10))
+        assert len(_battery_calls) == 1 and _efficiency_calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_closing_step_comes_after_the_battery_feed(self) -> None:
+        coord = self._battery_coordinator()
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        coord.subscribe_recalculated_from(lambda _ts: order.append("closing"))
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        await self._job(coord, _ts(12, 0, 10))
+        assert order[-2:] == ["battery", "closing"]
+
+    @pytest.mark.asyncio
+    async def test_the_next_job_continues_from_the_state_of_the_last(self) -> None:
+        coord = self._battery_coordinator()
+        await self._job(coord, _ts(12, 0, 10))
+        await self._job(coord, _ts(12, 5, 10))
+        assert [call[1].estimate.counted_spans for call in _battery_calls] == [0, 1]
+
+    @pytest.mark.asyncio
+    async def test_subscribers_get_the_state_and_can_unsubscribe(self) -> None:
+        coord = self._battery_coordinator()
+        seen: list[Any] = []
+        unsubscribe = coord.subscribe_battery(seen.append)
+        await self._job(coord, _ts(12, 0, 10))
+        assert [state.estimate.counted_spans for state in seen] == [1]
+        unsubscribe()
+        unsubscribe()  # idempotent
+        await self._job(coord, _ts(12, 5, 10))
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_feed_is_not_a_failure_and_leaves_the_state(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._battery_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_battery(seen.append)
+
+        async def cancel_in_the_feed(which: str) -> None:
+            if which == "battery":
+                raise asyncio.CancelledError
+
+        _job_hook[0] = cancel_in_the_feed
+        with caplog.at_level(logging.ERROR):
+            await self._job(coord, _ts(12, 0, 10))
+        task = coord._slot_job_task
+        assert task is not None and task.cancelled()
+        assert (
+            seen == [] and coord.battery_state is not None and coord.battery_state.last_slot is None
+        )
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_feed_is_logged_and_neither_fails_the_job_nor_moves_the_state(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._battery_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_battery(seen.append)
+        _battery_raise_next[0] = True
+        with caplog.at_level(logging.ERROR):
+            await self._job(coord, _ts(12, 0, 10))
+        task = coord._slot_job_task
+        assert task is not None and task.done() and task.exception() is None
+        assert (
+            seen == [] and coord.battery_state is not None and coord.battery_state.last_slot is None
+        )
+        assert any("battery" in r.getMessage().lower() for r in caplog.records)
+        assert coord._last_recent_run is not None  # the recalculation itself completed
+        await self._job(coord, _ts(12, 5, 10))  # retried with the same state
+        assert [call[1].last_slot for call in _battery_calls] == [None, None]
+        assert coord.battery_state.last_slot == _ts(12, 5, 10)
+
+    @pytest.mark.asyncio
+    async def test_a_failing_battery_feed_does_not_skip_the_closing_step(self) -> None:
+        coord = self._battery_coordinator()
+        closed: list[datetime] = []
+        coord.subscribe_recalculated_from(closed.append)
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+        _battery_raise_next[0] = True
+        await self._job(coord, _ts(12, 0, 10))
+        assert closed == [_ts(11, 55)]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_efficiency_feed_does_not_stop_the_battery_feed_nor_the_reverse(
+        self,
+    ) -> None:
+        coord = self._battery_coordinator()
+        _efficiency_raise_next[0] = True
+        await self._job(coord, _ts(12, 0, 10))
+        assert len(_battery_calls) == 1
+        assert coord.battery_state is not None and coord.battery_state.last_slot == _ts(12, 0, 10)
+        assert coord.efficiency_state is not None and coord.efficiency_state.last_slot is None
+        _battery_raise_next[0] = True
+        await self._job(coord, _ts(12, 5, 10))
+        assert coord.efficiency_state.last_slot == _ts(12, 5, 10)  # the pure machines go on
+        assert coord.battery_state.last_slot == _ts(12, 0, 10)
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_span_is_logged_with_its_reason_and_only_then(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._battery_coordinator()
+        with caplog.at_level(logging.INFO):
+            await self._job(coord, _ts(12, 0, 10))
+        assert not [r for r in caplog.records if "valley span" in r.getMessage()]
+        _battery_drop_next[0] = True
+        with caplog.at_level(logging.INFO):
+            await self._job(coord, _ts(12, 5, 10))
+        dropped = [r for r in caplog.records if "valley span" in r.getMessage()]
+        assert len(dropped) == 1 and dropped[0].levelno == logging.INFO
+        assert "capacity_changed" in dropped[0].getMessage()
+        with caplog.at_level(logging.INFO):
+            await self._job(coord, _ts(12, 10, 10))
+        assert len([r for r in caplog.records if "valley span" in r.getMessage()]) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_standby_the_efficiency_and_the_recalculation_are_identical_with_the_machine(
+        self,
+    ) -> None:
+        results: list[Any] = []
+        for with_battery in (False, True):
+            _reset_slot_job_fakes()
+            coord = self._battery_coordinator(restored=False)
+            coord.restore_efficiency(None)
+            if with_battery:
+                coord.restore_battery(None)
+            notified: list[Any] = []
+
+            def record(entity_ids: Any, values: Any = None, sink: list[Any] = notified) -> None:
+                sink.append((set(entity_ids), dict(values or {})))
+
+            coord.notify_updated = record  # type: ignore[method-assign,assignment]
+            _history_return_value[0] = (
+                1,
+                _ts(11, 55),
+                {"sensor.effy_x"},
+                {"sensor.effy_x": (1.0, "W")},
+            )
+            await self._job(coord, _ts(12, 0, 10))
+            results.append(
+                (
+                    len(_history_calls),
+                    [call[1:] for call in _standby_calls],
+                    [call[1:] for call in _efficiency_calls],
+                    notified,
+                    coord.recalculated_from,
+                    coord.efficiency_state,
+                )
+            )
+        assert results[0] == results[1]
+
+
+class TestBatteryRestore(_BatteryBase):
+    def test_restoring_gives_the_catch_up_its_starting_state(self) -> None:
+        coord = self._battery_coordinator(restored=False)
+        calc = _calc_mod
+        state = calc.ValleyState(last_slot=_ts(11, 0))
+        restored = coord.restore_battery(calc.valley_restore_data(state, 30.0))
+        assert restored == state and coord.battery_state is restored
+
+    def test_unusable_data_starts_from_nothing(self) -> None:
+        for data in ({"estimate": "x"}, {}, None):
+            coord = self._battery_coordinator(restored=False)
+            assert coord.restore_battery(data) == _calc_mod.ValleyState()
+
+    def test_a_dump_made_with_another_hysteresis_starts_from_nothing(self) -> None:
+        calc = _calc_mod
+        state = calc.ValleyState(last_slot=_ts(11, 0))
+        coord = self._battery_coordinator(restored=False, valley_hysteresis=40)
+        assert coord.battery_hysteresis == 40.0
+        assert coord.restore_battery(calc.valley_restore_data(state, 30.0)) == calc.ValleyState()
+        other = self._battery_coordinator(restored=False, valley_hysteresis=40)
+        assert other.restore_battery(calc.valley_restore_data(state, 40.0)) == state
+
+    def test_the_hysteresis_is_the_configured_one_and_never_below_the_minimum(self) -> None:
+        assert self._battery_coordinator().battery_hysteresis == 30.0
+        assert self._battery_coordinator(valley_hysteresis=5).battery_hysteresis == 15.0
+
+    def test_two_sensors_restoring_the_same_machine_keep_the_later_dump(self) -> None:
+        calc = _calc_mod
+        early = calc.ValleyState(last_slot=_ts(10, 0))
+        late = calc.ValleyState(last_slot=_ts(11, 0))
+        for first, second in ((early, late), (late, early)):
+            coord = self._battery_coordinator(restored=False)
+            coord.restore_battery(calc.valley_restore_data(first, 30.0))
+            coord.restore_battery(calc.valley_restore_data(second, 30.0))
+            assert coord.battery_state == late
+        # a sensor that restored nothing first does not keep a later one's dump out
+        coord = self._battery_coordinator(restored=False)
+        coord.restore_battery(None)
+        assert coord.battery_state == calc.ValleyState()
+        coord.restore_battery(calc.valley_restore_data(late, 30.0))
+        assert coord.battery_state == late
+        # a sensor with nothing to restore does not throw away what another restored
+        coord = self._battery_coordinator(restored=False)
+        coord.restore_battery(calc.valley_restore_data(late, 30.0))
+        coord.restore_battery(None)
+        assert coord.battery_state == late
+
+    def test_setup_and_restore_never_touch_the_recorder(self) -> None:
+        coord = self._battery_coordinator(restored=False)
+        coord.async_setup()
+        coord.restore_battery(None)
+        assert _battery_calls == [] and _history_calls == []
+        coord.async_shutdown()
+
+
+class TestBatteryRebuildAfterHistory(_BatteryBase):
+    """The valley machine replays fully after a history recalculation (ADR-023 decision 9)."""
+
+    @staticmethod
+    def _full_result() -> None:
+        _history_full_return_value[0] = (
+            3,
+            _ts(9, 0),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+
+    def _order(self, coord: EffyCoordinator) -> list[str]:
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        coord.subscribe_recalculated_from(lambda _ts: order.append("closing"))
+        coord.subscribe_battery(lambda _state: order.append("subscriber"))
+        return order
+
+    @pytest.mark.asyncio
+    async def test_the_rebuild_comes_after_the_efficiency_rebuild_under_the_lock_and_before_closing(
+        self,
+    ) -> None:
+        coord = self._battery_coordinator()
+        order = self._order(coord)
+        self._full_result()
+        assert await coord.async_recalculate_history_and_report() == 3
+        assert order == ["history", "rebuild", "rebuild_battery", "subscriber", "closing"]
+        options, now, lock_held = _rebuild_battery_calls[0]
+        assert options == coord._entry.options and lock_held and now.tzinfo is not None
+
+    @pytest.mark.asyncio
+    async def test_the_old_state_is_replaced_and_the_sensors_are_told(self) -> None:
+        coord = self._battery_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_battery(seen.append)
+        old = coord.battery_state
+        self._full_result()
+        await coord.async_recalculate_history_and_report()
+        assert coord.battery_state is not old and coord.battery_state is not None
+        assert coord.battery_state.estimate.counted_spans == 77  # what the rebuild returned
+        assert seen == [coord.battery_state]
+
+    @pytest.mark.asyncio
+    async def test_without_the_configuration_or_before_a_restore_nothing_is_rebuilt(self) -> None:
+        plain = self._coordinator()
+        plain.restore_battery(None)
+        self._full_result()
+        await plain.async_recalculate_history_and_report()
+        assert _rebuild_battery_calls == []  # checked here: building the next resets the fakes
+        unrestored = self._battery_coordinator(restored=False)
+        self._full_result()
+        await unrestored.async_recalculate_history_and_report()
+        assert _rebuild_battery_calls == [] and unrestored.battery_state is None
+
+    @pytest.mark.asyncio
+    async def test_a_failing_rebuild_is_logged_keeps_the_old_state_and_the_history_succeeds(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._battery_coordinator()
+        order = self._order(coord)
+        old = coord.battery_state
+        self._full_result()
+        _rebuild_battery_raise_next[0] = True
+        with caplog.at_level(logging.ERROR):
+            written = await coord.async_recalculate_history_and_report()
+        assert written == 3 and coord.battery_state is old
+        assert any("battery" in r.getMessage().lower() for r in caplog.records)
+        assert "subscriber" not in order and order[-1] == "closing"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_rebuild_propagates_and_is_no_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._battery_coordinator()
+
+        async def cancel(which: str) -> None:
+            if which == "rebuild_battery":
+                raise asyncio.CancelledError
+
+        _job_hook[0] = cancel
+        self._full_result()
+        with caplog.at_level(logging.ERROR), pytest.raises(asyncio.CancelledError):
+            await coord.async_recalculate_history_and_report()
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_efficiency_rebuild_does_not_stop_the_battery_rebuild(self) -> None:
+        coord = self._battery_coordinator()
+        _rebuild_raise_next[0] = True
+        self._full_result()
+        await coord.async_recalculate_history_and_report()
+        assert len(_rebuild_battery_calls) == 1
+        assert coord.battery_state is not None and coord.battery_state.estimate.counted_spans == 77
 
 
 class TestClosingStep(_SlotCoordinatorBase):

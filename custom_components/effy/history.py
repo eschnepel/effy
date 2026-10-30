@@ -146,7 +146,7 @@ import os
 import platform
 import time
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -177,9 +177,11 @@ from .sensor_utils import SLOT_MINUTES, effective_unit_for, is_energy_family, to
 from .calculation import (
     DRAIN_LOOKBACK,
     EFF_VALIDATION_DELAY,
+    BatSlot,
     EffRoles,
     EffSlot,
     RunState,
+    ValleyState,
     DrainBreak,
     DrainPeak,
     DrainSeen,
@@ -187,6 +189,7 @@ from .calculation import (
     SensorReading,
     TRAPEZOID_MAX_MINUTES,
     _parse_energy_state,
+    capacity_by_slot,
     drain_activity_start,
     drain_feed,
     drop_open_slot,
@@ -200,6 +203,7 @@ from .calculation import (
     run_feed,
     trapezoidal_jump_windows,
     trapezoidal_slot_contributions,
+    valley_feed,
 )
 from .const import (
     CONF_MAX_HISTORY_DAYS,
@@ -208,11 +212,14 @@ from .const import (
 from .effy_exports import EFFY_STANDBY_POWER_ENTITY_ID
 from .inputs import (
     all_input_ids,
+    battery_hysteresis,
     bms_input_ids,
+    capacity_id,
     charge_id,
     discharge_id,
     grid_export_id,
     grid_import_id,
+    soc_id,
 )
 from .inputs import output_ids as configured_output_ids
 
@@ -2150,6 +2157,28 @@ async def async_update_standby(
 EFFICIENCY_CATCHUP_MAX = timedelta(days=3)
 
 
+def _unseen_settled_slots(
+    last_slot: datetime | None, now: datetime, window: timedelta
+) -> tuple[datetime, datetime] | None:
+    """The first and the last slot a machine has still to take, or ``None`` for none.
+
+    The last is the last slot that is 125 min old at ``now`` (the machines take a slot only
+    then); the first is the one after ``last_slot``, and for a state that has none, or one
+    that lies more than ``window`` back, the slot ``window`` before the last (ADR-023
+    decision 9). Both start on a slot boundary.
+    """
+    slot_seconds = SLOT_MINUTES * 60
+    settled = (now - EFF_VALIDATION_DELAY).timestamp()
+    last = datetime.fromtimestamp(settled - (settled % slot_seconds), tz=timezone.utc)
+    floor = last - window
+    first = last_slot + timedelta(seconds=slot_seconds) if last_slot is not None else floor
+    first = max(first, floor)
+    first = datetime.fromtimestamp(
+        first.timestamp() - (first.timestamp() % slot_seconds), tz=timezone.utc
+    )
+    return None if first > last else (first, last)
+
+
 def efficiency_roles(entry_options: dict[str, Any]) -> EffRoles:
     """The four counters of the entry as the machine wants them (ADR-023)."""
     return EffRoles(
@@ -2178,6 +2207,9 @@ async def async_read_efficiency_energy(
     entry_options: dict[str, Any],
     start: datetime,
     end: datetime,
+    *,
+    only: Collection[str] | None = None,
+    with_standby: bool = True,
 ) -> tuple[dict[datetime, dict[str, float]], dict[datetime, float]]:
     """The energy of each configured counter and the standby energy per slot of
     ``[start, end)``, in kWh (ADR-023 decision 3).
@@ -2187,11 +2219,15 @@ async def async_read_efficiency_energy(
     a power-family output from its own ``mean``, as ``async_read_drain_activity`` reads
     them. The standby energy is the recorded ``mean`` of ``sensor.effy_standby_power``
     (W) times 5 min. A statistic that does not exist for a slot is absent from the
-    result: unknown is never zero. One read for all of them.
+    result: unknown is never zero. One read for all of them. ``only`` limits the counters
+    (the battery machine takes charge and discharge), ``with_standby=False`` leaves the
+    standby statistic unread and the second result empty.
     """
     roles = efficiency_roles(entry_options)
     counters = [
-        eid for eid in (roles.grid_import, roles.discharge, roles.charge, roles.grid_export) if eid
+        eid
+        for eid in (roles.grid_import, roles.discharge, roles.charge, roles.grid_export)
+        if eid and (only is None or eid in only)
     ]
     if not counters:
         return {}, {}
@@ -2209,11 +2245,14 @@ async def async_read_efficiency_energy(
         else:
             statistic_id = eid
         source_of[statistic_id], unit_of[statistic_id] = eid, unit
-    stored: dict[str, str] = await recorder.async_add_executor_job(
-        _get_statistics_units, hass, [EFFY_STANDBY_POWER_ENTITY_ID]
+    standby_ids = [EFFY_STANDBY_POWER_ENTITY_ID] if with_standby else []
+    stored: dict[str, str] = (
+        await recorder.async_add_executor_job(_get_statistics_units, hass, standby_ids)
+        if with_standby
+        else {}
     )
     rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-        _fetch_statistics, hass, [*source_of, EFFY_STANDBY_POWER_ENTITY_ID], start, end
+        _fetch_statistics, hass, [*source_of, *standby_ids], start, end
     )
     energy: dict[datetime, dict[str, float]] = {}
     standby: dict[datetime, float] = {}
@@ -2253,19 +2292,11 @@ async def async_update_efficiency(
     """
     if not efficiency_enabled(entry_options):
         return state
-    slot_seconds = SLOT_MINUTES * 60
-    slot_width = timedelta(seconds=slot_seconds)
-    settled = (now - EFF_VALIDATION_DELAY).timestamp()
-    last = datetime.fromtimestamp(settled - (settled % slot_seconds), tz=timezone.utc)
-    floor = last - window
-    first = state.last_slot + slot_width if state.last_slot is not None else floor
-    first = max(first, floor)
-    first = datetime.fromtimestamp(
-        first.timestamp() - (first.timestamp() % slot_seconds), tz=timezone.utc
-    )
-    if first > last:
+    slot_range = _unseen_settled_slots(state.last_slot, now, window)
+    if slot_range is None:
         return state
-    end = last + slot_width
+    first, last = slot_range
+    end = last + timedelta(minutes=SLOT_MINUTES)
     activity = await async_read_drain_activity(hass, entry_options, first, end)
     energy, standby = await async_read_efficiency_energy(hass, entry_options, first, end)
     roles = efficiency_roles(entry_options)
@@ -2317,6 +2348,132 @@ async def async_rebuild_efficiency(
     """
     window = efficiency_rebuild_window(entry_options, _get_short_term_retention_days(hass))
     return await async_update_efficiency(hass, entry_options, RunState(), now, window=window)
+
+
+def battery_enabled(entry_options: dict[str, Any]) -> bool:
+    """The valley machine runs with the charge and discharge counters, the SoC sensor and the
+    capacity entity (ADR-023 decision 2); the standby sensor and the other counters are not
+    needed (battery efficiency does not wait for standby)."""
+    return bool(
+        charge_id(entry_options)
+        and discharge_id(entry_options)
+        and soc_id(entry_options)
+        and capacity_id(entry_options)
+    )
+
+
+def _fetch_capacity_states(
+    hass: HomeAssistant,
+    entity_id: str,
+    start: datetime,
+    end: datetime,
+) -> list[tuple[datetime, str, str | None]]:
+    """Fetch the raw state history of the battery's capacity entity – run in executor.
+
+    ``(time, state, unit)`` in chronological order, the state in effect at ``start`` first
+    (stamped ``start``, as for ``_fetch_raw_energy_states``), including ``unavailable`` and
+    ``unknown`` states: a capacity that is not known is not a capacity (ADR-023 decision 6).
+    The unit is read from the attributes of the state itself, so a unit that changed is seen
+    (the one call asks for the attributes, which ``_fetch_raw_energy_states`` does not).
+    """
+    from homeassistant.components.recorder.history import (  # noqa: PLC0415
+        state_changes_during_period,
+    )
+
+    history_by_entity = state_changes_during_period(
+        hass, start, end, entity_id, no_attributes=False
+    )
+    return [
+        (s.last_changed, s.state, s.attributes.get("unit_of_measurement"))
+        for s in history_by_entity.get(entity_id, [])
+    ]
+
+
+async def async_update_battery(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    state: ValleyState,
+    now: datetime,
+    window: timedelta = EFFICIENCY_CATCHUP_MAX,
+) -> ValleyState:
+    """Feed the valley machine the slots it has not seen (ADR-023 decisions 6, 9).
+
+    Call after the efficiency update, under the same lock: the derived power series it reads
+    are what the recent recalculation just wrote. The machine takes a slot only when it is
+    125 min old, so only the slots up to ``now - 125 min`` are read: the ones after
+    ``state.last_slot``, and for a fresh state, or one that is further back than ``window``,
+    at most ``window`` back. A span that was open when the state is further back than that
+    is lost (the first slot after the gap is not the one after ``last_slot``, so the machine
+    resets its detection), never counted wrongly; what was measured stays. Nothing is read
+    without a complete battery configuration or without new slots.
+
+    Every slot of the range reaches the machine, with what the recorder has of it: a SoC
+    that is missing is a missing slot (a reset); a charge or discharge statistic that is
+    missing is not zero but absent (a span that contains it is dropped); the capacity is
+    that of the entity's state in the middle of the slot, in kWh (``capacity_by_slot``).
+    """
+    if not battery_enabled(entry_options):
+        return state
+    slot_range = _unseen_settled_slots(state.last_slot, now, window)
+    if slot_range is None:
+        return state
+    first, last = slot_range
+    slot_width = timedelta(minutes=SLOT_MINUTES)
+    end = last + slot_width
+    soc_entity, capacity_entity = soc_id(entry_options), capacity_id(entry_options)
+    charge_entity, discharge_entity = charge_id(entry_options), discharge_id(entry_options)
+    assert soc_entity and capacity_entity and charge_entity and discharge_entity
+    recorder = get_recorder(hass)
+    soc_rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
+        _fetch_statistics, hass, [soc_entity], first, end
+    )
+    energy, _standby = await async_read_efficiency_energy(
+        hass,
+        entry_options,
+        first,
+        end,
+        only=(charge_entity, discharge_entity),
+        with_standby=False,
+    )
+    capacity_states: list[tuple[datetime, str, str | None]] = await recorder.async_add_executor_job(
+        _fetch_capacity_states, hass, capacity_entity, first, end
+    )
+    # A slot the recorder has no row for, or one without a mean, has no SoC: ``None``.
+    soc: dict[datetime, float | None] = {
+        row["start"]: row["mean"] for row in soc_rows.get(soc_entity, [])
+    }
+    starts: list[datetime] = []
+    cursor = first
+    while cursor <= last:
+        starts.append(cursor)
+        cursor += slot_width
+    capacity = capacity_by_slot(capacity_states, starts)
+    slots = [
+        BatSlot(
+            start=slot,
+            soc=soc.get(slot),
+            charge_kwh=energy.get(slot, {}).get(charge_entity),
+            discharge_kwh=energy.get(slot, {}).get(discharge_entity),
+            capacity_kwh=capacity[slot],
+        )
+        for slot in starts
+    ]
+    return valley_feed(state, slots, now, battery_hysteresis(entry_options))
+
+
+async def async_rebuild_battery(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    now: datetime,
+) -> ValleyState:
+    """Replay the valley machine from empty over the history window (ADR-023 decision 9).
+
+    Called after a history recalculation, like ``async_rebuild_efficiency`` and with the same
+    window: ``min(max_history_days, recorder retention)``. The result is what a first start with
+    this window would catch up; the slot job then continues from its ``last_slot``.
+    """
+    window = efficiency_rebuild_window(entry_options, _get_short_term_retention_days(hass))
+    return await async_update_battery(hass, entry_options, ValleyState(), now, window=window)
 
 
 def _fetch_statistics(
