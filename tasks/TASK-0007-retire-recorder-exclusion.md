@@ -1,6 +1,9 @@
 # Task: Retire the Recorder Exclusion Requirement (Deferred — ADR-017)
 
-- **Status:** todo
+- **Status:** done (2026-10-31; closed by the human as **superseded**: split on
+  2026-10-16 into TASK-0007a-effy-writes-after-the-recorder and
+  TASK-0007b-retire-recorder-exclusion, both `done`; this file is kept as the
+  audit trail and is never started)
 - **Related ADRs:** [ADR-003, ADR-017, ADR-011]
 - **Dependencies:** [TASK-0006-recorder-synchronized-slot-trigger]
 

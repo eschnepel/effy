@@ -218,3 +218,18 @@ the hour. No second event subscription: the recorder's hourly event fires in the
 same compile call, before the commit, together with the 5-minute event.
 
 **Decided by:** human (2026-10-16).
+
+## Amendment — 2026-10-30
+
+**Reason:** TASK-0035 (ADR-020 Amendment 2026-10-30). The Amendment 2026-10-16
+says a failed hour rewrite is corrected by "the next history recalculation".
+Since the history recalculation leaves every hour the recorder has not surely
+rolled up to this rewrite, that holds only for hours it writes.
+
+**Decision:** The slot job's hour rewrite is the writer of the open hour's
+hourly row after a history recalculation. A job started by the watchdog (no
+event proves the compile) works as of 30 s earlier, so the slot it writes was
+compiled before its imports are queued. A job started by the event that waited
+for the lock serves only the slot of that event.
+
+**Decided by:** Lead Agent (not yet confirmed by the human)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.sensor import SensorStateClass
@@ -14,6 +15,28 @@ _LOGGER = logging.getLogger(__name__)
 
 # Width of one statistics slot in minutes — must match HA recorder and ADR-007.
 SLOT_MINUTES = 5
+
+# How long after a 5-minute period ended Effy treats the recorder's compile of it as
+# surely queued (TASK-0035, ADR-020 Amendment). The recorder queues the compile at
+# boundary + 10 s (``async_track_utc_time_change(..., second=10)``) and runs its queue
+# in order, so a row Effy imports after that moment is applied after the compile, as an
+# update. 30 s is the 10 s plus 20 s for a late timer and a clock that is not exact.
+RECORDER_SETTLE = timedelta(seconds=30)
+
+
+def settled_before(now: datetime, slot_minutes: int = SLOT_MINUTES) -> datetime:
+    """Start of the first slot the recorder has not surely compiled as of ``now``.
+
+    Every slot that starts before the result ended at least ``RECORDER_SETTLE`` ago, so
+    its compile (and, for a slot starting at minute 55, the roll-up of its hour) is in
+    the recorder's queue ahead of anything Effy queues now. A row of such a slot is
+    updated, never inserted first, whatever the recorder has done with it already.
+    An hour is settled when its last slot is: its start plus an hour is at most the
+    result. The slot containing ``now`` is never settled (ADR-016 Amendment 2026-10-16).
+    """
+    slot_seconds = slot_minutes * 60
+    epoch = (now - RECORDER_SETTLE).timestamp()
+    return datetime.fromtimestamp(epoch - epoch % slot_seconds, tz=timezone.utc)
 
 
 def is_energy_family(state_class: str | None, unit: str) -> bool:

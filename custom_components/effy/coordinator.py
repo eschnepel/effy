@@ -156,7 +156,7 @@ from .history import (
     async_update_standby,
     recent_trigger_since,
 )
-from .sensor_utils import SLOT_MINUTES
+from .sensor_utils import RECORDER_SETTLE, SLOT_MINUTES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -692,7 +692,10 @@ class EffyCoordinator:
             now = self._now()
         reference = self._last_slot_job_at or self._setup_at
         if reference is None or now - reference >= self._watchdog:
-            self._start_slot_job(now)
+            # No event proves the recorder compiled anything: work as of 30 s earlier,
+            # so every slot the job writes was compiled before its writes are queued
+            # (TASK-0035, ADR-020 Amendment).
+            self._start_slot_job(now, lag=RECORDER_SETTLE)
         self._schedule_next_slot_timer()
 
     @staticmethod
@@ -704,8 +707,11 @@ class EffyCoordinator:
             epoch - (epoch % slot_seconds) - slot_seconds, tz=timezone.utc
         )
 
-    def _start_slot_job(self, now: datetime) -> None:
-        """Start one slot job for the last completed slot as of ``now``.
+    def _start_slot_job(self, now: datetime, lag: timedelta = timedelta(0)) -> None:
+        """Start one slot job for the last completed slot as of ``now`` minus ``lag``.
+
+        ``lag`` is zero for a job the recorder's event started (the event comes from
+        inside the compile of that slot) and ``RECORDER_SETTLE`` for the watchdog's.
 
         Unless one was already started for that slot (a duplicate event, or
         the watchdog right after an event). A job still *probing* for an
@@ -713,7 +719,8 @@ class EffyCoordinator:
         already started its body is left to finish (a newer job queues
         behind it on the lock).
         """
-        slot = self._last_completed_slot(now)
+        as_of = now - lag
+        slot = self._last_completed_slot(as_of)
         if slot == self._slot_job_slot:
             return
         previous = self._slot_job_task
@@ -723,9 +730,11 @@ class EffyCoordinator:
         self._slot_job_slot = slot
         self._slot_job_probing = True
         self._last_slot_job_at = now
-        self._slot_job_task = self._hass.async_create_task(self._async_slot_job(now, slot))
+        self._slot_job_task = self._hass.async_create_task(self._async_slot_job(as_of, slot, lag))
 
-    async def _async_slot_job(self, now: datetime, slot: datetime) -> None:
+    async def _async_slot_job(
+        self, now: datetime, slot: datetime, lag: timedelta = timedelta(0)
+    ) -> None:
         """One slot job: probe until the last completed slot is readable, then run the body once.
 
         Retries after ``self._probe_interval`` with an ``await`` on the loop,
@@ -748,7 +757,7 @@ class EffyCoordinator:
             except Exception:
                 _LOGGER.exception("Effy: slot probe failed — running the slot job without waiting")
             self._slot_job_probing = False
-            await self._async_recalculate_recent_and_report(slot)
+            await self._async_recalculate_recent_and_report(slot, lag)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -768,7 +777,9 @@ class EffyCoordinator:
             self._lock_state = state
         return state[1]
 
-    async def _async_recalculate_recent_and_report(self, slot: datetime | None = None) -> None:
+    async def _async_recalculate_recent_and_report(
+        self, slot: datetime | None = None, lag: timedelta = timedelta(0)
+    ) -> None:
         """Run async_recalculate_recent and forward its results (ADR-012,
         gap-interpolation feature, and the "push unknown" UX fix).
 
@@ -782,7 +793,12 @@ class EffyCoordinator:
         recorder rolls the hour up before Effy can update that last slot.
         """
         async with self._recorder_job_lock():
-            now = self._now()
+            now = self._now() - lag
+            if slot is not None and not lag:
+                # An event job proved ``slot`` compiled and nothing after it. If it waited
+                # for the lock for minutes, a later slot may be completed but not yet
+                # compiled: it is left to that slot's own job (TASK-0035).
+                now = min(now, slot + 2 * timedelta(minutes=SLOT_MINUTES) - timedelta(seconds=1))
             _written, earliest, touched, last_values = await async_recalculate_recent(
                 self._hass,
                 self._entry.options,

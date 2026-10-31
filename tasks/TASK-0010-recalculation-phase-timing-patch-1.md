@@ -1,8 +1,10 @@
 # Task: Break the Three Phases Down into Sub-Processes (Detail Block)
 
-- **Status:** review — implemented inline, reviewer pass PASS; Gate 2 given by
-  the human's request of 2026-10-25 ("if you need more data, add an additional
-  instrumentalisation"). Waits for the human's run on the Pi.
+- **Status:** done (2026-10-31; closed by the human, no further Pi run needed:
+  gate G-perf was decided on 2026-10-25 and TASK-0030 met its target on the Pi
+  on 2026-10-27). Implemented inline, reviewer pass PASS; Gate 2 given by the
+  human's request of 2026-10-25 ("if you need more data, add an additional
+  instrumentalisation").
 - **Related ADRs:** \[ADR-022, ADR-011, ADR-012, ADR-014, ADR-015, ADR-003,
   ADR-004\]
 - **Dependencies:** [TASK-0010-recalculation-phase-timing]

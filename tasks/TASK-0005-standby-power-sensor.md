@@ -1,7 +1,8 @@
 # Task: Investigate and expose the battery system's standby power as an Effy sensor
 
-- **Status:** review (Stage 1 done; Stage 2 implemented and reviewed PASS
-  2026-10-17, awaiting the human's acceptance of the open points below)
+- **Status:** done (2026-10-31; closed by the human: the points the ADR leaves
+  open, listed under "Stage 2 — points the ADR leaves open", are accepted as
+  decided; Stage 1 done, Stage 2 implemented and reviewed PASS 2026-10-17)
 - **Related ADRs:** \[ADR-000, ADR-001, ADR-002, ADR-003, ADR-005, ADR-008,
   ADR-012, ADR-013, ADR-018, ADR-019, ADR-020\]
 - **Dependencies:** Stage 1: none. Stage 2:

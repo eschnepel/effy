@@ -93,7 +93,13 @@ authoritative.
   best-effort (ADR-011 D4, ADR-016).
 - No recorder exclusion is required: `sensor.effy_*` is recorded, and Effy only
   updates rows the recorder inserted (ADR-020 Accepted, supersedes ADR-017; the
-  README says an old exclusion may be removed).
+  README says an old exclusion may be removed). Effy writes no row of a slot
+  that ended less than 30 s ago or of an hour whose last slot did not
+  (`sensor_utils.settled_before`): a plain insert of the recorder's compile or
+  roll-up that meets such a row fails and drops that 5-minute period for every
+  entity. The history button leaves those rows, normally the open hour, to the
+  slot job; a watchdog job works as of 30 s earlier (ADR-020 Amendment
+  2026-10-30, draft).
 - `calculation.py` tested with zero mocking, loaded via file-path import
   (ADR-000 §6).
 

@@ -163,3 +163,16 @@ it is.
 
 **Decided by:** human (2026-10-16, option A of the recorder question); wording
 by Lead Agent.
+
+## Amendment — 2026-10-30
+
+**Reason:** TASK-0035. The open slot is not the only slot the recorder has yet
+to insert: the slot that ended less than 30 s ago may not be compiled either
+(ADR-020 Amendment 2026-10-30).
+
+**Decision:** The history recalculation still computes that slot, so the live
+push carries the last completed slot's value as before, but it writes no
+statistic for a slot that is not settled. The slot job writes it after the
+recorder's compile.
+
+**Decided by:** Lead Agent (not yet confirmed by the human)

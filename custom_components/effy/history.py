@@ -173,7 +173,13 @@ except ImportError:
     StatisticMeanType = None
     _HAS_STATISTIC_MEAN_TYPE = False
 
-from .sensor_utils import SLOT_MINUTES, effective_unit_for, is_energy_family, to_power_equivalent
+from .sensor_utils import (
+    SLOT_MINUTES,
+    effective_unit_for,
+    is_energy_family,
+    settled_before,
+    to_power_equivalent,
+)
 from .calculation import (
     DRAIN_LOOKBACK,
     EFF_VALIDATION_DELAY,
@@ -372,6 +378,7 @@ class _PhaseTimings:
         self.parse_timestamps = 0.0
         self.cpu: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
         self.unchanged_rows: int | None = None
+        self.hourly_left: int | None = None
         self.stored_checks: dict[str, str] = {}
         self.detail = False
         self.environment = ""
@@ -408,6 +415,11 @@ class _PhaseTimings:
         """Short-term rows found already up to date (ADR-024); shown on the first line."""
         if self.enabled:
             self.unchanged_rows = rows
+
+    def note_hourly_left(self, rows: int) -> None:
+        """Hourly rows left to the slot job's rewrite (TASK-0035); shown on the first line."""
+        if self.enabled:
+            self.hourly_left = rows
 
     def note_stored_checks(self, checks: dict[str, str]) -> None:
         """What each stored series looked like against the new rows (detail block only)."""
@@ -583,6 +595,8 @@ class _PhaseTimings:
         )
         if self.unchanged_rows is not None:
             parts.append(f", rows unchanged {self.unchanged_rows}")
+        if self.hourly_left is not None:
+            parts.append(f", hourly rows left for the slot job {self.hourly_left}")
         if self.parse_probe:
             parts.append(
                 "; parse probe (one extra pass over all raw states, not part of compute):"
@@ -1657,11 +1671,22 @@ async def async_recalculate_history(
         phases.finish(0)
         return 0, None, set(), {}
 
+    # Nothing Effy inserts first (TASK-0035, ADR-020 Amendment): the rows of a slot the
+    # recorder has not surely compiled, and the hourly row of an hour it has not surely
+    # rolled up, are left to the slot job, which updates them after the recorder's
+    # compile. Every slot is still computed, so the live push below is unchanged.
+    settled = settled_before(end)
+    all_series = (per_sensor, per_sensor_power, per_sensor_smoothed)
+    for series in all_series:
+        for info in series.values():
+            info["settled_before"] = settled
+    hourly_left = _count_hourly_left(all_series, settled)
+
     # Read what is stored and mark the rows that are already right (ADR-024); the
     # writer skips them. The reads are recorder jobs, so they count as fetch.
     await _mark_unchanged(
         hass,
-        (per_sensor, per_sensor_power, per_sensor_smoothed),
+        all_series,
         short_term_cutoff=short_term_cutoff,
         include_long_term=True,
         phases=phases,
@@ -1712,6 +1737,7 @@ async def async_recalculate_history(
         earliest,
     )
     phases.note_unchanged(unchanged)
+    phases.note_hourly_left(hourly_left)
     phases.finish(short_term_written)
     return short_term_written, earliest, touched_entity_ids, last_values
 
@@ -2725,6 +2751,21 @@ async def _mark_unchanged(
     phases.note_stored_checks(notes)
 
 
+def _count_hourly_left(all_series: tuple[dict[str, dict[str, Any]], ...], settled: datetime) -> int:
+    """Hourly rows a history run computes but leaves to the slot job (TASK-0035).
+
+    One per statistic and hour that is not settled: the hour has a slot the recorder has
+    not surely compiled, so its roll-up may still be ahead (``settled_before``).
+    """
+    return sum(
+        1
+        for series in all_series
+        for info in series.values()
+        for hour in _hourly_rows(info["slot_values"])
+        if hour + timedelta(hours=1) > settled
+    )
+
+
 def _count_unchanged(all_series: tuple[dict[str, dict[str, Any]], ...]) -> int:
     """Short-term rows the stored rows already had (marked by ``_mark_unchanged``)."""
     return sum(
@@ -2749,15 +2790,24 @@ def _earliest_change(
         slot_values: list[tuple[datetime, float]] = info["slot_values"]
         unchanged_short: frozenset[datetime] = info.get("unchanged_short", frozenset())
         unchanged_hourly: frozenset[datetime] = info.get("unchanged_hourly", frozenset())
+        settled: datetime | None = info.get("settled_before")
         seen_hours: set[datetime] = set()
         for ts, _val in slot_values:  # ascending
             hour = ts.replace(minute=0, second=0, microsecond=0)
-            written = (short_term_cutoff is None or ts >= short_term_cutoff) and (
-                ts not in unchanged_short
+            written = (
+                (short_term_cutoff is None or ts >= short_term_cutoff)
+                and ts not in unchanged_short
+                and (settled is None or ts < settled)  # a slot left to the recorder is no change
             )
             first_of_hour = hour not in seen_hours
             seen_hours.add(hour)
-            if written or (include_long_term and first_of_hour and hour not in unchanged_hourly):
+            hour_written = (
+                include_long_term
+                and first_of_hour
+                and hour not in unchanged_hourly
+                and (settled is None or hour + timedelta(hours=1) <= settled)
+            )
+            if written or hour_written:
                 if earliest is None or ts < earliest:
                     earliest = ts
                 break
@@ -2834,6 +2884,9 @@ async def _write_recorder_statistics(
         # unless the caller read the stored rows.
         unchanged_short: frozenset[datetime] = info.get("unchanged_short", frozenset())
         unchanged_hourly: frozenset[datetime] = info.get("unchanged_hourly", frozenset())
+        # Slots from here on, and the hours that contain one, are left to the recorder
+        # (TASK-0035); absent for the slot job's own writes, whose slots it has compiled.
+        settled: datetime | None = info.get("settled_before")
 
         metadata = _build_statistic_metadata(statistic_id, unit)
 
@@ -2849,7 +2902,7 @@ async def _write_recorder_statistics(
         short_term_stats: list[StatisticData] = [
             {"start": ts, "mean": val, "state": val}
             for ts, val in short_term_slots
-            if ts not in unchanged_short
+            if ts not in unchanged_short and (settled is None or ts < settled)
         ]
         if include_short_term and short_term_stats:
             instance.async_import_statistics(metadata, short_term_stats, StatisticsShortTerm)
@@ -2870,6 +2923,7 @@ async def _write_recorder_statistics(
             {"start": hour_ts, "mean": mean, "state": state}
             for hour_ts, (mean, state) in _hourly_rows(slot_values).items()
             if hour_ts not in unchanged_hourly
+            and (settled is None or hour_ts + timedelta(hours=1) <= settled)
         ]
         if long_term_stats:
             instance.async_import_statistics(metadata, long_term_stats, Statistics)

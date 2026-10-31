@@ -2351,3 +2351,94 @@ class TestPublishedRegistry:
         listed = coord.published_descriptors()
         listed[0]["series"] = "changed too"
         assert coord.published_descriptors() == [self._descriptor("sensor.effy_a")]
+
+
+# ---------------------------------------------------------------------------
+# No job writes ahead of the recorder (TASK-0035, ADR-020 Amendment)
+# ---------------------------------------------------------------------------
+
+
+class TestAJobNeverWritesAheadOfTheRecorder(_SlotCoordinatorBase):
+    """The recorder compiles a period 10 s after its end and runs its tasks in order.
+
+    A job started by the recorder's event is behind that compile by construction. A job
+    started by the watchdog (the event stayed away) is not: it works as of 30 s earlier,
+    so the slot it writes was compiled before anything it queues.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_watchdog_job_works_thirty_seconds_in_the_past(self) -> None:
+        coord = self._coordinator()
+        coord._now = lambda: _ts(12, 0, 5)  # type: ignore[method-assign]
+        coord._on_slot_timer(_ts(12, 0, 5))  # the timer fires 5 s after the boundary
+        await self._drain(coord)
+        assert _probe_calls == [_ts(11, 59, 35)]
+        assert [call[2] for call in _history_calls] == [_ts(11, 59, 35)]
+
+    @pytest.mark.asyncio
+    async def test_a_watchdog_job_just_after_the_hour_leaves_the_hour_to_the_recorder(
+        self,
+    ) -> None:
+        coord = self._coordinator()
+        _history_return_value[0] = (
+            1,
+            _ts(11, 50),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "kW")},
+        )
+        coord._now = lambda: _ts(12, 0, 5)  # type: ignore[method-assign]
+        coord._on_slot_timer(_ts(12, 0, 5))
+        await self._drain(coord)
+        assert _hourly_calls == []  # the last compiled slot as of 11:59:35 is 11:50
+
+    @pytest.mark.asyncio
+    async def test_a_watchdog_job_rewrites_the_hour_once_its_compile_is_surely_queued(
+        self,
+    ) -> None:
+        coord = self._coordinator()
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "kW")},
+        )
+        coord._now = lambda: _ts(12, 0, 35)  # type: ignore[method-assign]
+        coord._on_slot_timer(_ts(12, 0, 35))
+        await self._drain(coord)
+        assert [call[1] for call in _hourly_calls] == [_ts(11, 0)]
+        assert [call[2] for call in _history_calls] == [_ts(12, 0, 5)]
+
+    @pytest.mark.asyncio
+    async def test_an_event_job_is_not_held_back(self) -> None:
+        coord = self._coordinator()
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert _probe_calls == [_ts(12, 0, 10)]
+        assert [call[2] for call in _history_calls] == [_ts(12, 0, 10)]
+
+    @pytest.mark.asyncio
+    async def test_an_event_job_that_waited_for_the_lock_serves_only_its_own_slot(self) -> None:
+        """Its event proved slot 11:55 compiled; five minutes later 12:00 is not, maybe."""
+        coord = self._coordinator()
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        async with coord._recorder_job_lock():
+            coord._on_recorder_statistics(None)
+            for _ in range(5):
+                await asyncio.sleep(0)  # the job probes, then waits for the lock
+            coord._now = lambda: _ts(12, 5, 3)  # type: ignore[method-assign]
+        await self._drain(coord)
+        # the slot at 12:00 is open for any ``now`` up to 12:04:59 and not yet compiled
+        assert [call[2] for call in _history_calls] == [_ts(12, 4, 59)]
+
+    @pytest.mark.asyncio
+    async def test_an_event_job_that_waited_a_little_reads_current_data(self) -> None:
+        coord = self._coordinator()
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        async with coord._recorder_job_lock():
+            coord._on_recorder_statistics(None)
+            for _ in range(5):
+                await asyncio.sleep(0)
+            coord._now = lambda: _ts(12, 0, 40)  # type: ignore[method-assign]
+        await self._drain(coord)
+        assert [call[2] for call in _history_calls] == [_ts(12, 0, 40)]

@@ -444,6 +444,9 @@ class TestTheHistoryRecalculation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         world, recorder = _rig(monkeypatch)
+        # A minute past the hour: at 12:00:00 itself the recorder has not rolled hour 11 up
+        # and Effy leaves its hourly row to the slot job (TASK-0035).
+        _FrozenDatetime.frozen = NOW + timedelta(minutes=1)
         await _recalculate()
         before = _snapshot(recorder)
 

@@ -148,3 +148,16 @@ of a `has_mean` series carry `min` and `max`, which the check catches.
 
 **Decided by:** human; the exception in point 2 is the Lead Agent's, not yet
 confirmed by the human
+
+## Amendment — 2026-10-30
+
+**Reason:** TASK-0035. A history run leaves slots and hours the recorder has not
+surely compiled to the slot job (ADR-020 Amendment 2026-10-30).
+
+**Decision:** A slot or hour left to the slot job is neither written nor counted
+as a change: `recalculated_from` and `rows unchanged` ignore it, and the timing
+record's first line ends with `hourly rows left for the slot job N`. Point 2 of
+the Amendment 2026-10-26 is untouched. Its consequence is in ADR-020's known
+limits and awaits the human.
+
+**Decided by:** Lead Agent (not yet confirmed by the human)

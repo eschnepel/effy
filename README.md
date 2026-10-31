@@ -33,7 +33,13 @@ needs to be excluded from the recorder. Effy writes statistics for these
 entities itself, but never inserts a row the recorder is about to insert: it
 starts its work from the recorder's own 5-minute statistics event, never writes
 a statistic for the slot that is still open, and only updates a row after the
-recorder has compiled it (ADR-011, ADR-016, ADR-020).
+recorder has compiled it (ADR-011, ADR-016, ADR-020). The same holds for the
+**Re-calculate History** button: it writes every slot and hour the recorder has
+finished with, but not a slot that ended less than 30 seconds ago and not an
+hour that is still open or just closed. The 5-minute job writes those rows
+afterwards, each slot's row once the recorder has compiled it and the hour's row
+just after the hour ends, so pressing the button in the middle of an hour is
+safe.
 
 If you added this to `configuration.yaml` for an earlier version, you may remove
 it and restart Home Assistant:
@@ -49,6 +55,28 @@ Because the entities are recorded, a slot for which Effy has no data (for
 example during an outage of your source sensors) keeps the recorder's own row
 for the first slot of the outage, which holds the last value Effy reported; the
 following slots stay empty. Effy requires Home Assistant 2026.3 or newer.
+
+### If the log says `Blocked attempt to insert duplicated statistic rows`
+
+This is Home Assistant's recorder, not Effy, and it means one 5-minute period
+could not be compiled because a row for it already existed. Versions of Effy
+before TASK-0035 caused it when **Re-calculate History** was pressed during an
+hour: Effy had written the hourly row of that hour, and the recorder's roll-up
+at the end of the hour then failed.
+
+What it cost: the recorder drops the whole period when this happens, for every
+entity of every integration, not only for Effy's. If the period was the last of
+an hour (the slot starting at minute 55), the long-term row of that hour is
+missing for all entities, and the 5-minute row of that slot is missing too. The
+following periods are compiled normally, and a restart does not retry the lost
+one. Whether your Energy dashboard shows a gap or attributes that hour to the
+next one was not verified.
+
+How to repair it: update Effy and press **Re-calculate History** once. It writes
+Effy's own missing rows of every period that is over. The rows of other entities
+cannot be rebuilt by Effy, and no supported repair in Home Assistant has been
+verified; the other 5-minute rows of that hour are still there until the
+recorder purges them.
 
 ## Configuration
 
@@ -489,7 +517,10 @@ the stored hourly row.
 
 Since TASK-0030 the recalculation reads the stored statistics first and writes
 only the rows that are new or different (ADR-024). The first line then ends with
-`rows unchanged N` (rows found already up to date), the reads show up as
+`rows unchanged N` (rows found already up to date) and, for the history
+recalculation, `hourly rows left for the slot job N` (hourly rows it computed
+but did not write because the recorder has not rolled the hour up yet, normally
+the open hour; the 5-minute job writes them), the reads show up as
 `stored rows <sensor>` lines under the fetch jobs, and a repeated recalculation
 with unchanged settings writes nothing and leaves
 `sensor.effy_recalculated_from` as it is. That sensor shows the earliest slot
