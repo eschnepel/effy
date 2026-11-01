@@ -144,6 +144,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import sys
 import time
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
@@ -174,6 +175,7 @@ except ImportError:
     _HAS_STATISTIC_MEAN_TYPE = False
 
 from .sensor_utils import (
+    RECORDER_SETTLE,
     SLOT_MINUTES,
     effective_unit_for,
     is_energy_family,
@@ -215,7 +217,10 @@ from .const import (
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
 )
+from .cache import Cache
 from .effy_exports import EFFY_STANDBY_POWER_ENTITY_ID
+from .recorder_storage import RecorderStorage
+from .storage import Storage
 from .inputs import (
     all_input_ids,
     battery_hysteresis,
@@ -379,6 +384,7 @@ class _PhaseTimings:
         self.cpu: dict[str, float] = {"fetch": 0.0, "compute": 0.0, "write": 0.0, "probe": 0.0}
         self.unchanged_rows: int | None = None
         self.hourly_left: int | None = None
+        self.cache_reads: tuple[int, int] | None = None
         self.stored_checks: dict[str, str] = {}
         self.detail = False
         self.environment = ""
@@ -415,6 +421,11 @@ class _PhaseTimings:
         """Short-term rows found already up to date (ADR-024); shown on the first line."""
         if self.enabled:
             self.unchanged_rows = rows
+
+    def note_cache(self, hits: int, misses: int) -> None:
+        """Reads served from the cache and reads that went to the recorder (TASK-0036)."""
+        if self.enabled:
+            self.cache_reads = (hits, misses)
 
     def note_hourly_left(self, rows: int) -> None:
         """Hourly rows left to the slot job's rewrite (TASK-0035); shown on the first line."""
@@ -597,6 +608,9 @@ class _PhaseTimings:
             parts.append(f", rows unchanged {self.unchanged_rows}")
         if self.hourly_left is not None:
             parts.append(f", hourly rows left for the slot job {self.hourly_left}")
+        if self.cache_reads is not None:
+            hits, misses = self.cache_reads
+            parts.append(f", reads from the cache {hits}, from the recorder {misses}")
         if self.parse_probe:
             parts.append(
                 "; parse probe (one extra pass over all raw states, not part of compute):"
@@ -1109,6 +1123,64 @@ def _effy_smoothed_entity_id(source_entity_id: str) -> str:
     return f"sensor.effy_{slug}_smoothed"
 
 
+# This module, for ``RecorderStorage``: it looks the read functions up here at call time,
+# so the tests that replace them by name (``monkeypatch.setattr(history, ...)``) still work.
+_SELF = sys.modules[__name__]
+
+
+def create_storage(
+    hass: HomeAssistant, *, clock: Callable[[], datetime], warn: Callable[[str], None] | None = None
+) -> Cache:
+    """The storage the coordinator hands to every run: a cache over the recorder (ADR-025)."""
+    return Cache(RecorderStorage(hass, _SELF), clock=clock, settle=RECORDER_SETTLE, warn=warn)
+
+
+def _cache_counters(storage: Storage) -> tuple[int, int] | None:
+    """``(hits, misses)`` of a storage that counts them (the cache), else ``None``."""
+    counters = getattr(storage, "counters", None)
+    if counters is None:
+        return None
+    reads = counters()
+    return int(reads["hits"]), int(reads["misses"])
+
+
+def _note_cache_reads(
+    phases: _PhaseTimings, storage: Storage, before: tuple[int, int] | None
+) -> None:
+    after = _cache_counters(storage)
+    if before is not None and after is not None:
+        phases.note_cache(after[0] - before[0], after[1] - before[1])
+
+
+def _storage_or_default(
+    hass: HomeAssistant, storage: Storage | None, phases: _PhaseTimings
+) -> Storage:
+    """The storage a run reads through: the one it was given, else the recorder's own.
+
+    A caller that gives none (the tests of single functions) gets the behaviour the
+    functions had before the storage interface: every read goes to the recorder.
+    """
+    return storage if storage is not None else RecorderStorage(hass, _SELF, timings=phases)
+
+
+async def _write_and_forget(
+    hass: HomeAssistant,
+    storage: Storage,
+    series: dict[str, dict[str, Any]],
+    **options: Any,
+) -> int:
+    """Write the series, then tell the storage what is stale (ADR-025 decision 11).
+
+    The standby and efficiency readers read back what Effy wrote, so whatever a cache
+    holds for these statistics is out of date the moment the writer returns.
+    """
+    written = await _write_recorder_statistics(hass, series, **options)
+    slots = [ts for info in series.values() for ts, _value in info["slot_values"]]
+    if slots:
+        storage.written(list(series), min(slots), max(slots) + timedelta(minutes=SLOT_MINUTES))
+    return written
+
+
 async def _fetch_energy_raw_with_anchor(
     hass: HomeAssistant,
     recorder: Any,
@@ -1118,6 +1190,7 @@ async def _fetch_energy_raw_with_anchor(
     max_history_days: int,
     energy_reading_cache: dict[str, tuple[datetime, str]] | None,
     phases: _PhaseTimings = _NO_TIMINGS,
+    storage: Storage | None = None,
 ) -> list[tuple[datetime, str]]:
     """Raw state history for one energy-family sensor over
     [raw_history_start, end], with the offline-anchor lookback applied and
@@ -1129,16 +1202,8 @@ async def _fetch_energy_raw_with_anchor(
     2026-10-05) — an offline-recovery jump's pre-outage reading must be
     visible in *both*.
     """
-    raw_states: list[tuple[datetime, str]] = await phases.recorder_job(
-        recorder,
-        _fetch_raw_energy_states,
-        hass,
-        eid,
-        raw_history_start,
-        end,
-        label="raw states",
-        source=eid,
-    )
+    storage = _storage_or_default(hass, storage, phases)
+    raw_states: list[tuple[datetime, str]] = await storage.raw_states(eid, raw_history_start, end)
     # RECENT_RECALC_WINDOW is deliberately small (ADR-013) — if the
     # sensor was already offline when this window's own fetch starts,
     # the window contains no valid baseline to redistribute the
@@ -1176,16 +1241,7 @@ async def _fetch_energy_raw_with_anchor(
         anchor = (
             cached
             if cached is not None and cached[0] < raw_history_start
-            else await phases.recorder_job(
-                recorder,
-                _fetch_last_valid_state_before,
-                hass,
-                eid,
-                raw_history_start,
-                max_history_days,
-                label="anchor lookback",
-                source=eid,
-            )
+            else await storage.last_valid_state_before(eid, raw_history_start, max_history_days)
         )
         if anchor is not None:
             raw_states = [anchor, *raw_states]
@@ -1217,6 +1273,7 @@ async def _compute_effective_slots(
     extend_for_jumps: bool = False,
     trigger_since: datetime | None = None,
     phases: _PhaseTimings = _NO_TIMINGS,
+    storage: Storage | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """Core computation shared by async_recalculate_history and async_recalculate_recent.
 
@@ -1305,9 +1362,11 @@ async def _compute_effective_slots(
     all_ids: list[str] = input_ids + output_ids
     max_history_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
 
+    storage = _storage_or_default(hass, storage, phases)
+
     # Gather per-sensor metadata (event loop – states are in memory)
-    live_units: dict[str, str] = {eid: _get_unit(hass, eid) for eid in all_ids}
-    state_classes: dict[str, str | None] = {eid: _get_state_class(hass, eid) for eid in all_ids}
+    live_units: dict[str, str] = {eid: storage.unit(eid) for eid in all_ids}
+    state_classes: dict[str, str | None] = {eid: storage.state_class(eid) for eid in all_ids}
 
     recorder = get_recorder(hass)
 
@@ -1317,9 +1376,7 @@ async def _compute_effective_slots(
     # assuming it matches the live state, to avoid interpreting e.g. an
     # already-Wh value as if it were kWh (or vice versa), which would throw
     # off every downstream Wh/kWh → W conversion by a further factor of 1000.
-    stats_units: dict[str, str] = await phases.recorder_job(
-        recorder, _get_statistics_units, hass, all_ids, label="units"
-    )
+    stats_units: dict[str, str] = await storage.statistics_units(all_ids)
     units: dict[str, str] = {}
     for eid in all_ids:
         stat_unit = stats_units.get(eid)
@@ -1369,6 +1426,7 @@ async def _compute_effective_slots(
             max_history_days,
             energy_reading_cache,
             phases,
+            storage,
         )
 
     if extend_for_jumps and energy_ids:
@@ -1401,6 +1459,7 @@ async def _compute_effective_slots(
                     max_history_days,
                     energy_reading_cache,
                     phases,
+                    storage,
                 )
 
     phases.note_raw_states(energy_raw)
@@ -1421,9 +1480,7 @@ async def _compute_effective_slots(
     # Fetched from the (possibly jump-extended) `start`, so every sensor
     # covers the same range.
     if power_ids:
-        raw_stats: dict[str, list[StatRow]] = await phases.recorder_job(
-            recorder, _fetch_statistics, hass, power_ids, start, end, label="power statistics"
-        )
+        raw_stats: dict[str, list[StatRow]] = await storage.statistics(power_ids, start, end)
         for eid, rows in raw_stats.items():
             indexed[eid] = {row["start"]: row for row in rows}
 
@@ -1588,6 +1645,7 @@ async def async_recalculate_history(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
+    storage: Storage | None = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     """
     Recalculate and overwrite effy statistics for up to max_history_days.
@@ -1650,15 +1708,39 @@ async def async_recalculate_history(
     coordinator (e.g. tests) don't need to provide one.
     """
     phases = _PhaseTimings("history", logging.INFO, parse_probe=True)
+    storage = _storage_or_default(hass, storage, phases)
+    storage.set_timing(phases)  # the recorder reads of this run, and only this run, are timed
+    try:
+        return await _recalculate_history(
+            hass, entry_options, energy_reading_cache, storage, phases
+        )
+    finally:
+        storage.set_timing(_NO_TIMINGS)
+
+
+async def _recalculate_history(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    energy_reading_cache: dict[str, tuple[datetime, str]] | None,
+    storage: Storage,
+    phases: _PhaseTimings,
+) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
     phases.detail_on(_environment_summary(hass, max_days))
     end = datetime.now(tz=timezone.utc)
     start = end - timedelta(days=max_days)
-    short_term_retention_days = _get_short_term_retention_days(hass)
+    cache_before = _cache_counters(storage)
+    short_term_retention_days = storage.retention_days()
     short_term_cutoff = end - timedelta(days=short_term_retention_days)
 
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
-        hass, entry_options, start, end, energy_reading_cache=energy_reading_cache, phases=phases
+        hass,
+        entry_options,
+        start,
+        end,
+        energy_reading_cache=energy_reading_cache,
+        phases=phases,
+        storage=storage,
     )
     # No statistic for the open slot (ADR-016 Amendment 2026-10-16): the
     # recorder inserts that row itself; the live push below is then the last
@@ -1690,24 +1772,34 @@ async def async_recalculate_history(
         short_term_cutoff=short_term_cutoff,
         include_long_term=True,
         phases=phases,
+        storage=storage,
     )
 
     short_term_written = 0
     phases.enter("write")
     if per_sensor:
         with phases.write_call("effective"):
-            short_term_written += await _write_recorder_statistics(
-                hass, per_sensor, short_term_cutoff=short_term_cutoff, include_long_term=True
+            short_term_written += await _write_and_forget(
+                hass,
+                storage,
+                per_sensor,
+                short_term_cutoff=short_term_cutoff,
+                include_long_term=True,
             )
     if per_sensor_power:
         with phases.write_call("derived power"):
-            short_term_written += await _write_recorder_statistics(
-                hass, per_sensor_power, short_term_cutoff=short_term_cutoff, include_long_term=True
+            short_term_written += await _write_and_forget(
+                hass,
+                storage,
+                per_sensor_power,
+                short_term_cutoff=short_term_cutoff,
+                include_long_term=True,
             )
     if per_sensor_smoothed:
         with phases.write_call("smoothed"):
-            short_term_written += await _write_recorder_statistics(
+            short_term_written += await _write_and_forget(
                 hass,
+                storage,
                 per_sensor_smoothed,
                 short_term_cutoff=short_term_cutoff,
                 include_long_term=True,
@@ -1738,6 +1830,7 @@ async def async_recalculate_history(
     )
     phases.note_unchanged(unchanged)
     phases.note_hourly_left(hourly_left)
+    _note_cache_reads(phases, storage, cache_before)
     phases.finish(short_term_written)
     return short_term_written, earliest, touched_entity_ids, last_values
 
@@ -1748,6 +1841,7 @@ async def async_recalculate_recent(
     now: datetime,
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
     trigger_since: datetime | None = None,
+    storage: Storage | None = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     """
     Recalculate and write effy statistics for whatever recent slots need it.
@@ -1833,6 +1927,25 @@ async def async_recalculate_recent(
     always provides one in practice.
     """
     phases = _PhaseTimings("recent", logging.DEBUG)
+    storage = _storage_or_default(hass, storage, phases)
+    storage.set_timing(phases)
+    try:
+        return await _recalculate_recent(
+            hass, entry_options, now, energy_reading_cache, trigger_since, storage, phases
+        )
+    finally:
+        storage.set_timing(_NO_TIMINGS)
+
+
+async def _recalculate_recent(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    now: datetime,
+    energy_reading_cache: dict[str, tuple[datetime, str]] | None,
+    trigger_since: datetime | None,
+    storage: Storage,
+    phases: _PhaseTimings,
+) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     start = now - RECENT_RECALC_WINDOW
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
         hass,
@@ -1843,6 +1956,7 @@ async def async_recalculate_recent(
         extend_for_jumps=True,
         trigger_since=trigger_since,
         phases=phases,
+        storage=storage,
     )
     # No statistic for the open slot (ADR-016 Amendment 2026-10-16): the
     # recorder inserts that row itself, Effy only updates it afterwards.
@@ -1863,7 +1977,12 @@ async def async_recalculate_recent(
     # the live states of ADR-016 go out for all of them, changed row or not.
     all_series = (per_sensor, per_sensor_power, per_sensor_smoothed)
     await _mark_unchanged(
-        hass, all_series, short_term_cutoff=None, include_long_term=False, phases=phases
+        hass,
+        all_series,
+        short_term_cutoff=None,
+        include_long_term=False,
+        phases=phases,
+        storage=storage,
     )
 
     written = 0
@@ -1871,7 +1990,7 @@ async def async_recalculate_recent(
         if not series:
             continue
         phases.enter("write")
-        written += await _write_recorder_statistics(hass, series, include_long_term=False)
+        written += await _write_and_forget(hass, storage, series, include_long_term=False)
         phases.enter(None)
     earliest = min(
         (
@@ -1910,6 +2029,7 @@ async def async_rewrite_hourly(
     hass: HomeAssistant,
     units: dict[str, str],
     hour_start: datetime,
+    storage: Storage | None = None,
 ) -> int:
     """Rewrite one hour's long-term statistic from its 12 short-term rows (TASK-0007a).
 
@@ -1932,9 +2052,9 @@ async def async_rewrite_hourly(
     statistic_ids = sorted(units)
     if not statistic_ids:
         return 0
-    recorder = get_recorder(hass)
-    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-        _fetch_statistics, hass, statistic_ids, hour_start, hour_start + timedelta(hours=1)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    rows: dict[str, list[StatRow]] = await storage.statistics(
+        statistic_ids, hour_start, hour_start + timedelta(hours=1)
     )
     series: dict[str, dict[str, Any]] = {}
     for statistic_id in statistic_ids:
@@ -1955,8 +2075,9 @@ async def async_rewrite_hourly(
         include_long_term=True,
         include_short_term=False,
         phases=_NO_TIMINGS,
+        storage=storage,
     )
-    await _write_recorder_statistics(hass, series, include_long_term=True, include_short_term=False)
+    await _write_and_forget(hass, storage, series, include_long_term=True, include_short_term=False)
     return len(series)
 
 
@@ -1964,6 +2085,7 @@ async def async_probe_last_slot_ready(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     now: datetime,
+    storage: Storage | None = None,
 ) -> bool:
     """Whether the recorder has compiled the last completed slot (TASK-0006).
 
@@ -1983,16 +2105,12 @@ async def async_probe_last_slot_ready(
     input_ids: list[str] = all_input_ids(entry_options)
     output_ids: list[str] = configured_output_ids(entry_options)
     all_ids: list[str] = input_ids + output_ids
-    recorder = get_recorder(hass)
-    stats_units: dict[str, str] = await recorder.async_add_executor_job(
-        _get_statistics_units, hass, all_ids
-    )
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    stats_units: dict[str, str] = await storage.statistics_units(all_ids)
     power_ids = [
         eid
         for eid in all_ids
-        if _stat_field_for(
-            _get_state_class(hass, eid), stats_units.get(eid) or _get_unit(hass, eid)
-        )
+        if _stat_field_for(storage.state_class(eid), stats_units.get(eid) or storage.unit(eid))
         == "mean"
     ]
     if not power_ids:
@@ -2003,9 +2121,7 @@ async def async_probe_last_slot_ready(
     last = datetime.fromtimestamp(epoch - (epoch % slot_seconds) - slot_seconds, tz=timezone.utc)
     previous = last - timedelta(seconds=slot_seconds)
     end = last + timedelta(seconds=slot_seconds)
-    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-        _fetch_statistics, hass, power_ids, previous, end
-    )
+    rows: dict[str, list[StatRow]] = await storage.statistics(power_ids, previous, end)
     for eid in power_ids:
         means = {row["start"]: row.get("mean") for row in rows.get(eid, [])}
         if means.get(previous) is not None and means.get(last) is None:
@@ -2021,18 +2137,20 @@ STANDBY_REPLAY_MAX = timedelta(days=3)
 
 
 async def _classify_sensors(
-    hass: HomeAssistant, recorder: Any, entity_ids: list[str]
+    hass: HomeAssistant,
+    recorder: Any,
+    entity_ids: list[str],
+    storage: Storage | None = None,
 ) -> dict[str, tuple[str, bool]]:
     """``entity_id -> (unit, is_energy_family)``, the unit being the one the
     statistics are stored in (``_get_statistics_units``), like
     ``_compute_effective_slots``."""
-    stats_units: dict[str, str] = await recorder.async_add_executor_job(
-        _get_statistics_units, hass, entity_ids
-    )
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    stats_units: dict[str, str] = await storage.statistics_units(entity_ids)
     result: dict[str, tuple[str, bool]] = {}
     for eid in entity_ids:
-        unit = stats_units.get(eid) or _get_unit(hass, eid)
-        result[eid] = (unit, _stat_field_for(_get_state_class(hass, eid), unit) == "change")
+        unit = stats_units.get(eid) or storage.unit(eid)
+        result[eid] = (unit, _stat_field_for(storage.state_class(eid), unit) == "change")
     return result
 
 
@@ -2042,6 +2160,7 @@ async def async_read_drain_events(
     armed_since: dict[str, datetime],
     since: datetime,
     until: datetime,
+    storage: Storage | None = None,
 ) -> list[DrainPeak | DrainBreak | DrainSeen]:
     """Peaks, breaks and seen readings of every BMS input in ``[since, until)`` (ADR-018 §1).
 
@@ -2056,15 +2175,14 @@ async def async_read_drain_events(
     if not bms_ids:
         return []
     recorder = get_recorder(hass)
-    classes = await _classify_sensors(hass, recorder, bms_ids)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    classes = await _classify_sensors(hass, recorder, bms_ids, storage)
     margin = timedelta(minutes=1)
     events: list[DrainPeak | DrainBreak | DrainSeen] = []
     for eid in bms_ids:
         unit, is_energy = classes[eid]
         start = min(armed_since.get(eid, since), since) - margin
-        raw: list[tuple[datetime, str]] = await recorder.async_add_executor_job(
-            _fetch_raw_energy_states, hass, eid, start, until
-        )
+        raw: list[tuple[datetime, str]] = await storage.raw_states(eid, start, until)
         if is_energy:
             found = energy_drain_events(eid, raw, 1000.0 if unit == "kWh" else 1.0)
             events.extend(e for e in found if since <= e.t < until)
@@ -2079,6 +2197,7 @@ async def async_read_drain_activity(
     entry_options: dict[str, Any],
     start: datetime,
     end: datetime,
+    storage: Storage | None = None,
 ) -> dict[datetime, frozenset[str]]:
     """Which sensors show flow in which slot of ``[start, end)`` (ADR-018 §3).
 
@@ -2096,7 +2215,8 @@ async def async_read_drain_activity(
     if not all_ids:
         return {}
     recorder = get_recorder(hass)
-    classes = await _classify_sensors(hass, recorder, all_ids)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    classes = await _classify_sensors(hass, recorder, all_ids, storage)
     statistic_ids: dict[str, str] = {}  # statistic id -> source entity id
     for eid in all_ids:
         _unit, is_energy = classes[eid]
@@ -2106,9 +2226,7 @@ async def async_read_drain_activity(
             statistic_ids[_effy_smoothed_entity_id(eid)] = eid
         else:
             statistic_ids[eid] = eid
-    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-        _fetch_statistics, hass, list(statistic_ids), start, end
-    )
+    rows: dict[str, list[StatRow]] = await storage.statistics(list(statistic_ids), start, end)
     active: dict[datetime, set[str]] = {}
     for statistic_id, stat_rows in rows.items():
         source = statistic_ids.get(statistic_id)
@@ -2130,6 +2248,7 @@ async def async_update_standby(
     entry_options: dict[str, Any],
     state: DrainState,
     now: datetime,
+    storage: Storage | None = None,
 ) -> DrainState:
     """Feed the standby machine every slot that completed since it last ran (ADR-018 §3, §5).
 
@@ -2171,10 +2290,13 @@ async def async_update_standby(
         {state.armed.source: state.armed.t} if state.armed is not None else {},
         first,
         end,
+        storage=storage,
     )
     needed = drain_activity_start(state)
     activity_start = min(needed, first - slot_width) if needed is not None else first - slot_width
-    activity = await async_read_drain_activity(hass, entry_options, activity_start, end)
+    activity = await async_read_drain_activity(
+        hass, entry_options, activity_start, end, storage=storage
+    )
     return drain_feed(state, events, slots, activity)
 
 
@@ -2236,6 +2358,7 @@ async def async_read_efficiency_energy(
     *,
     only: Collection[str] | None = None,
     with_standby: bool = True,
+    storage: Storage | None = None,
 ) -> tuple[dict[datetime, dict[str, float]], dict[datetime, float]]:
     """The energy of each configured counter and the standby energy per slot of
     ``[start, end)``, in kWh (ADR-023 decision 3).
@@ -2258,7 +2381,8 @@ async def async_read_efficiency_energy(
     if not counters:
         return {}, {}
     recorder = get_recorder(hass)
-    classes = await _classify_sensors(hass, recorder, counters)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    classes = await _classify_sensors(hass, recorder, counters, storage)
     inputs = all_input_ids(entry_options)
     source_of: dict[str, str] = {}  # statistic id -> counter entity id
     unit_of: dict[str, str] = {}  # statistic id -> the unit its mean is in
@@ -2272,13 +2396,9 @@ async def async_read_efficiency_energy(
             statistic_id = eid
         source_of[statistic_id], unit_of[statistic_id] = eid, unit
     standby_ids = [EFFY_STANDBY_POWER_ENTITY_ID] if with_standby else []
-    stored: dict[str, str] = (
-        await recorder.async_add_executor_job(_get_statistics_units, hass, standby_ids)
-        if with_standby
-        else {}
-    )
-    rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-        _fetch_statistics, hass, [*source_of, *standby_ids], start, end
+    stored: dict[str, str] = await storage.statistics_units(standby_ids) if with_standby else {}
+    rows: dict[str, list[StatRow]] = await storage.statistics(
+        [*source_of, *standby_ids], start, end
     )
     energy: dict[datetime, dict[str, float]] = {}
     standby: dict[datetime, float] = {}
@@ -2303,6 +2423,7 @@ async def async_update_efficiency(
     state: RunState,
     now: datetime,
     window: timedelta = EFFICIENCY_CATCHUP_MAX,
+    storage: Storage | None = None,
 ) -> RunState:
     """Feed the efficiency machine the slots it has not seen (ADR-023 decisions 3, 9).
 
@@ -2323,8 +2444,10 @@ async def async_update_efficiency(
         return state
     first, last = slot_range
     end = last + timedelta(minutes=SLOT_MINUTES)
-    activity = await async_read_drain_activity(hass, entry_options, first, end)
-    energy, standby = await async_read_efficiency_energy(hass, entry_options, first, end)
+    activity = await async_read_drain_activity(hass, entry_options, first, end, storage=storage)
+    energy, standby = await async_read_efficiency_energy(
+        hass, entry_options, first, end, storage=storage
+    )
     roles = efficiency_roles(entry_options)
     configured = [
         eid for eid in (roles.grid_import, roles.discharge, roles.charge, roles.grid_export) if eid
@@ -2363,6 +2486,7 @@ async def async_rebuild_efficiency(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     now: datetime,
+    storage: Storage | None = None,
 ) -> RunState:
     """Replay the efficiency machine from empty over the history window (ADR-023 decision 9).
 
@@ -2372,8 +2496,11 @@ async def async_rebuild_efficiency(
     window would catch up; the slot job then continues from its ``last_slot``. Slots
     without a standby statistic do not count and are no failure.
     """
-    window = efficiency_rebuild_window(entry_options, _get_short_term_retention_days(hass))
-    return await async_update_efficiency(hass, entry_options, RunState(), now, window=window)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    window = efficiency_rebuild_window(entry_options, storage.retention_days())
+    return await async_update_efficiency(
+        hass, entry_options, RunState(), now, window=window, storage=storage
+    )
 
 
 def battery_enabled(entry_options: dict[str, Any]) -> bool:
@@ -2421,6 +2548,7 @@ async def async_update_battery(
     state: ValleyState,
     now: datetime,
     window: timedelta = EFFICIENCY_CATCHUP_MAX,
+    storage: Storage | None = None,
 ) -> ValleyState:
     """Feed the valley machine the slots it has not seen (ADR-023 decisions 6, 9).
 
@@ -2449,10 +2577,8 @@ async def async_update_battery(
     soc_entity, capacity_entity = soc_id(entry_options), capacity_id(entry_options)
     charge_entity, discharge_entity = charge_id(entry_options), discharge_id(entry_options)
     assert soc_entity and capacity_entity and charge_entity and discharge_entity
-    recorder = get_recorder(hass)
-    soc_rows: dict[str, list[StatRow]] = await recorder.async_add_executor_job(
-        _fetch_statistics, hass, [soc_entity], first, end
-    )
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    soc_rows: dict[str, list[StatRow]] = await storage.statistics([soc_entity], first, end)
     energy, _standby = await async_read_efficiency_energy(
         hass,
         entry_options,
@@ -2460,9 +2586,10 @@ async def async_update_battery(
         end,
         only=(charge_entity, discharge_entity),
         with_standby=False,
+        storage=storage,
     )
-    capacity_states: list[tuple[datetime, str, str | None]] = await recorder.async_add_executor_job(
-        _fetch_capacity_states, hass, capacity_entity, first, end
+    capacity_states: list[tuple[datetime, str, str | None]] = await storage.capacity_states(
+        capacity_entity, first, end
     )
     # A slot the recorder has no row for, or one without a mean, has no SoC: ``None``.
     soc: dict[datetime, float | None] = {
@@ -2491,6 +2618,7 @@ async def async_rebuild_battery(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
     now: datetime,
+    storage: Storage | None = None,
 ) -> ValleyState:
     """Replay the valley machine from empty over the history window (ADR-023 decision 9).
 
@@ -2498,8 +2626,11 @@ async def async_rebuild_battery(
     window: ``min(max_history_days, recorder retention)``. The result is what a first start with
     this window would catch up; the slot job then continues from its ``last_slot``.
     """
-    window = efficiency_rebuild_window(entry_options, _get_short_term_retention_days(hass))
-    return await async_update_battery(hass, entry_options, ValleyState(), now, window=window)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    window = efficiency_rebuild_window(entry_options, storage.retention_days())
+    return await async_update_battery(
+        hass, entry_options, ValleyState(), now, window=window, storage=storage
+    )
 
 
 def _fetch_statistics(
@@ -2687,6 +2818,7 @@ async def _mark_unchanged(
     include_long_term: bool,
     include_short_term: bool = True,
     phases: _PhaseTimings,
+    storage: Storage | None = None,
 ) -> None:
     """Add ``unchanged_short`` and ``unchanged_hourly`` to every series entry (in place).
 
@@ -2697,7 +2829,7 @@ async def _mark_unchanged(
     marked from then on (everything is written, as before this feature), and one
     warning says so: a failed read never fails a recalculation (ADR-024 Decision 3).
     """
-    recorder = get_recorder(hass)
+    storage = _storage_or_default(hass, storage, phases)
     notes: dict[str, str] = {}
     for series in all_series:
         for statistic_id, info in series.items():
@@ -2719,17 +2851,8 @@ async def _mark_unchanged(
             if not short and not hourly:
                 continue
             try:
-                found: dict[str, frozenset[datetime]] = await phases.recorder_job(
-                    recorder,
-                    _unchanged_rows,
-                    hass,
-                    statistic_id,
-                    info["unit"],
-                    short,
-                    hourly,
-                    notes,
-                    label="stored rows",
-                    source=statistic_id,
+                found: dict[str, frozenset[datetime]] = await storage.unchanged_rows(
+                    statistic_id, info["unit"], short, hourly, notes
                 )
             except Exception as err:  # a failed read must never fail the recalculation
                 _LOGGER.warning(

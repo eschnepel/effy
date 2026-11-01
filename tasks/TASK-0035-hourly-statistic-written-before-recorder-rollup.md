@@ -282,7 +282,7 @@ the history recalculation (below). The prediction that names it, and can be
 wrong: the row's `created_ts` lies between 13:00:00 and 14:00:10 UTC (before the
 failed compile at 14:02:33 UTC = 15:02:33 local) and equals the time of a press
 of **Re-calculate History** in the `Effy recalculation timing (history)` lines;
-Home Assistant was stopped at the 14:00:10 compile, so the 13:55 period was left
+Home Assistant was stopped at the 14:00:10 compile, so the 13:55 slot was left
 to the catch-up at start. The SQL under "Evidence the human has to supply" still
 answers this, and which other statistics have a row for 13:00/13:55 UTC. Whether
 the Energy dashboard shows a gap at 14:00 local is likewise open.
@@ -305,39 +305,39 @@ first of them (rig, section "Reproduction").
 `tasks.py`, `helpers/recorder.py`):
 
 - The roll-up (`_compile_hourly_statistics`) is run inside the compile of the
-  period starting at minute 55 and reads the 5-minute rows of the hour for every
+  slot starting at minute 55 and reads the 5-minute rows of the hour for every
   statistic that has any (Effy's too); it inserts with `session.add_all`.
 - `compile_missing_statistics` is one task queued once at recorder start
   (`_schedule_compile_missing_statistics`, before any integration is set up),
-  loops over every missed period in one call and fires the 5-minute event only
-  for the last. It does not chunk; it is queued again only if the database job
-  asks for a retry.
+  loops over every missed slot in one call and fires the 5-minute event only for
+  the last. It does not chunk; it is queued again only if the database job asks
+  for a retry.
 - The periodic tick queues a compile at boundary + 10 s on the recorder's FIFO
   queue; `async_import_statistics` queues an import on the same queue. An import
   of an existing row updates it (every column replaced), of a missing row
   inserts it.
-- **A UNIQUE failure** fails the flush of the period's session. The filter logs
+- **A UNIQUE failure** fails the flush of the slot's session. The filter logs
   `Blocked attempt to insert duplicated statistic rows` and swallows the error;
-  the session is closed without commit, so the period is rolled back for **all
+  the session is closed without commit, so the slot is rolled back for **all
   entities of all integrations**: no 5-minute row, no roll-up, no run marker.
-  Later periods compile normally. The next start's catch-up begins after the
-  newest run marker, so the lost period is not retried and the failure does not
+  Later slots compile normally. The next start's catch-up begins after the
+  newest run marker, so the lost slot is not retried and the failure does not
   repeat at every start; it repeats at the next hour end if the same cause is
   there. A failure in the middle of a catch-up also drops the rest of that call.
 
 **Impact** (written for the human, now in the README). Lost: the 5-minute row of
-the failed period and, for a period starting at minute 55, the hourly row of the
+the failed slot and, for a slot starting at minute 55, the hourly row of the
 hour, for every entity. The other 11 slots of the hour stay until purged. Effy's
-own rows of that period are restored by pressing **Re-calculate History** after
-the fix (the period is over, so it is written). The other entities' rows are not
+own rows of that slot are restored by pressing **Re-calculate History** after
+the fix (the slot is over, so it is written). The other entities' rows are not
 restorable by Effy, and no supported repair in Home Assistant was verified.
 Unverified: how the Energy dashboard displays the missing hour.
 
 **Reproduction in the rig** (`tests/support.py: StrictRecorderMixin`, used with
 the real history code and the real writer, not around it; the rig queues imports
 and compiles on one FIFO, inserts with a plain insert that fails on a duplicate
-`(statistic, start)`, rolls the hour up at minute 55, drops the failed period
-for every entity and stops a catch-up at the first failure). Failing against the
+`(statistic, start)`, rolls the hour up at minute 55, drops the failed slot for
+every entity and stops a catch-up at the first failure). Failing against the
 code as it was:
 
 - history recalculation started in the open hour (11:32): the roll-up of 11:55

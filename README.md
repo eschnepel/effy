@@ -36,7 +36,7 @@ a statistic for the slot that is still open, and only updates a row after the
 recorder has compiled it (ADR-011, ADR-016, ADR-020). The same holds for the
 **Re-calculate History** button: it writes every slot and hour the recorder has
 finished with, but not a slot that ended less than 30 seconds ago and not an
-hour that is still open or just closed. The 5-minute job writes those rows
+hour that is still open or just closed. The slot job writes those rows
 afterwards, each slot's row once the recorder has compiled it and the hour's row
 just after the hour ends, so pressing the button in the middle of an hour is
 safe.
@@ -58,22 +58,22 @@ following slots stay empty. Effy requires Home Assistant 2026.3 or newer.
 
 ### If the log says `Blocked attempt to insert duplicated statistic rows`
 
-This is Home Assistant's recorder, not Effy, and it means one 5-minute period
+This is Home Assistant's recorder, not Effy, and it means one 5-minute slot
 could not be compiled because a row for it already existed. Versions of Effy
 before TASK-0035 caused it when **Re-calculate History** was pressed during an
 hour: Effy had written the hourly row of that hour, and the recorder's roll-up
 at the end of the hour then failed.
 
-What it cost: the recorder drops the whole period when this happens, for every
-entity of every integration, not only for Effy's. If the period was the last of
-an hour (the slot starting at minute 55), the long-term row of that hour is
-missing for all entities, and the 5-minute row of that slot is missing too. The
-following periods are compiled normally, and a restart does not retry the lost
+What it cost: the recorder drops the whole slot when this happens, for every
+entity of every integration, not only for Effy's. If the slot was the last of an
+hour (the slot starting at minute 55), the long-term row of that hour is missing
+for all entities, and the 5-minute row of that slot is missing too. The
+following slots are compiled normally, and a restart does not retry the lost
 one. Whether your Energy dashboard shows a gap or attributes that hour to the
 next one was not verified.
 
 How to repair it: update Effy and press **Re-calculate History** once. It writes
-Effy's own missing rows of every period that is over. The rows of other entities
+Effy's own missing rows of every slot that is over. The rows of other entities
 cannot be rebuilt by Effy, and no supported repair in Home Assistant has been
 verified; the other 5-minute rows of that hour are still there until the
 recorder purges them.
@@ -520,7 +520,7 @@ only the rows that are new or different (ADR-024). The first line then ends with
 `rows unchanged N` (rows found already up to date) and, for the history
 recalculation, `hourly rows left for the slot job N` (hourly rows it computed
 but did not write because the recorder has not rolled the hour up yet, normally
-the open hour; the 5-minute job writes them), the reads show up as
+the open hour; the slot job writes them), the reads show up as
 `stored rows <sensor>` lines under the fetch jobs, and a repeated recalculation
 with unchanged settings writes nothing and leaves
 `sensor.effy_recalculated_from` as it is. That sensor shows the earliest slot
@@ -535,6 +535,24 @@ install the current `helper_sensors` branch and press the button again.
 The 5-minute recalculation writes the first line only, at level DEBUG, without
 the probe and the detail. When reporting a slow recalculation, send the whole
 record (all its lines).
+
+### What Effy keeps in memory
+
+Effy keeps what it reads from the recorder (the raw states of the energy
+sensors, the 5-minute statistics of the other sources, the battery capacity
+states) in memory, so that the 5-minute job asks the recorder only for what is
+new instead of the whole window each time. The **Re-calculate History** button
+empties this memory first and reads everything again, so it is the way to make
+Effy look at the recorder afresh, for example after you edited or purged
+recorder history. Nothing is written to disk and a restart empties it.
+
+It costs about 160 bytes per state: a counter that ticks every minute is 6.5 MB
+for 28 days. More than 200,000 states of one sensor are not kept: that sensor is
+read directly from then on, and the log says so once
+(`more than 200000 states in the cache; it is read directly from now on`).
+Effy's own stored rows and the units are never reused; they are read every time.
+The first line of the history timing record ends with
+`reads from the cache N, from the recorder M`.
 
 ### State-class handling during history recalculation
 

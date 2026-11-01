@@ -154,6 +154,7 @@ from .history import (
     async_update_battery,
     async_update_efficiency,
     async_update_standby,
+    create_storage,
     recent_trigger_since,
 )
 from .sensor_utils import RECORDER_SETTLE, SLOT_MINUTES
@@ -280,6 +281,11 @@ class EffyCoordinator:
         # contents itself, just owns and hands it out so it survives
         # across calls within the same HA session.
         self.last_valid_energy_readings: dict[str, tuple[datetime, str]] = {}
+
+        # Everything the recalculations read from the recorder goes through this one
+        # storage: a cache over the recorder (ADR-025). One per config entry, in memory,
+        # never persisted; the history button clears it before it reads.
+        self._storage: Any = create_storage(hass, clock=lambda: self._now(), warn=_LOGGER.warning)
 
         # End time (the ``now`` it ran with) of the last slot-timer cycle that
         # *completed* without raising — volatile, in memory only, so ``None``
@@ -744,12 +750,16 @@ class EffyCoordinator:
         """
         try:
             try:
-                ready = await async_probe_last_slot_ready(self._hass, self._entry.options, now)
+                ready = await async_probe_last_slot_ready(
+                    self._hass, self._entry.options, now, storage=self._storage
+                )
                 retries = 0
                 while not ready and retries < self._max_probes:
                     await asyncio.sleep(self._probe_interval.total_seconds())
                     retries += 1
-                    ready = await async_probe_last_slot_ready(self._hass, self._entry.options, now)
+                    ready = await async_probe_last_slot_ready(
+                        self._hass, self._entry.options, now, storage=self._storage
+                    )
             except asyncio.CancelledError:
                 if self._slot_job_slot != slot:
                     return  # superseded by a newer slot's job: end quietly
@@ -805,6 +815,7 @@ class EffyCoordinator:
                 now,
                 energy_reading_cache=self.last_valid_energy_readings,
                 trigger_since=recent_trigger_since(self._last_recent_run, now),
+                storage=self._storage,
             )
             # Only reached when the cycle completed (an exception above leaves
             # the marker alone, so the next cycle's trigger window covers this
@@ -839,7 +850,9 @@ class EffyCoordinator:
         if state is None or not self._bms_input_ids:
             return
         try:
-            new_state = await async_update_standby(self._hass, self._entry.options, state, now)
+            new_state = await async_update_standby(
+                self._hass, self._entry.options, state, now, storage=self._storage
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -862,7 +875,9 @@ class EffyCoordinator:
         if state is None or not self.efficiency_enabled:
             return
         try:
-            new_state = await async_update_efficiency(self._hass, self._entry.options, state, now)
+            new_state = await async_update_efficiency(
+                self._hass, self._entry.options, state, now, storage=self._storage
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -887,7 +902,9 @@ class EffyCoordinator:
         if state is None or not self.battery_enabled:
             return
         try:
-            new_state = await async_update_battery(self._hass, self._entry.options, state, now)
+            new_state = await async_update_battery(
+                self._hass, self._entry.options, state, now, storage=self._storage
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -919,7 +936,7 @@ class EffyCoordinator:
             return
         hour_start = slot.replace(minute=0, second=0, microsecond=0)
         try:
-            await async_rewrite_hourly(self._hass, units, hour_start)
+            await async_rewrite_hourly(self._hass, units, hour_start, storage=self._storage)
         except Exception:
             _LOGGER.exception("Effy: rewriting the hourly statistics of %s failed", hour_start)
 
@@ -932,10 +949,15 @@ class EffyCoordinator:
         number of slots written. Exceptions propagate to the caller.
         """
         async with self._recorder_job_lock():
+            # The button reads fresh (ADR-025 decision 8): what is held may predate a purge,
+            # an edit of the recorder's history or a changed unit. What this run reads
+            # then fills the cache for the slot jobs that follow.
+            self._storage.clear()
             written, recalculated_from, touched, last_values = await async_recalculate_history(
                 self._hass,
                 self._entry.options,
                 energy_reading_cache=self.last_valid_energy_readings,
+                storage=self._storage,
             )
             if touched:
                 self.notify_updated(touched, last_values)
@@ -959,7 +981,9 @@ class EffyCoordinator:
         if self._efficiency_state is None or not self.efficiency_enabled:
             return
         try:
-            rebuilt = await async_rebuild_efficiency(self._hass, self._entry.options, self._now())
+            rebuilt = await async_rebuild_efficiency(
+                self._hass, self._entry.options, self._now(), storage=self._storage
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -980,7 +1004,9 @@ class EffyCoordinator:
         if self._battery_state is None or not self.battery_enabled:
             return
         try:
-            rebuilt = await async_rebuild_battery(self._hass, self._entry.options, self._now())
+            rebuilt = await async_rebuild_battery(
+                self._hass, self._entry.options, self._now(), storage=self._storage
+            )
         except asyncio.CancelledError:
             raise
         except Exception:

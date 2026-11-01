@@ -40,8 +40,9 @@ written.* So the export is not a second set of reads or a logging hook in every
 fetch function: it is **clear the cache, run the recalculation, write down the
 cache.** What that requires of TASK-0036 (and is checked here, not assumed):
 
-- every read of source data goes through the cache (a read around it is missing
-  from the file);
+- every read of source data goes through the cache (structural once `history.py`
+  takes a `Storage`, TASK-0036; a read around it would be missing from the
+  file);
 - the cache fetches exactly what is asked, never more (a prefetch is irrelevant
   data in the file, and a 28-day read for a 2-hour question is a large one);
 - the snapshot is serializable and holds no live object;
@@ -80,8 +81,13 @@ first.
   - (B) a second button, "Re-calculate History (with debug export)", beside the
     first;
   - (C) a service parameter on the existing service, no entity;
-  - (D) the button always exports (rejected on its face: a file per press;
-    stated for the record with the size it would have).
+    - (D) the button always exports (rejected on its face: a file per press;
+      stated for the record with the size it would have).
+  - And how it records: *clear the cache, run, write its snapshot* (the human's
+    idea, the default), or a recording decorator over any `Storage` that logs
+    every call and its result (works without a clean cache, and also records the
+    stored rows and metadata uniformly, but keeps duplicates of overlapping
+    reads).
 - Given the content, then the report lists each section and why it is needed to
   replay: metadata (versions, the clock, the time zone, the schema version of
   the file), the configuration, the source metadata, **the cache's snapshot**
@@ -107,7 +113,10 @@ first.
   does not (no secrets, no credentials), that the human reads it before sharing
   it, and whether the entity ids can be replaced by stable pseudonyms on request
   (an option, off by default; the replay must work with either).
-- Given **the replay**, then the report says where it lives (a test helper
+- Given **the replay**, then the report says that its natural form is
+  `Cache.from_snapshot(data, inner=<a storage that raises on every read>)`
+  handed to the real history code (a read the file does not contain fails, which
+  shows a changed read pattern), and where the rest lives (a test helper
   `tests/replay.py`, and/or a script under `utils/` that runs without Home
   Assistant) and how it loads an export into the in-memory recorder world of the
   existing history tests (`_World`, `_install`, the strict recorder of
@@ -192,9 +201,10 @@ ADR-025 for the file format (Stage 1 says which).
 - `async_recalculate_history` and the timing record in
   `custom_components/effy/history.py`; `EffyCoordinator._recorder_job_lock`
 - the button (`custom_components/effy/button.py`) and the service
-- `_World`, `_install`, `_FrozenDatetime` in
-  `tests/test_history_recent_equivalence.py`; `StrictRecorderMixin` in
-  `tests/support.py` (TASK-0035)
+- the `Storage` protocol and `Cache.from_snapshot` (TASK-0036); `_World`,
+  `_install`, `_FrozenDatetime` in `tests/test_history_recent_equivalence.py`
+  (replaced by a fake storage as TASK-0036 moves the tests);
+  `StrictRecorderMixin` in `tests/support.py` (TASK-0035)
 
 ## Open points for the human (answered in Stage 1 with the facts)
 

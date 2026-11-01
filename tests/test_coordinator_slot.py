@@ -129,13 +129,32 @@ _trigger_since_args: list[tuple[datetime | None, datetime]] = []
 _history_raise_next: list[bool] = [False]
 
 
+# The storage each history function was given (ADR-025): ``(function, storage)``.
+_storage_seen: list[tuple[str, Any]] = []
+# What happened to the storage and to the history run, in order.
+_storage_events: list[str] = []
+
+
+class _FakeStorage:
+    """What ``history.create_storage`` returns here: only the one call the coordinator makes."""
+
+    def clear(self) -> None:
+        _storage_events.append("clear")
+
+
+def _fake_create_storage(hass: Any, *, clock: Any, warn: Any = None) -> _FakeStorage:
+    return _FakeStorage()
+
+
 async def _fake_async_recalculate_recent(
     hass: Any,
     entry_options: Any,
     now: datetime,
     energy_reading_cache: Any = None,
     trigger_since: Any = None,
+    storage: Any = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+    _storage_seen.append(("recalculate_recent", storage))
     _history_calls.append((hass, entry_options, now, energy_reading_cache))
     _history_trigger_since.append(trigger_since)
     if _job_hook[0] is not None:
@@ -160,7 +179,10 @@ _probe_raise_next: list[bool] = [False]
 _job_hook: list[Any] = [None]
 
 
-async def _fake_async_probe_last_slot_ready(hass: Any, entry_options: Any, now: datetime) -> bool:
+async def _fake_async_probe_last_slot_ready(
+    hass: Any, entry_options: Any, now: datetime, storage: Any = None
+) -> bool:
+    _storage_seen.append(("probe_last_slot_ready", storage))
     index = len(_probe_calls)
     _probe_calls.append(now)
     if _probe_raise_next[0]:
@@ -179,8 +201,11 @@ async def _fake_async_recalculate_history(
     hass: Any,
     entry_options: Any,
     energy_reading_cache: Any = None,
+    storage: Any = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+    _storage_seen.append(("recalculate_history", storage))
     _history_full_calls.append((hass, entry_options, energy_reading_cache))
+    _storage_events.append("history")
     if _job_hook[0] is not None:
         await _job_hook[0]("history")
     return _history_full_return_value[0]
@@ -190,8 +215,11 @@ _hourly_calls: list[tuple[dict[str, str], datetime, bool]] = []
 _hourly_raise_next: list[bool] = [False]
 
 
-async def _fake_async_rewrite_hourly(hass: Any, units: dict[str, str], hour_start: datetime) -> int:
+async def _fake_async_rewrite_hourly(
+    hass: Any, units: dict[str, str], hour_start: datetime, storage: Any = None
+) -> int:
     """Records the call and whether the recalculation lock was held at that moment."""
+    _storage_seen.append(("rewrite_hourly", storage))
     lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
     _hourly_calls.append((dict(units), hour_start, lock_held))
     if _job_hook[0] is not None:
@@ -210,9 +238,14 @@ _standby_raise_next: list[bool] = [False]
 
 
 async def _fake_async_update_standby(
-    hass: Any, entry_options: Any, state: Any, now: datetime
+    hass: Any,
+    entry_options: Any,
+    state: Any,
+    now: datetime,
+    storage: Any = None,
 ) -> Any:
     """Records the call and whether the lock was held; returns a state that moved on."""
+    _storage_seen.append(("update_standby", storage))
     lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
     _standby_calls.append((entry_options, state, now, lock_held))
     if _job_hook[0] is not None:
@@ -229,9 +262,14 @@ _efficiency_raise_next: list[bool] = [False]
 
 
 async def _fake_async_update_efficiency(
-    hass: Any, entry_options: Any, state: Any, now: datetime
+    hass: Any,
+    entry_options: Any,
+    state: Any,
+    now: datetime,
+    storage: Any = None,
 ) -> Any:
     """Records the call and whether the lock was held; returns a state that moved on."""
+    _storage_seen.append(("update_efficiency", storage))
     lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
     _efficiency_calls.append((entry_options, state, now, lock_held))
     if _job_hook[0] is not None:
@@ -249,7 +287,10 @@ _rebuild_calls: list[tuple[Any, datetime, bool]] = []
 _rebuild_raise_next: list[bool] = [False]
 
 
-async def _fake_async_rebuild_efficiency(hass: Any, entry_options: Any, now: datetime) -> Any:
+async def _fake_async_rebuild_efficiency(
+    hass: Any, entry_options: Any, now: datetime, storage: Any = None
+) -> Any:
+    _storage_seen.append(("rebuild_efficiency", storage))
     lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
     _rebuild_calls.append((entry_options, now, lock_held))
     if _job_hook[0] is not None:
@@ -267,9 +308,14 @@ _battery_drop_next: list[bool] = [False]  # the next feed reports one more dropp
 
 
 async def _fake_async_update_battery(
-    hass: Any, entry_options: Any, state: Any, now: datetime
+    hass: Any,
+    entry_options: Any,
+    state: Any,
+    now: datetime,
+    storage: Any = None,
 ) -> Any:
     """Records the call and whether the lock was held; returns a state that moved on."""
+    _storage_seen.append(("update_battery", storage))
     lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
     _battery_calls.append((entry_options, state, now, lock_held))
     if _job_hook[0] is not None:
@@ -293,7 +339,10 @@ _rebuild_battery_calls: list[tuple[Any, datetime, bool]] = []
 _rebuild_battery_raise_next: list[bool] = [False]
 
 
-async def _fake_async_rebuild_battery(hass: Any, entry_options: Any, now: datetime) -> Any:
+async def _fake_async_rebuild_battery(
+    hass: Any, entry_options: Any, now: datetime, storage: Any = None
+) -> Any:
+    _storage_seen.append(("rebuild_battery", storage))
     lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
     _rebuild_battery_calls.append((entry_options, now, lock_held))
     if _job_hook[0] is not None:
@@ -317,6 +366,7 @@ _history_stub.async_probe_last_slot_ready = _fake_async_probe_last_slot_ready  #
 _history_stub.async_recalculate_history = _fake_async_recalculate_history  # type: ignore[attr-defined]
 _history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
 _history_stub.recent_trigger_since = _fake_recent_trigger_since  # type: ignore[attr-defined]
+_history_stub.create_storage = _fake_create_storage  # type: ignore[attr-defined]
 _history_stub.__package__ = "effy"
 sys.modules["effy.history"] = _history_stub
 _effy_pkg.history = _history_stub  # type: ignore[attr-defined]
@@ -772,6 +822,8 @@ _EVENT = "recorder_5min_statistics_generated"
 
 
 def _reset_slot_job_fakes() -> None:
+    _storage_seen.clear()
+    _storage_events.clear()
     _hourly_calls.clear()
     _hourly_raise_next[0] = False
     _standby_calls.clear()
@@ -989,7 +1041,7 @@ class TestSimulatedRecorderCompileTiming(_SlotCoordinatorBase):
         readable = {"slot": False}
         seen_at_body: list[bool] = []
 
-        async def probe(hass: Any, options: Any, now: datetime) -> bool:
+        async def probe(hass: Any, options: Any, now: datetime, storage: Any = None) -> bool:
             _probe_calls.append(now)
             return readable["slot"]
 
@@ -1023,7 +1075,7 @@ class TestSimulatedRecorderCompileTiming(_SlotCoordinatorBase):
         readable = {"slot": False}
         seen_at_body: list[bool] = []
 
-        async def probe(hass: Any, options: Any, now: datetime) -> bool:
+        async def probe(hass: Any, options: Any, now: datetime, storage: Any = None) -> bool:
             return readable["slot"]
 
         async def hook(_which: str) -> None:
@@ -2442,3 +2494,70 @@ class TestAJobNeverWritesAheadOfTheRecorder(_SlotCoordinatorBase):
             coord._now = lambda: _ts(12, 0, 40)  # type: ignore[method-assign]
         await self._drain(coord)
         assert [call[2] for call in _history_calls] == [_ts(12, 0, 40)]
+
+
+# ---------------------------------------------------------------------------
+# One storage for every read (TASK-0036, ADR-025)
+# ---------------------------------------------------------------------------
+
+
+class TestTheCoordinatorOwnsOneStorage(_SlotCoordinatorBase):
+    @pytest.mark.asyncio
+    async def test_the_slot_job_hands_the_same_storage_to_everything_it_reads_with(self) -> None:
+        coord = self._coordinator()
+        _history_return_value[0] = (
+            1,
+            _ts(11, 55),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "kW")},
+        )
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        names = [name for name, _ in _storage_seen]
+        for expected in (
+            "probe_last_slot_ready",
+            "recalculate_recent",
+            "rewrite_hourly",
+        ):
+            assert expected in names, names
+        assert all(storage is coord._storage for _, storage in _storage_seen), _storage_seen
+
+    @pytest.mark.asyncio
+    async def test_the_button_clears_it_first_and_hands_it_to_the_recalculation_and_the_rebuilds(
+        self,
+    ) -> None:
+        coord = self._coordinator()
+        await coord.async_recalculate_history_and_report()
+        assert _storage_events[:2] == ["clear", "history"]
+        names = [name for name, _ in _storage_seen]
+        assert "recalculate_history" in names
+        assert all(storage is coord._storage for _, storage in _storage_seen), _storage_seen
+
+    @pytest.mark.asyncio
+    async def test_the_slot_job_does_not_clear_it(self) -> None:
+        coord = self._coordinator()
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert "clear" not in _storage_events
+
+    @pytest.mark.asyncio
+    async def test_it_is_cleared_with_the_recorder_job_lock_held(self) -> None:
+        """A slot job in the middle of a read must not see its cache cleared under it."""
+        coord = self._coordinator()
+        held: list[bool] = []
+        original = coord._storage.clear
+
+        def clear() -> None:
+            held.append(coord._recorder_job_lock().locked())
+            original()
+
+        coord._storage.clear = clear
+        await coord.async_recalculate_history_and_report()
+        assert held == [True]
+
+    def test_each_entry_has_its_own(self) -> None:
+        first = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"]))
+        second = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"]))
+        assert first._storage is not second._storage

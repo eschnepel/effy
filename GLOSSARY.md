@@ -237,6 +237,20 @@ rewrites only the slots near now. _Avoid_: Slot recalc
 history days, started by the button or the service; the only writer of hourly
 (long-term) statistics. _Avoid_: Full recalc
 
+**Storage**: The interface to everything Effy reads from the recorder (raw
+states, 5-minute statistics, units, Effy's own stored rows). The recorder-backed
+storage and the cache both implement it, so the history code cannot tell which
+one it is reading from. _Avoid_: Reader, source
+
+**Cache**: A storage that remembers what it has read from the storage underneath
+it and asks that one only for what it is missing. It forgets what Effy writes,
+never reuses Effy's own stored rows, and is emptied by the history button. Not
+the last-valid-reading cache of ADR-015. _Avoid_: Buffer
+
+**Clean cache**: A cache that was emptied before a recalculation, so that what
+it holds afterwards is exactly what that recalculation read. _Avoid_: Fresh
+cache
+
 **Recalculation phase**: One of the three parts of a recalculation: *fetch*
 (reading raw states and statistics from the recorder), *compute* (the slot
 values, on the event loop unless ADR-022 moves it), *write* (importing the

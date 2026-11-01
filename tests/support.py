@@ -201,3 +201,223 @@ class StrictRecorderMixin:
             self.queue_compile(slot, fire_event=False)
             slot += _FIVE_MINUTES
         self.run_queue()
+
+
+# ---------------------------------------------------------------------------
+# Storage doubles (TASK-0036, ADR-025)
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+
+class FakeClock:
+    """A settable clock; the storage and the cache under test read the same one."""
+
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+class UnrecordedRead(Exception):
+    """A read the recording does not contain (the replay's inner storage raises it)."""
+
+
+class RaisingStorage:
+    """A ``Storage`` whose every read raises: the inner storage of a replay."""
+
+    async def raw_states(self, *args: Any) -> Any:
+        raise UnrecordedRead(("raw_states", *args))
+
+    async def last_valid_state_before(self, *args: Any) -> Any:
+        raise UnrecordedRead(("last_valid_state_before", *args))
+
+    async def statistics(self, *args: Any) -> Any:
+        raise UnrecordedRead(("statistics", *args))
+
+    async def capacity_states(self, *args: Any) -> Any:
+        raise UnrecordedRead(("capacity_states", *args))
+
+    async def statistics_units(self, *args: Any) -> Any:
+        raise UnrecordedRead(("statistics_units", *args))
+
+    async def unchanged_rows(self, *args: Any, **kwargs: Any) -> Any:
+        raise UnrecordedRead(("unchanged_rows", *args))
+
+    def written(self, *args: Any) -> None:
+        return None
+
+    def unit(self, *args: Any) -> Any:
+        raise UnrecordedRead(("unit", *args))
+
+    def state_class(self, *args: Any) -> Any:
+        raise UnrecordedRead(("state_class", *args))
+
+    def retention_days(self) -> Any:
+        raise UnrecordedRead(("retention_days",))
+
+    def set_timing(self, timings: Any) -> None:
+        return None
+
+
+class FakeStorage:
+    """The recorder's rule, applied to lists (``state_changes_during_period``, 2026.10.4).
+
+    A raw read returns the latest state strictly before ``start`` stamped ``start`` (if
+    there is one), then the changes with ``start < time < end``; a statistics read the
+    rows with ``start <= row start < end``. Everything is **committed late**: a state is
+    visible ``delay`` seconds after its time, a 5-minute row 10 s plus ``row_delay``
+    after the slot ended, so a read at the wrong moment misses the newest, as the real
+    recorder does. ``calls`` logs every read that reaches it; ``direct_*`` do not.
+    """
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.events: dict[str, list[tuple[datetime, str, datetime]]] = {}
+        self.capacity: dict[str, list[tuple[datetime, str, str | None, datetime]]] = {}
+        self.rows: dict[str, dict[datetime, tuple[dict[str, Any], datetime]]] = {}
+        self.units: dict[str, str] = {}
+        self.live_units: dict[str, str] = {}
+        self.state_classes: dict[str, str | None] = {}
+        self.retention = 10
+        self.calls: list[tuple[Any, ...]] = []
+        self.written_calls: list[tuple[Any, ...]] = []
+        self.timing: Any = None
+        self.yield_in_reads = False
+        self.unchanged_result: dict[str, frozenset[datetime]] = {
+            "short": frozenset(),
+            "hourly": frozenset(),
+        }
+
+    # --- filling -----------------------------------------------------------------
+    def add_state(self, entity_id: str, ts: datetime, state: str, delay: float = 0.0) -> None:
+        self.events.setdefault(entity_id, []).append((ts, state, ts + timedelta(seconds=delay)))
+        self.events[entity_id].sort()
+
+    def add_capacity(
+        self, entity_id: str, ts: datetime, state: str, unit: str | None, delay: float = 0.0
+    ) -> None:
+        self.capacity.setdefault(entity_id, []).append(
+            (ts, state, unit, ts + timedelta(seconds=delay))
+        )
+        self.capacity[entity_id].sort(key=lambda r: r[0])
+
+    def add_row(
+        self, statistic_id: str, start: datetime, mean: float, row_delay: float = 0.0
+    ) -> None:
+        row = {"start": start, "mean": mean, "change": mean / 10}
+        visible = start + _FIVE_MINUTES + timedelta(seconds=10 + row_delay)
+        self.rows.setdefault(statistic_id, {})[start] = (row, visible)
+
+    # --- the recorder's rule -----------------------------------------------------------
+    def direct_raw(
+        self, entity_id: str, start: datetime, end: datetime
+    ) -> list[tuple[datetime, str]]:
+        now = self.clock.now
+        visible = [(t, s) for t, s, v in self.events.get(entity_id, []) if v <= now]
+        before = [(t, s) for t, s in visible if t < start]
+        result = [(start, before[-1][1])] if before else []
+        result.extend((t, s) for t, s in visible if start < t < end)
+        return result
+
+    def direct_capacity(
+        self, entity_id: str, start: datetime, end: datetime
+    ) -> list[tuple[datetime, str, str | None]]:
+        now = self.clock.now
+        visible = [(t, s, u) for t, s, u, v in self.capacity.get(entity_id, []) if v <= now]
+        before = [(t, s, u) for t, s, u in visible if t < start]
+        result = [(start, before[-1][1], before[-1][2])] if before else []
+        result.extend((t, s, u) for t, s, u in visible if start < t < end)
+        return result
+
+    def direct_statistics(
+        self, entity_ids: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[dict[str, Any]]]:
+        now = self.clock.now
+        result: dict[str, list[dict[str, Any]]] = {}
+        for sid in entity_ids:
+            rows = [
+                dict(row)
+                for t, (row, visible) in sorted(self.rows.get(sid, {}).items())
+                if start <= t < end and visible <= now
+            ]
+            if rows:
+                result[sid] = rows
+        return result
+
+    # --- Storage -------------------------------------------------------------------------
+    async def _maybe_yield(self) -> None:
+        if self.yield_in_reads:
+            await asyncio.sleep(0)
+
+    async def raw_states(
+        self, entity_id: str, start: datetime, end: datetime
+    ) -> list[tuple[datetime, str]]:
+        self.calls.append(("raw_states", entity_id, start, end))
+        await self._maybe_yield()
+        return self.direct_raw(entity_id, start, end)
+
+    async def last_valid_state_before(
+        self, entity_id: str, before: datetime, max_history_days: int
+    ) -> tuple[datetime, str] | None:
+        self.calls.append(("last_valid_state_before", entity_id, before, max_history_days))
+        await self._maybe_yield()
+        floor = before - timedelta(days=max_history_days)
+        for t, s, v in reversed(self.events.get(entity_id, [])):
+            if floor <= t < before and v <= self.clock.now:
+                try:
+                    float(s)
+                except ValueError:
+                    continue
+                return (t, s)
+        return None
+
+    async def statistics(
+        self, entity_ids: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[dict[str, Any]]]:
+        self.calls.append(("statistics", tuple(entity_ids), start, end))
+        await self._maybe_yield()
+        return self.direct_statistics(entity_ids, start, end)
+
+    async def capacity_states(
+        self, entity_id: str, start: datetime, end: datetime
+    ) -> list[tuple[datetime, str, str | None]]:
+        self.calls.append(("capacity_states", entity_id, start, end))
+        await self._maybe_yield()
+        return self.direct_capacity(entity_id, start, end)
+
+    async def statistics_units(self, entity_ids: list[str]) -> dict[str, str]:
+        self.calls.append(("statistics_units", tuple(entity_ids)))
+        await self._maybe_yield()
+        return {eid: self.units[eid] for eid in entity_ids if eid in self.units}
+
+    async def unchanged_rows(
+        self,
+        statistic_id: str,
+        unit: str,
+        short: list[tuple[datetime, float]],
+        hourly: dict[datetime, tuple[float, float]],
+        notes: dict[str, str] | None = None,
+    ) -> dict[str, frozenset[datetime]]:
+        self.calls.append(("unchanged_rows", statistic_id, unit, len(short), len(hourly)))
+        await self._maybe_yield()
+        return dict(self.unchanged_result)
+
+    def written(self, statistic_ids: list[str], start: datetime, end: datetime) -> None:
+        self.written_calls.append((tuple(statistic_ids), start, end))
+
+    def unit(self, entity_id: str) -> str:
+        self.calls.append(("unit", entity_id))
+        return self.live_units.get(entity_id, "W")
+
+    def state_class(self, entity_id: str) -> str | None:
+        self.calls.append(("state_class", entity_id))
+        return self.state_classes.get(entity_id)
+
+    def retention_days(self) -> int:
+        self.calls.append(("retention_days",))
+        return self.retention
+
+    def set_timing(self, timings: Any) -> None:
+        self.timing = timings

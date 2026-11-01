@@ -486,11 +486,21 @@ class TestRebuildAfterTheHistoryRecalculation:
         real = _history.async_update_efficiency
 
         async def spy(
-            hass: Any, options: Any, state: Any, now: datetime, window: timedelta | None = None
+            hass: Any,
+            options: Any,
+            state: Any,
+            now: datetime,
+            window: timedelta | None = None,
+            storage: Any = None,
         ) -> Any:
             asked.append((state, window))  # type: ignore[arg-type]
             return await real(
-                hass, options, state, now, **({} if window is None else {"window": window})
+                hass,
+                options,
+                state,
+                now,
+                storage=storage,
+                **({} if window is None else {"window": window}),
             )
 
         monkeypatch.setattr(_history, "async_update_efficiency", spy)

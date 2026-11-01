@@ -250,3 +250,29 @@ having to hunt down every comment that explained it.
 
 **Decided by:** Lead Agent (confirmed by human, 2026-10-23: the file, and the
 `EFFY_` prefix on every export)
+
+## Amendment — 2026-10-31
+
+**Reason:** ADR-025 (TASK-0036) puts everything Effy reads from the recorder
+behind one interface.
+
+**Decision:** §3 gains three modules. `storage.py` (the `Storage` protocol,
+pure) and `cache.py` (a `Storage` over another `Storage`, pure, loaded by file
+path like `calculation.py`, §6) sit at the layer of `calculation.py`;
+`recorder_storage.py` (a `Storage` over the recorder, the only one that touches
+it) sits above `sensor_utils.py`; `history.py` takes a `Storage`, and
+`coordinator.py` gives it the cache.
+
+```
+calculation.py / storage.py / cache.py   (pure, no HA imports, no I/O)
+       ↑
+sensor_utils.py (reads HA state → SensorReading)
+       ↑
+recorder_storage.py (a Storage over the recorder)
+       ↑
+coordinator.py  (orchestrates; owns the cache)
+       ↑
+sensor.py / button.py / history.py  (HA entity glue; history reads through a Storage)
+```
+
+**Decided by:** Lead Agent (not yet confirmed by the human)

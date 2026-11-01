@@ -225,3 +225,28 @@ the fail-safe.
 **Scope (out):** what Effy computes or writes (values, range, series), the live
 states, progress lines, smaller batches, numpy (ADR-022's outcome), any change
 to the sensor's attributes (ADR-021).
+
+## CAP-11 — A recalculation's inputs are held once and can be replayed *(proposed 2026-10-31 by the human's request; Gate 1: confirmation of this text pending; Draft ADR-025)*
+
+**What the user sees:** nothing changes in the sensors. With the debug export
+switched on, pressing **Re-calculate History** also writes one file with
+everything the recalculation read from the recorder and the configuration it ran
+with, and anyone with that file can reproduce the recalculation offline, in a
+test, without access to the instance. The logs say how many reads were served
+from memory.
+
+**End-to-end demonstration:** a history recalculation on the in-memory recorder
+with and without the cache writes identical rows (the CAP-1 equivalence harness
+and the TASK-0035 recorder rig green); after a clear and one recalculation the
+cache holds exactly what that recalculation read; the export of such a run,
+replayed from the file alone, writes the same rows and reports the same
+`recalculated_from`.
+
+**Scope (in):** a pure cache for the source data Effy reads (raw states,
+statistics, anchors, capacity states, metadata), `clear()` and `snapshot()`, the
+export file, its format and its switch, the replay.
+
+**Scope (out):** caching what Effy calculates or writes, persisting the cache
+across a restart (unless the human asks), a speed target (the history
+recalculation takes 3.92 s when repeated; ADR-022's measurement), any change to
+what Effy writes or publishes.

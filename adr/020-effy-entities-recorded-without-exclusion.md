@@ -81,7 +81,7 @@ full hour for `UNIQUE constraint failed: statistics_short_term`.
 
 **Reason:** The first live check (the human, 2026-10-30, after removing the
 exclusion) found a failed compile, not a one-slot race: the recorder's compile
-of the period 13:55 UTC failed at 15:02:33 local with
+of the slot 13:55 UTC failed at 15:02:33 local with
 `UNIQUE constraint failed: statistics.metadata_id, statistics.start_ts` on the
 hourly row of one Effy entity for 13:00 UTC (TASK-0035). The "residual race" of
 the Consequences was believed to last seconds. It is not: a history
@@ -92,14 +92,14 @@ recorder does on such a failure (read in `homeassistant/components/recorder` of
 2026.10.4, the human's version, and reproduced in the strict recorder fake of
 `tests/support.py`):
 
-- The compile of a period inserts its 5-minute rows and, for the period starting
-  at minute 55, the hour's roll-up, all with plain inserts and in one session. A
-  duplicate fails the flush, and the **whole period is dropped for every entity
-  of every integration**: no 5-minute row, no roll-up, no run marker.
+- The compile of a slot inserts its 5-minute rows and, for the slot starting at
+  minute 55, the hour's roll-up, all with plain inserts and in one session. A
+  duplicate fails the flush, and the **whole slot is dropped for every entity of
+  every integration**: no 5-minute row, no roll-up, no run marker.
 - The failure is logged as a warning
   (`Blocked attempt to insert duplicated statistic rows`) and swallowed. Later
-  periods compile normally (each tick is its own task). The catch-up at start
-  continues from the newest run marker, so the dropped period is not compiled
+  slots compile normally (each tick is its own task). The catch-up at start
+  continues from the newest run marker, so the dropped slot is not compiled
   again at the next start; it is lost.
 - `async_import_statistics` updates a row that exists (every column replaced)
   and inserts one that does not, on the recorder's queue, in order with the

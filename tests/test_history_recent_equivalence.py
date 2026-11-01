@@ -85,7 +85,17 @@ def _load_history(
     ]
     module_names = [
         f"{_PKG}.{n}"
-        for n in ("const", "effy_exports", "inputs", "calculation", "sensor_utils", "history")
+        for n in (
+            "const",
+            "effy_exports",
+            "inputs",
+            "calculation",
+            "sensor_utils",
+            "storage",
+            "cache",
+            "recorder_storage",
+            "history",
+        )
     ]
     touched = [*stub_names, _PKG, *module_names]
     saved: dict[str, ModuleType | None] = {name: sys.modules.get(name) for name in touched}
@@ -121,7 +131,17 @@ def _load_history(
         sys.modules[_PKG] = pkg
 
         loaded: dict[str, ModuleType] = {}
-        for name in ("const", "effy_exports", "inputs", "calculation", "sensor_utils", "history"):
+        for name in (
+            "const",
+            "effy_exports",
+            "inputs",
+            "calculation",
+            "sensor_utils",
+            "storage",
+            "cache",
+            "recorder_storage",
+            "history",
+        ):
             spec = importlib.util.spec_from_file_location(f"{_PKG}.{name}", _BASE / f"{name}.py")
             assert spec and spec.loader
             mod = importlib.util.module_from_spec(spec)

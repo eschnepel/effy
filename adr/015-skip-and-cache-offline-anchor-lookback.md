@@ -98,3 +98,14 @@ already passed explicitly rather than read from `hass.data`.
   refinement; the anchor found (whether from cache or recorder) is the same
   value either way, and Decision 1's skip never omits a search that would
   otherwise have produced a usable contribution.
+
+## Amendment — 2026-10-31
+
+**Reason:** ADR-025 (TASK-0036) adds a cache of what Effy reads from the
+recorder.
+
+**Decision:** This cache is unchanged and stays beside it for now. ADR-025's
+answer 8 (fold this one into the other) is deferred to a follow-up task;
+`energy_reading_cache` keeps its parameter and its behaviour.
+
+**Decided by:** Lead Agent (not yet confirmed by the human)

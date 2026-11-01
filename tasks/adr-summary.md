@@ -100,6 +100,15 @@ authoritative.
   entity. The history button leaves those rows, normally the open hour, to the
   slot job; a watchdog job works as of 30 s earlier (ADR-020 Amendment
   2026-10-30, draft).
+- ADR-025 (Accepted 2026-10-31): a `Storage` protocol (`storage.py`) for what
+  Effy reads from the recorder; `RecorderStorage` is the only HA-facing
+  implementation, and a pure `Cache` implements the same protocol over an
+  injected inner storage (raw states as events with a base state, 5-minute
+  statistics rows, anchors; Effy's own stored rows observed, never reused).
+  `history.py` takes a `Storage` and cannot go around the cache. Fetches exactly
+  what is asked; `clear()`, `snapshot()`, `from_snapshot()` (a replay is a cache
+  over a storage that raises); the history button reads fresh. Justified by
+  replay (TASK-0037), not speed.
 - `calculation.py` tested with zero mocking, loaded via file-path import
   (ADR-000 §6).
 
