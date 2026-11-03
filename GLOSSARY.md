@@ -251,6 +251,16 @@ the last-valid-reading cache of ADR-015. _Avoid_: Buffer
 it holds afterwards is exactly what that recalculation read. _Avoid_: Fresh
 cache
 
+**Debug export**: A file written after the button's history recalculation, when
+the option is on, holding Effy's configuration, the instant the run took for
+"now", everything it read (the clean cache's snapshot) and the rows it wrote.
+Enough to run the same recalculation again offline. _Avoid_: Dump, log
+
+**Replay**: Running the real history recalculation again from a debug export
+alone, over a cache rebuilt from the file and a storage that fails on any read
+the file does not contain, and comparing the rows written with those in the
+file. _Avoid_: Re-run
+
 **First processed slot**: The first slot a standby, efficiency or battery
 machine took since its state began (a first start or a reset such as the history
 button's rebuild); kept across restarts and shown as `first_processed_slot`.

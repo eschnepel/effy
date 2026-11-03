@@ -24,6 +24,10 @@ CONF_SOC_SENSOR = "soc_sensor"
 CONF_CAPACITY_ENTITY = "capacity_entity"
 CONF_VALLEY_HYSTERESIS = "valley_hysteresis"
 
+# Write a debug export file with every history recalculation of the button (TASK-0037,
+# ADR-025 Amendment 2026-11-03). Off unless set.
+CONF_DEBUG_EXPORT = "debug_export"
+
 DEFAULT_MAX_HISTORY_DAYS = 28
 # The valley hysteresis in SoC points. The minimum keeps it above the 10-point valley band
 # (ADR-023 decision 6), so a valley can end before the rise that makes it real.

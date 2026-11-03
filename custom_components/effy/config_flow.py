@@ -13,6 +13,7 @@ from .const import (
     CAPACITY_UNITS,
     CONF_CAPACITY_ENTITY,
     CONF_CHARGE_SENSOR,
+    CONF_DEBUG_EXPORT,
     CONF_DISCHARGE_SENSOR,
     CONF_GRID_EXPORT_SENSOR,
     CONF_GRID_IMPORT_SENSOR,
@@ -79,6 +80,7 @@ def _build_schema(
     capacity_entity: str | None = None,
     valley_hysteresis: float = DEFAULT_VALLEY_HYSTERESIS,
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
+    debug_export: bool = False,
 ) -> vol.Schema:
     # The PV list is an optional key with a *suggested* value: a PV-less system
     # must be able to clear it. "At least one input in total" and "at least one
@@ -126,6 +128,9 @@ def _build_schema(
                 "unit_of_measurement": "days",
             }
         }
+    )
+    schema[vol.Optional(CONF_DEBUG_EXPORT, default=debug_export)] = selector.selector(
+        {"boolean": {}}
     )
     return vol.Schema(schema)
 
@@ -313,6 +318,7 @@ class EffyOptionsFlow(config_entries.OptionsFlowWithReload):  # type: ignore[mis
                 capacity_entity=current.get(CONF_CAPACITY_ENTITY),
                 valley_hysteresis=valley_hysteresis(current),
                 max_history_days=current.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS),
+                debug_export=bool(current.get(CONF_DEBUG_EXPORT, False)),
             ),
             errors=errors,
         )

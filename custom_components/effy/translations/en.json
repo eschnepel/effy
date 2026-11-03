@@ -15,7 +15,8 @@
           "soc_sensor": "State of charge sensor (optional, for the battery efficiency; set together with the capacity)",
           "capacity_entity": "Battery capacity entity (optional, in Wh or kWh: a sensor, number or input_number; set together with the state of charge)",
           "valley_hysteresis": "Valley hysteresis (state of charge points, at least 15)",
-          "max_history_days": "Maximum history (days)"
+          "max_history_days": "Maximum history (days)",
+          "debug_export": "Write a debug export with every history recalculation (a file in effy_debug, for a bug report)"
         }
       }
     },
@@ -42,7 +43,8 @@
           "soc_sensor": "State of charge sensor (optional, for the battery efficiency; set together with the capacity)",
           "capacity_entity": "Battery capacity entity (optional, in Wh or kWh: a sensor, number or input_number; set together with the state of charge)",
           "valley_hysteresis": "Valley hysteresis (state of charge points, at least 15)",
-          "max_history_days": "Maximum history (days)"
+          "max_history_days": "Maximum history (days)",
+          "debug_export": "Write a debug export with every history recalculation (a file in effy_debug, for a bug report)"
         },
         "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required. Optional, for the battery efficiency: the state of charge sensor together with the battery capacity entity, and the valley hysteresis."
       }

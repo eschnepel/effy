@@ -406,8 +406,17 @@ class Cache:
         short: list[tuple[datetime, float]],
         hourly: dict[datetime, tuple[float, float]],
     ) -> str:
+        # Instants, not datetimes: the repr of a datetime names its tzinfo object, which a
+        # replay from a file does not have to share with the recorded run (TASK-0037).
         digest = hashlib.sha1(  # noqa: S324 - a fingerprint, not a secret
-            repr((statistic_id, unit, short, sorted(hourly.items()))).encode()
+            repr(
+                (
+                    statistic_id,
+                    unit,
+                    [(ts.timestamp(), value) for ts, value in short],
+                    sorted((ts.timestamp(), value) for ts, value in hourly.items()),
+                )
+            ).encode()
         ).hexdigest()
         return f"{statistic_id}|{digest}"
 

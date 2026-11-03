@@ -322,3 +322,53 @@ from them, or found something the draft missed, it is recorded here.
    follow-up.
 
 **Decided by:** Lead Agent (not yet confirmed by the human)
+
+## Amendment — 2026-11-03
+
+**Reason:** TASK-0037 builds the replay this ADR was written for: the debug
+export. The human chose (2026-11-03): the switch is an **entry option**, default
+off (the option `debug_export`, in the options flow); **no pseudonymized entity
+ids**; **the slot job gets no export**, only the button's history run.
+
+**Decision:**
+
+1. With the option on, the coordinator hands `async_recalculate_history` an
+   `export` hook. Under the recorder-job lock the cache is cleared, the run
+   reads through it, and once the run has written, the hook takes
+   `Cache.snapshot()` on the event loop (no `await` between the end of the run
+   and the copy) and writes the file in an executor job. The rebuilds of the
+   standby, efficiency and battery machines that follow the run are not in the
+   file.
+1. **The file** (`debug_export.py`, pure, no `hass`): gzip JSON, `.json.gz`,
+   `format_version` 1 (the literal `schema_version` is reserved to
+   `effy_exports.py`). Sections: `meta` (versions, time zone, `omitted`,
+   `section_bytes`), `config`, `inputs` (`ran_at`, `window_start`, the ADR-015
+   reading cache as the run started with it), `result`, `cache` (the snapshot,
+   with the observed units and the stored rows that decided what was written)
+   and `written` (the rows the writer scheduled, per statistic and table).
+   Datetimes are ISO 8601 in UTC with their offset; states are the recorder's
+   strings. The format version is checked on reading and a file with another
+   one, a damaged file, or one without `cache` is refused.
+1. **Where and how many.**
+   `<config>/effy_debug/effy-export-<UTC time>-<8 characters of the entry id>.json.gz`,
+   written to a temporary name and renamed. The newest 5 per entry are kept;
+   only names of exactly that shape are removed. A bound of 50 MiB of
+   uncompressed JSON: a section that would exceed it (the `written` section
+   first) is left out whole and named in `meta.omitted` and in the log.
+1. **The timing record** of the run carries the export (path, size, time,
+   left-out sections, or its failure); a failing export is logged once and never
+   changes the run's result.
+1. **The replay** (`tests/replay.py`) is `Cache.from_snapshot` over a storage
+   that raises, the clock frozen at `inputs.ran_at`, the real
+   `async_recalculate_history` and the real writer; the rows written must equal
+   `written` (slot keys exactly, values within ADR-022's tolerance).
+1. **The key of the stored-rows record is built from instants** (`timestamp()`),
+   not from the `repr` of the datetimes: a replay does not share the `tzinfo`
+   objects of the recorded run.
+1. **Known limit:** the slot job's probe reads through the cache outside the
+   lock. It can fill the cache between the clear and the dump, but only with two
+   slots of power sources that the history run reads over its whole window; the
+   cache merges them and the snapshot is the same (shown by a test).
+
+**Decided by:** the human (the three choices above); Lead Agent (the rest, not
+yet confirmed)

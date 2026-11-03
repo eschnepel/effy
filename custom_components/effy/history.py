@@ -147,7 +147,7 @@ import platform
 import sys
 import time
 from collections import deque
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Awaitable, Callable, Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -218,6 +218,7 @@ from .const import (
     DEFAULT_MAX_HISTORY_DAYS,
 )
 from .cache import Cache
+from .debug_export import ExportOutcome, ExportRecord
 from .effy_exports import EFFY_STANDBY_POWER_ENTITY_ID
 from .recorder_storage import RecorderStorage
 from .storage import Storage
@@ -385,6 +386,7 @@ class _PhaseTimings:
         self.unchanged_rows: int | None = None
         self.hourly_left: int | None = None
         self.cache_reads: tuple[int, int] | None = None
+        self.export_note: str | None = None
         self.stored_checks: dict[str, str] = {}
         self.detail = False
         self.environment = ""
@@ -426,6 +428,19 @@ class _PhaseTimings:
         """Reads served from the cache and reads that went to the recorder (TASK-0036)."""
         if self.enabled:
             self.cache_reads = (hits, misses)
+
+    def note_export(self, seconds: float, outcome: ExportOutcome | None, error: str = "") -> None:
+        """The debug export of this run (TASK-0037): where it went, how large, how long."""
+        if not self.enabled:
+            return
+        if outcome is None:
+            self.export_note = f", debug export failed after {seconds:.2f} s ({error})"
+            return
+        omitted = f", left out for size: {', '.join(outcome.omitted)}" if outcome.omitted else ""
+        self.export_note = (
+            f", debug export {outcome.size / 1024:.0f} KiB in {seconds:.2f} s"
+            f" -> {outcome.path}{omitted}"
+        )
 
     def note_hourly_left(self, rows: int) -> None:
         """Hourly rows left to the slot job's rewrite (TASK-0035); shown on the first line."""
@@ -611,6 +626,8 @@ class _PhaseTimings:
         if self.cache_reads is not None:
             hits, misses = self.cache_reads
             parts.append(f", reads from the cache {hits}, from the recorder {misses}")
+        if self.export_note is not None:
+            parts.append(self.export_note)
         if self.parse_probe:
             parts.append(
                 "; parse probe (one extra pass over all raw states, not part of compute):"
@@ -688,6 +705,14 @@ _NO_TIMINGS = _PhaseTimings("", logging.NOTSET, enabled=False)
 # times to. Set only by ``_PhaseTimings.write_call``, so the writer needs no new
 # parameter (the tests' fake writer keeps the old signature).
 _active_timings: ContextVar[_PhaseTimings] = ContextVar("effy_active_timings", default=_NO_TIMINGS)
+
+# The debug export's record of the run in progress (TASK-0037): the writer tells it what it
+# schedules, so the writer's signature stays as it is. ``None`` outside an exported run.
+_active_export: ContextVar[ExportRecord | None] = ContextVar("effy_active_export", default=None)
+
+# What the coordinator hands to a history run that is to be exported: it receives the
+# record, writes the file and says where.
+ExportHook = Callable[[ExportRecord], Awaitable[ExportOutcome]]
 
 # Fallback only used if the recorder instance somehow has no usable
 # keep_days value (should not normally happen) – matches HA's own default.
@@ -1646,6 +1671,7 @@ async def async_recalculate_history(
     entry_options: dict[str, Any],
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
     storage: Storage | None = None,
+    export: ExportHook | None = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     """
     Recalculate and overwrite effy statistics for up to max_history_days.
@@ -1706,16 +1732,42 @@ async def async_recalculate_history(
     Safe to omit (defaults to None, meaning always query the recorder
     when a lookback is actually needed) — callers without access to a
     coordinator (e.g. tests) don't need to provide one.
+
+    ``export``, if given, is the debug export (TASK-0037): once the run has written, it
+    is called with a record of what the cache does not hold (what the run took for "now",
+    the reading cache it started with, the rows the writer scheduled) and writes the
+    file. Its time and its outcome are part of the timing record; its failure is logged
+    and never changes the result of the run.
     """
     phases = _PhaseTimings("history", logging.INFO, parse_probe=True)
     storage = _storage_or_default(hass, storage, phases)
     storage.set_timing(phases)  # the recorder reads of this run, and only this run, are timed
+    record = ExportRecord() if export is not None else None
+    token = _active_export.set(record)
     try:
         return await _recalculate_history(
-            hass, entry_options, energy_reading_cache, storage, phases
+            hass, entry_options, energy_reading_cache, storage, phases, export, record
         )
     finally:
+        _active_export.reset(token)
         storage.set_timing(_NO_TIMINGS)
+
+
+async def _run_export(export: ExportHook, record: ExportRecord, phases: _PhaseTimings) -> None:
+    """Call the export hook; whatever it does, the recalculation's result is unchanged."""
+    began = _clock()
+    phases.enter(None)
+    try:
+        outcome = await export(record)
+    except Exception as err:  # never fails the recalculation (ADR-000 §8)
+        _LOGGER.warning(
+            "Effy: the debug export failed (%s: %s); the recalculation is not affected",
+            type(err).__name__,
+            err,
+        )
+        phases.note_export(_clock() - began, None, f"{type(err).__name__}: {err}")
+        return
+    phases.note_export(_clock() - began, outcome)
 
 
 async def _recalculate_history(
@@ -1724,11 +1776,16 @@ async def _recalculate_history(
     energy_reading_cache: dict[str, tuple[datetime, str]] | None,
     storage: Storage,
     phases: _PhaseTimings,
+    export: ExportHook | None = None,
+    record: ExportRecord | None = None,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
     phases.detail_on(_environment_summary(hass, max_days))
     end = datetime.now(tz=timezone.utc)
     start = end - timedelta(days=max_days)
+    if record is not None:
+        record.ran_at, record.window_start = end, start
+        record.note_reading_cache(energy_reading_cache)
     cache_before = _cache_counters(storage)
     short_term_retention_days = storage.retention_days()
     short_term_cutoff = end - timedelta(days=short_term_retention_days)
@@ -1831,6 +1888,14 @@ async def _recalculate_history(
     phases.note_unchanged(unchanged)
     phases.note_hourly_left(hourly_left)
     _note_cache_reads(phases, storage, cache_before)
+    if export is not None and record is not None:
+        record.result = {
+            "rows_written": short_term_written,
+            "recalculated_from": earliest.astimezone(timezone.utc).isoformat()
+            if earliest is not None
+            else None,
+        }
+        await _run_export(export, record, phases)
     phases.finish(short_term_written)
     return short_term_written, earliest, touched_entity_ids, last_values
 
@@ -3024,6 +3089,7 @@ async def _write_recorder_statistics(
     Returns the number of short-term (5-minute) rows scheduled for write.
     """
     phases = _active_timings.get()  # TASK-0010 patch 1; the disabled one outside a history run
+    export_record = _active_export.get()  # TASK-0037; ``None`` unless this run is exported
     timed = phases.detail
     began = _clock() if timed else 0.0
     instance = get_recorder(hass)
@@ -3060,6 +3126,8 @@ async def _write_recorder_statistics(
         if include_short_term and short_term_stats:
             instance.async_import_statistics(metadata, short_term_stats, StatisticsShortTerm)
             short_term_written += len(short_term_stats)
+            if export_record is not None:
+                export_record.note_written(statistic_id, unit, "5minute", short_term_stats)
 
         # ---- Long-term (hourly) – persists beyond the 10-day purge ----
         # `state` is the chronologically last 5-minute value within the
@@ -3081,6 +3149,8 @@ async def _write_recorder_statistics(
         if long_term_stats:
             instance.async_import_statistics(metadata, long_term_stats, Statistics)
             hourly_written += len(long_term_stats)
+            if export_record is not None:
+                export_record.note_written(statistic_id, unit, "hour", long_term_stats)
 
     # All async_import_statistics calls above only *scheduled* tasks on the
     # recorder's queue – wait for the recorder thread to actually process

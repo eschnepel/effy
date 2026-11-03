@@ -136,10 +136,14 @@ _storage_events: list[str] = []
 
 
 class _FakeStorage:
-    """What ``history.create_storage`` returns here: only the one call the coordinator makes."""
+    """What ``history.create_storage`` returns here: the calls the coordinator makes."""
 
     def clear(self) -> None:
         _storage_events.append("clear")
+
+    def snapshot(self) -> dict[str, Any]:
+        _storage_events.append("snapshot")
+        return {"version": 1, "raw": {}, "capacity": {}, "stats": {}, "anchors": [], "observed": {}}
 
 
 def _fake_create_storage(hass: Any, *, clock: Any, warn: Any = None) -> _FakeStorage:
@@ -192,6 +196,9 @@ async def _fake_async_probe_last_slot_ready(
 
 
 _history_full_calls: list[tuple[Any, Any, Any]] = []
+# The extra keywords (the debug export hook) of every history run, and what its export returned.
+_export_seen: list[dict[str, Any]] = []
+_export_outcomes: list[Any] = []
 _history_full_return_value: list[
     tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]
 ] = [(0, None, set(), {})]
@@ -202,12 +209,23 @@ async def _fake_async_recalculate_history(
     entry_options: Any,
     energy_reading_cache: Any = None,
     storage: Any = None,
+    **extra: Any,
 ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
     _storage_seen.append(("recalculate_history", storage))
     _history_full_calls.append((hass, entry_options, energy_reading_cache))
     _storage_events.append("history")
+    _export_seen.append(extra)
     if _job_hook[0] is not None:
         await _job_hook[0]("history")
+    export = extra.get("export")
+    if export is not None:
+        import effy.debug_export as debug_export
+
+        record = debug_export.ExportRecord()
+        record.ran_at = _ts(12, 0, 7)
+        record.window_start = _ts(0, 0)
+        record.result = {"rows_written": 0, "recalculated_from": None}
+        _export_outcomes.append(await export(record))
     return _history_full_return_value[0]
 
 
@@ -461,6 +479,7 @@ class _FakeEntry:
         self, input_ids: list[str], output_ids: list[str], bms_ids: list[str] | None = None
     ) -> None:
         self.options = role_options(input_ids, bms_ids or [], output_ids)
+        self.entry_id = "01HZXYENTRYID"
 
 
 class _FakeBus:
@@ -477,12 +496,27 @@ class _FakeBus:
         return _unsub
 
 
+class _FakeConfig:
+    def __init__(self) -> None:
+        self.directory = "."
+        self.time_zone = "Europe/Berlin"
+
+    def path(self, *parts: str) -> str:
+        import os
+
+        return os.path.join(self.directory, *parts)
+
+
 class _FakeHass:
     def __init__(self) -> None:
         self.bus = _FakeBus()
+        self.config = _FakeConfig()
 
     def async_create_task(self, coro: Any) -> asyncio.Task[Any]:
         return asyncio.ensure_future(coro)
+
+    async def async_add_executor_job(self, func: Callable[..., Any], *args: Any) -> Any:
+        return func(*args)
 
 
 class TestEffyCoordinatorShell:
@@ -863,6 +897,8 @@ def _reset_slot_job_fakes() -> None:
     _lock_probe[0] = None
     _history_calls.clear()
     _history_full_calls.clear()
+    _export_seen.clear()
+    _export_outcomes.clear()
     _probe_calls.clear()
     _probe_results[:] = [True]
     _probe_raise_next[0] = False
@@ -2591,6 +2627,115 @@ class TestTheCoordinatorOwnsOneStorage(_SlotCoordinatorBase):
         first = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"]))
         second = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"]))
         assert first._storage is not second._storage
+
+
+class TestTheDebugExportOfTheButton(_SlotCoordinatorBase):
+    """TASK-0037: with the option on, the button's history run is exported; the coordinator
+    owns the lock, the clean cache and the probe that must not fill it."""
+
+    def _exporting(self, tmp_path: Any, *, on: bool = True) -> EffyCoordinator:
+        coord = self._coordinator()
+        if on:
+            coord._entry.options["debug_export"] = True
+        coord._hass.config.directory = str(tmp_path)
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_without_the_option_nothing_is_exported_and_the_run_is_as_before(
+        self, tmp_path: Any
+    ) -> None:
+        coord = self._exporting(tmp_path, on=False)
+        await coord.async_recalculate_history_and_report()
+        assert _export_seen == [{}]  # not even the keyword
+        assert "snapshot" not in _storage_events
+        assert not (tmp_path / "effy_debug").exists()
+
+    @pytest.mark.asyncio
+    async def test_with_the_option_the_run_gets_a_hook_that_writes_the_file(
+        self, tmp_path: Any
+    ) -> None:
+        import effy.debug_export as debug_export
+
+        coord = self._exporting(tmp_path)
+        await coord.async_recalculate_history_and_report()
+        assert list(_export_seen[0]) == ["export"]
+        [outcome] = _export_outcomes
+        assert outcome.path.startswith(str(tmp_path / "effy_debug"))
+        assert outcome.path.endswith("-01HZXYEN.json.gz")
+        document = debug_export.loads(open(outcome.path, "rb").read())
+        assert document["config"] == coord._entry.options
+        assert document["cache"]["version"] == 1  # what the storage's snapshot() returned
+        assert document["meta"]["time_zone"] == "Europe/Berlin"
+        assert document["meta"]["effy_version"] == "unknown"  # no Home Assistant to ask here
+        assert _storage_events == ["clear", "history", "snapshot"]  # cleared first, dumped after
+
+    @pytest.mark.asyncio
+    async def test_the_cache_is_cleared_before_and_dumped_with_the_lock_held(
+        self, tmp_path: Any
+    ) -> None:
+        coord = self._exporting(tmp_path)
+        held: list[str] = []
+        original = coord._storage.snapshot
+
+        def snapshot() -> Any:
+            held.append(f"snapshot:{coord._recorder_job_lock().locked()}")
+            return original()
+
+        coord._storage.snapshot = snapshot
+        await coord.async_recalculate_history_and_report()
+        assert held == ["snapshot:True"]
+
+    @pytest.mark.asyncio
+    async def test_a_slot_job_running_first_makes_the_export_wait_for_the_lock(
+        self, tmp_path: Any
+    ) -> None:
+        coord = self._exporting(tmp_path)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+            if which == "recent":
+                started.set()
+                await release.wait()
+
+        _job_hook[0] = hook
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await started.wait()
+        press = asyncio.ensure_future(coord.async_recalculate_history_and_report())
+        await asyncio.sleep(0.01)
+        assert order == ["recent"] and "clear" not in _storage_events  # waiting, nothing cleared
+        release.set()
+        await asyncio.gather(press, coord._slot_job_task)  # type: ignore[arg-type]
+        assert order == ["recent", "history"]
+        assert _storage_events.index("clear") < _storage_events.index("history")
+        assert len(_export_outcomes) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failing_run_frees_the_lock_and_the_next_press_exports_again(
+        self, tmp_path: Any
+    ) -> None:
+        coord = self._exporting(tmp_path)
+
+        async def boom(which: str) -> None:
+            raise RuntimeError("recorder exploded")
+
+        _job_hook[0] = boom
+        with pytest.raises(RuntimeError):
+            await coord.async_recalculate_history_and_report()
+        assert not coord._recorder_job_lock().locked()
+        _job_hook[0] = None
+        await coord.async_recalculate_history_and_report()
+        assert len(_export_outcomes) == 1
+
+    @pytest.mark.asyncio
+    async def test_every_other_read_still_goes_through_the_cache(self, tmp_path: Any) -> None:
+        coord = self._exporting(tmp_path)
+        await coord.async_recalculate_history_and_report()
+        used = [s for name, s in _storage_seen]
+        assert used and all(s is coord._storage for s in used)
 
 
 class TestWhatTheHistoryButtonRebuilds(_BatteryBase):

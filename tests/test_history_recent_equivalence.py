@@ -93,6 +93,7 @@ def _load_history(
             "sensor_utils",
             "storage",
             "cache",
+            "debug_export",
             "recorder_storage",
             "history",
         )
@@ -139,6 +140,7 @@ def _load_history(
             "sensor_utils",
             "storage",
             "cache",
+            "debug_export",
             "recorder_storage",
             "history",
         ):

@@ -108,7 +108,10 @@ authoritative.
   `history.py` takes a `Storage` and cannot go around the cache. Fetches exactly
   what is asked; `clear()`, `snapshot()`, `from_snapshot()` (a replay is a cache
   over a storage that raises); the history button reads fresh. Justified by
-  replay (TASK-0037), not speed.
+  replay (TASK-0037), not speed. Amendment 2026-11-03 (TASK-0037): the debug
+  export, a gzip JSON file (`debug_export.py`, format version 1) written after
+  the button's history run when the option `debug_export` is on; replayed by
+  `tests/replay.py`.
 - The history button rebuilds the standby, efficiency and battery machines
   (standby first), each from a fresh state over
   `min(max_history_days, keep_days)`; each machine keeps `first_slot` and its

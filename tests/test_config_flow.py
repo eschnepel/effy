@@ -651,3 +651,40 @@ class TestTranslations:
                     "capacity_unit_not_energy",
                 ):
                     assert errors[error], (lang, section, error)
+
+
+class TestDebugExportOption:
+    """TASK-0037: 'write a debug export with every history recalculation', default off."""
+
+    def _form(self, step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return TestSchemaHasTheFourCounterPickers()._form(step, options)
+
+    def test_both_flows_offer_a_switch_that_is_off_by_default(self) -> None:
+        for step in ("user", "init"):
+            marker = _keys(self._form(step))[_const.CONF_DEBUG_EXPORT]
+            assert marker.required is False and marker.default is False, step
+            by_key = {m.schema: cfg for m, cfg in self._form(step)["data_schema"].schema.items()}
+            assert by_key[_const.CONF_DEBUG_EXPORT] == {"boolean": {}}
+
+    def test_the_options_flow_shows_the_saved_value(self) -> None:
+        options = {PV: ["sensor.pv"], CHARGE: "sensor.charge", _const.CONF_DEBUG_EXPORT: True}
+        assert _keys(self._form("init", options))[_const.CONF_DEBUG_EXPORT].default is True
+
+    def test_the_switch_is_saved_as_submitted(self) -> None:
+        flow = _config_flow.EffyOptionsFlow(type("Entry", (), {"options": {}})())
+        flow.hass = _hass_with_outputs()
+        saved = asyncio.run(
+            flow.async_step_init(
+                {PV: ["sensor.pv"], CHARGE: "sensor.charge", _const.CONF_DEBUG_EXPORT: True}
+            )
+        )
+        assert saved["type"] == "create_entry"
+        assert saved["data"][_const.CONF_DEBUG_EXPORT] is True
+
+    def test_en_and_de_name_it_in_both_flows(self) -> None:
+        import json
+
+        for lang in ("en", "de"):
+            data = json.loads((_base / "translations" / f"{lang}.json").read_text("utf-8"))
+            for section, step in (("config", "user"), ("options", "init")):
+                assert data[section]["step"][step]["data"][_const.CONF_DEBUG_EXPORT], (lang, step)

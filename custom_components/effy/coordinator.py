@@ -112,9 +112,11 @@ waits, it is not skipped (human decision 2026-10-16, as Shady's
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -131,6 +133,8 @@ from .calculation import (
     run_state_from_restore,
     valley_state_from_restore,
 )
+from .const import CONF_DEBUG_EXPORT, DOMAIN
+from .debug_export import DIRECTORY, ExportOutcome, ExportRecord, export_to_file
 from .inputs import (
     all_input_ids,
     battery_hysteresis,
@@ -954,11 +958,17 @@ class EffyCoordinator:
             # an edit of the recorder's history or a changed unit. What this run reads
             # then fills the cache for the slot jobs that follow.
             self._storage.clear()
+            # With the debug export on, the cache of this run is the export (TASK-0037):
+            # the lock keeps other recalculations out.
+            export = None
+            if self._entry.options.get(CONF_DEBUG_EXPORT):
+                export = self._debug_export_hook()
             written, recalculated_from, touched, last_values = await async_recalculate_history(
                 self._hass,
                 self._entry.options,
                 energy_reading_cache=self.last_valid_energy_readings,
                 storage=self._storage,
+                **({"export": export} if export is not None else {}),
             )
             if touched:
                 self.notify_updated(touched, last_values)
@@ -973,6 +983,53 @@ class EffyCoordinator:
             if recalculated_from is not None:
                 self.set_recalculated_from(recalculated_from)
             return written
+
+    def _debug_export_hook(self) -> Callable[[ExportRecord], Awaitable[ExportOutcome]]:
+        """What the history run calls once it has written (TASK-0037).
+
+        Runs with the recorder-job lock held. The snapshot of the cache is taken here, on
+        the event loop, with no ``await`` between the end of the run and the copy; the
+        encoding, the writing and the pruning of old files run in an executor.
+        """
+
+        async def export(record: ExportRecord) -> ExportOutcome:
+            cache = self._storage.snapshot()
+            meta = await self._export_meta()
+            config = copy.deepcopy(dict(self._entry.options))
+            directory = self._hass.config.path(DIRECTORY)
+            outcome: ExportOutcome = await self._hass.async_add_executor_job(
+                partial(
+                    export_to_file,
+                    directory,
+                    self._entry.entry_id,
+                    record,
+                    config=config,
+                    cache=cache,
+                    meta=meta,
+                )
+            )
+            return outcome
+
+        return export
+
+    async def _export_meta(self) -> dict[str, Any]:
+        """The ``meta`` section: versions, the time zone and when the file was written."""
+        effy_version = ha_version = "unknown"
+        try:
+            from homeassistant.const import __version__ as ha_version_string
+            from homeassistant.loader import async_get_integration
+
+            ha_version = str(ha_version_string)
+            integration = await async_get_integration(self._hass, DOMAIN)
+            effy_version = str(integration.version)
+        except Exception:  # a version that cannot be read is no reason to lose the export
+            _LOGGER.debug("Effy: a version for the debug export is unknown", exc_info=True)
+        return {
+            "effy_version": effy_version,
+            "ha_version": ha_version,
+            "time_zone": str(getattr(getattr(self._hass, "config", None), "time_zone", "unknown")),
+            "written_at": self._now().isoformat(),
+        }
 
     async def _async_rebuild_standby(self) -> None:
         """Reset the standby machine and replay it over the history window (ADR-018).

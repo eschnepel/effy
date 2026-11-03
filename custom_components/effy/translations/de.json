@@ -15,7 +15,8 @@
           "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
           "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
           "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
-          "max_history_days": "Maximale Historie (Tage)"
+          "max_history_days": "Maximale Historie (Tage)",
+          "debug_export": "Bei jeder Historien-Neuberechnung einen Debug-Export schreiben (Datei in effy_debug, für einen Fehlerbericht)"
         }
       }
     },
@@ -42,7 +43,8 @@
           "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
           "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
           "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
-          "max_history_days": "Maximale Historie (Tage)"
+          "max_history_days": "Maximale Historie (Tage)",
+          "debug_export": "Bei jeder Historien-Neuberechnung einen Debug-Export schreiben (Datei in effy_debug, für einen Fehlerbericht)"
         },
         "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese."
       }

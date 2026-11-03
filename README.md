@@ -567,6 +567,36 @@ Effy's own stored rows and the units are never reused; they are read every time.
 The first line of the history timing record ends with
 `reads from the cache N, from the recorder M`.
 
+### Debug export
+
+When Effy's numbers look wrong, the cause is usually in what the recorder
+returned for the window. The **debug export** writes that, together with Effy's
+configuration, into one file at every press of **Re-calculate History**, so the
+recalculation can be run again on another machine, with no Home Assistant.
+
+- **Switch on:** Effy's options, *Write a debug export with every history
+  recalculation*. It is off by default; the entry reloads when you change it.
+  Only the button's (and the service's) history recalculation is exported, not
+  the 5-minute job.
+- **Where:**
+  `<config>/effy_debug/effy-export-<UTC time of the run>-<entry>.json.gz`. The
+  newest 5 per entry are kept. The recalculation's log line (logger
+  `custom_components.effy.history`) ends with the path, the size and the time it
+  took: `debug export 812 KiB in 0.40 s -> /config/effy_debug/...`. If a part
+  would pass 50 MiB it is left out and the line says which.
+- **What is in it:** the options of the entry (entity ids and numbers), the
+  readings of your configured sources over the history window with their times,
+  the units, Effy's own statistics ids and the rows the run wrote. No secrets or
+  credentials. **Read it before you share it**: it names your entities and shows
+  your consumption. To hide the names, replace them with other names
+  consistently in the whole file; the replay does not care what they are.
+- **Replay:** `tests/replay.py` in the repository. `debug_export.loads(bytes)`
+  reads the file (and refuses another format version or a damaged file), then
+  `replay(document, monkeypatch)` runs the real recalculation over it, in a
+  test, and `assert_same(...)` compares the rows with those the file says were
+  written. A read the file does not contain fails instead of being answered from
+  elsewhere, so a changed read pattern shows up.
+
 ### State-class handling during history recalculation
 
 | Source state class | Field read | Wh→W conversion | Written as |

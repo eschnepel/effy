@@ -1,8 +1,8 @@
 # Task: A debug export for the history recalculation button
 
-- **Status:** todo — two stages: **Stage 1 evaluation** (the choices below, no
-  file under `custom_components/` changes), then **Stage 2 build** (human
-  request 2026-10-31)
+- **Status:** review (2026-11-03) — Stage 1 done with the human's three choices,
+  Stage 2 built; the human's run on the Pi is outstanding (human request
+  2026-10-31)
 - **Capability:** CAP-11
 - **Related ADRs:** \[ADR-025 (Draft, the recorder-read cache of TASK-0036),
   ADR-012 (the button and `sensor.effy_recalculated_from`), ADR-021 (what Effy
@@ -215,8 +215,257 @@ ADR-025 for the file format (Stage 1 says which).
 
 ## Findings
 
-<!-- Filled by the worker: Stage 1's report and decisions. -->
+### Stage 1 — the report (2026-11-03)
+
+**Where it hooks in.** `EffyCoordinator.async_recalculate_history_and_report`
+(the button's and the service's one path) already takes `_recorder_job_lock()`
+and calls `self._storage.clear()` under it. With the option on it also hands
+`async_recalculate_history` an `export` hook. The hook is called by the run
+itself, after its last write and before its timing line is logged, so: lock held
+→ `clear()` → run (every read through the cache) → `snapshot()` on the event
+loop with **no `await` between the end of the run and the copy** → the encoding,
+the write and the pruning in an executor job → the lock is released. The slot
+job's body and the other recalculations wait for the lock for the whole of it.
+The standby, efficiency and battery rebuilds that follow the run in the
+coordinator are **not** in the file (they read Effy's own statistics, not the
+sources); the file is the history recalculation.
+
+**One reader is outside the lock.** `async_probe_last_slot_ready` (the probe at
+the start of a slot job) reads through the cache without the lock. It can fill
+the cache between the clear and the dump. It reads two slots of the power
+sources, which the history run reads over the whole window anyway, and the cache
+merges both into one span, so the snapshot is the same; a test shows it
+(`TestTheSlotJobsProbeDoesNotChangeWhatTheFileHolds`). It was considered to give
+the probe a storage without memory during an export; not done: more code for a
+read that cannot change the file.
+
+**A failing run, a failing export.** The hook is called only when the run has
+written. A recalculation that raises produces no file (nothing partial: the file
+is written to `name.tmp` and renamed). A hook that raises is caught in
+`history._run_export`, logged once with the reason (`WARNING`), shown in the
+timing line (`debug export failed after … s (reason)`), and changes nothing of
+the run's result; `snapshot()` only reads, so the cache is as usable as after
+any run. A cancellation is not swallowed.
+
+**How it is switched on** (human decision 2026-11-03: **A**).
+
+| Option | Cost |  |
+| -- | -- | -- |
+| A. Entry option "write a debug export with every history recalculation", default off | one field in the config and options flow (en, de); the entry reloads when it changes, which empties the cache (harmless: the next press empties it anyway) | **chosen** |
+| B. A second button | a second entity for a diagnostic; two buttons to explain | not chosen |
+| C. A service parameter | no entity, but the human presses a button, not a service; the file name cannot be asked for | not chosen |
+| D. Always | a file per press, about 4 MB (below) each; rejected on its face | rejected |
+
+How it records: **clear, run, write the snapshot** (the human's idea). The
+recording decorator was not built: it needs no clean cache, but keeps every
+overlapping read twice, and the clean cache is exact (TASK-0036's test shows the
+snapshot equals the set of reads).
+
+**Content.** `format_version` 1, then:
+
+| Section | Needed to replay because | Default | Size on the Pi (estimate) |
+| -- | -- | -- | -- |
+| `meta` | Effy and Home Assistant versions, time zone, written_at, `omitted`, `max_bytes`, `section_bytes` | in | under 1 KB |
+| `config` | the entry's options: the roles, `max_history_days`, SoC and capacity, the hysteresis | in | under 1 KB |
+| `inputs` | `ran_at` (what the run took for "now": the clock), `window_start`, and the volatile last-valid-reading cache of ADR-015 as it was **before** the run (it decides whether an anchor is read from the recorder) | in | under 1 KB |
+| `result` | rows written and `recalculated_from`, what the replay must return | in | under 1 KB |
+| `cache` | `Cache.snapshot()`: raw states, statistics rows, anchors, capacity states, and the *observed* kinds: the units, state classes, retention, statistics units, and the **stored rows that decided what was written** (ADR-024) | in | the 4,804 raw states are about 0.5 MB as JSON; 28 days of one power source about 0.7 MB |
+| `written` | the rows the writer scheduled, per statistic and table (`5minute`, `hour`), the expected result of the replay | in | the first press after a change of settings: all rows, about 2.6 MB for 5 series; a repeated press writes only the changed rows (ADR-024), so almost nothing |
+
+Estimates from row counts and 60 to 100 bytes per JSON row, **not measured on
+the Pi**; gzip typically takes a fifth to a tenth of it. The bound is 50 MiB of
+uncompressed JSON; a section that would exceed it is left out whole (the cache
+first kept, then `written`), named in `meta.omitted` and in the log, never cut.
+A file without `cache` cannot be replayed and says so.
+
+**Format.** JSON, gzip (`.json.gz`), compact separators, written by the pure
+`debug_export.py` (no `hass`). Datetimes are ISO 8601 in UTC with the offset,
+microseconds kept; states are the strings the recorder returned (`unavailable`,
+`unknown` too), never parsed. A sample (shortened):
+
+```json
+{
+  "format_version": 1,
+  "meta": {
+    "effy_version": "1.0.0",
+    "ha_version": "2026.10.4",
+    "time_zone": "Europe/Berlin",
+    "written_at": "2026-11-03T12:00:09.100000+00:00",
+    "omitted": [],
+    "max_bytes": 52428800,
+    "section_bytes": {
+      "config": 310,
+      "inputs": 120,
+      "result": 60,
+      "cache": 812345,
+      "written": 2650000
+    }
+  },
+  "config": {
+    "pv_input_sensors": [
+      "sensor.pv"
+    ],
+    "charge_sensor": "sensor.charge",
+    "max_history_days": 28
+  },
+  "inputs": {
+    "ran_at": "2026-11-03T12:00:07.123456+00:00",
+    "window_start": "2026-10-06T12:00:07.123456+00:00",
+    "energy_reading_cache": {
+      "sensor.pv": [
+        "2026-11-03T11:55:00+00:00",
+        "100.5"
+      ]
+    }
+  },
+  "result": {
+    "rows_written": 24192,
+    "recalculated_from": "2026-10-06T12:00:00+00:00"
+  },
+  "cache": {
+    "version": 1,
+    "raw": {
+      "sensor.pv": {
+        "lo": "\u2026",
+        "obtained": "\u2026",
+        "base": [
+          "100.0"
+        ],
+        "events": [
+          [
+            "2026-11-03T11:50:12+00:00",
+            "100.4"
+          ]
+        ]
+      }
+    },
+    "capacity": {},
+    "stats": {},
+    "anchors": [],
+    "observed": {
+      "units": {
+        "sensor.pv": "kWh"
+      },
+      "retention_days": 10,
+      "\u2026": "\u2026"
+    }
+  },
+  "written": [
+    {
+      "statistic_id": "sensor.effy_pv",
+      "unit": "W",
+      "table": "5minute",
+      "rows": [
+        {
+          "start": "2026-11-03T11:50:00+00:00",
+          "mean": 412.5,
+          "state": 412.5
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Where.**
+`<config>/effy_debug/effy-export-<UTC time of the run>-<8 characters of the entry id>.json.gz`,
+written to `name.tmp` and renamed. The newest 5 per entry are kept
+(`KEEP_FILES`); only names of exactly this shape are ever removed, other files
+in the directory and other entries' exports are left alone; a file that cannot
+be removed is a warning. The log line (part of the timing record) names the
+path, the size and the time. Nothing is served over HTTP: the human fetches the
+file with the file editor, Samba or SSH. The write runs in an executor job (the
+snapshot is a copy made on the loop, so the job shares nothing with it).
+
+**Privacy.** The file contains entity ids, the energy and power readings of the
+configured sources with their times, the configuration and Effy's own statistics
+ids; no secrets or credentials (it never touches the config entry's `data`). The
+human reads it before sharing it. **Pseudonymized entity ids: not built** (human
+decision 2026-11-03: never). Whoever shares a file can replace the ids by hand
+in the JSON, consistently, and the replay still works, since it never looks at
+the names.
+
+**The replay.** `tests/replay.py`: `debug_export.loads(bytes)` (refuses a
+foreign format version, a damaged file, a missing section; the message names the
+version), then `replay(document, monkeypatch)`: the clock frozen at
+`inputs.ran_at`, a fresh in-memory recorder,
+`Cache.from_snapshot(document["cache"], RaisingStorage())` so that a read the
+file does not contain fails (`UnrecordedRead`), the reading cache from `inputs`,
+and the **real** `async_recalculate_history` and the real writer over it;
+`assert_same` compares the rows written with `written` (the same keys exactly,
+values within ADR-022's `rel=1e-9, abs=1e-9`) and the result. The in-memory
+world of the existing tests (`_World`) is not needed: the file is the world. To
+change the way rows are looked up, a datetime's `repr` in the key of the
+stored-rows record had to go: `Cache._rows_key` now uses instants
+(`timestamp()`), because the `tzinfo` of a recorded run need not be the one a
+replay builds.
+
+**The slot job** gets no export (human decision 2026-11-03: button only).
+
+**Decisions made here** (beyond the human's three): file format JSON+gzip, bound
+50 MiB, 5 files per entry, the directory `effy_debug`, the key `format_version`
+(the literal `schema_version` belongs to `effy_exports.py`), the export taken
+after the history run and before the rebuilds, the amendment to ADR-025 rather
+than a new ADR.
+
+### Stage 2 — built (2026-11-03)
+
+- `custom_components/effy/debug_export.py` (new, pure): `ExportRecord`,
+  `encode`, `loads`, `export_to_file`, `file_name`, `files_to_remove`,
+  `ExportError`, `ExportOutcome`.
+- `history.py`: the `export` keyword of `async_recalculate_history`,
+  `_run_export`, the `_active_export` record the writer fills, `note_export` in
+  the timing line.
+- `cache.py`: the stored-rows key by instants.
+- `coordinator.py`: `_debug_export_hook`, `_export_meta`, the option check under
+  the lock. `const.py`, `config_flow.py`, `translations/en.json`, `de.json`: the
+  option `debug_export`.
+- `tests/replay.py`, `tests/test_debug_export.py` (new), additions to
+  `tests/test_coordinator_slot.py` and `tests/test_config_flow.py`.
+- README "Debug export", GLOSSARY (*Debug export*, *Replay*), ADR-025 amendment.
+
+**Deviations from the acceptance text, and why.**
+
+1. *The capacity entity is not in the round trip of a history run.* The history
+   recalculation does not read it (the battery rebuild, which follows it, does).
+   Its states are proven to survive the file (snapshot, file, `from_snapshot`,
+   equal reads); a replay of the battery rebuild is a follow-up if the human
+   wants the export to cover the rebuilds.
+1. *The tests were written together with the code, not shown failing first*; the
+   mutants below stand in, as in TASK-0036.
+1. *No measurement on the Pi*: the sizes are estimates.
+
+**Mutants tried and killed:** a section emptied (`inputs`: 10 tests failed);
+datetimes written without their offset (10); a raw read around the cache (7, in
+this task's and TASK-0036's tests); the reading cache not recorded, the hourly
+rows not noted by the writer, and the `try` of the export hook narrowed so a
+failure propagates (tried together: 7 tests failed, each of the three named by
+its own test); the pruning loosened to any name with the prefix (2); the option
+ignored by the coordinator (4). The whole suite has 1582 tests; `ruff`, `mypy`
+pass; `mdformat` was run over the changed Markdown.
+
+**Open for the human.** Switch the option on, press the button once, send the
+log line (path, size, time) and the file's size; replay it on another machine
+(README "Debug export"). Confirm the amendment of ADR-025 and the deviations.
 
 ## Delivered Artifacts
 
-<!-- Filled by the worker after Stage 2. -->
+- `custom_components/effy/debug_export.py` → `ExportRecord`, `ExportOutcome`,
+  `ExportError`, `encode`, `loads`, `export_to_file`, `file_name`,
+  `files_to_remove`, `entry_tag`, `SCHEMA_VERSION` (the value of
+  `format_version`), `DIRECTORY`, `KEEP_FILES`, `MAX_BYTES`
+- `custom_components/effy/history.py` → the `export` keyword of
+  `async_recalculate_history`, `ExportHook`, `_run_export`, `_active_export`,
+  `_PhaseTimings.note_export`
+- `custom_components/effy/cache.py` → `Cache._rows_key` by instants
+- `custom_components/effy/coordinator.py` →
+  `EffyCoordinator._debug_export_hook`, `_export_meta`; `const.py` →
+  `CONF_DEBUG_EXPORT`; `config_flow.py`, `translations/en.json`, `de.json` → the
+  option
+- `tests/replay.py` → `replay`, `assert_same`, `written_rows`, `debug_export`
+  (the module loaded by path); `tests/test_debug_export.py`;
+  `TestTheDebugExportOfTheButton` in `tests/test_coordinator_slot.py`;
+  `TestDebugExportOption` in `tests/test_config_flow.py`
+- `README.md` (Debug export), `GLOSSARY.md` (Debug export, Replay), `adr/025`
+  (Amendment 2026-11-03)
+- External dependencies added: none (`json`, `gzip`)
