@@ -198,9 +198,9 @@ class TestRawStatesEqualTheStorage:
         got = await task
         assert got == storage.direct_raw(ENTITY, _sec(T0, 0), _sec(T0, 1200))
         assert (_sec(T0, 500) + timedelta(milliseconds=500), "9.99") in got
-        assert any(row[1] == "9.99" for row in cache.snapshot()["raw"][ENTITY]["events"]), (
-            "the cleared cache was refilled from a stale span"
-        )
+        assert any(
+            row[1] == "9.99" for row in cache.snapshot()["raw"][ENTITY]["events"]
+        ), "the cleared cache was refilled from a stale span"
 
     @pytest.mark.asyncio
     async def test_no_start_state_when_the_recorder_holds_nothing_that_old(self) -> None:
