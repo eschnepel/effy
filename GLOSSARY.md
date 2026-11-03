@@ -251,6 +251,12 @@ the last-valid-reading cache of ADR-015. _Avoid_: Buffer
 it holds afterwards is exactly what that recalculation read. _Avoid_: Fresh
 cache
 
+**First processed slot**: The first slot a standby, efficiency or battery
+machine took since its state began (a first start or a reset such as the history
+button's rebuild); kept across restarts and shown as `first_processed_slot`.
+With `last_processed_slot` it tells what the estimate can contain. _Avoid_:
+Start slot
+
 **Recalculation phase**: One of the three parts of a recalculation: *fetch*
 (reading raw states and statistics from the recorder), *compute* (the slot
 values, on the event loop unless ADR-022 moves it), *write* (importing the

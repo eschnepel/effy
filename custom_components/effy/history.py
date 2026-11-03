@@ -2249,6 +2249,7 @@ async def async_update_standby(
     state: DrainState,
     now: datetime,
     storage: Storage | None = None,
+    window: timedelta | None = None,
 ) -> DrainState:
     """Feed the standby machine every slot that completed since it last ran (ADR-018 §3, §5).
 
@@ -2260,6 +2261,11 @@ async def async_update_standby(
     STANDBY_REPLAY_MAX back, and feeds the same peaks and slots live operation
     would have seen; ``state.suppress_until`` keeps what the restored estimate
     already holds from counting twice. The open slot is never fed.
+
+    ``window`` is the history button's rebuild (ADR-018 Amendment 2026-11-01): a fresh
+    state is fed from ``window`` before the last completed slot, the way
+    ``async_rebuild_efficiency`` does, instead of from the restart replay's start, and
+    nothing is suppressed because nothing was restored.
     """
     if not bms_input_ids(entry_options):
         return state  # the sensor only exists with a BMS input (ADR-018 D4)
@@ -2270,12 +2276,15 @@ async def async_update_standby(
     if state.last_slot is not None:
         first = state.last_slot + slot_width
     else:
-        anchor = state.suppress_until if state.suppress_until is not None else last
-        first = max(anchor - DRAIN_LOOKBACK, last - STANDBY_REPLAY_MAX)
+        if window is not None:
+            first = last - window
+        else:
+            anchor = state.suppress_until if state.suppress_until is not None else last
+            first = max(anchor - DRAIN_LOOKBACK, last - STANDBY_REPLAY_MAX)
         first = datetime.fromtimestamp(
             first.timestamp() - (first.timestamp() % slot_seconds), tz=timezone.utc
         )
-    first = max(first, last - STANDBY_REPLAY_MAX)
+    first = max(first, last - (window if window is not None else STANDBY_REPLAY_MAX))
     if first > last:
         return state
     slots: list[datetime] = []
@@ -2469,6 +2478,27 @@ async def async_update_efficiency(
             )
         )
     return run_feed(state, slots, roles, now)
+
+
+async def async_rebuild_standby(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    now: datetime,
+    storage: Storage | None = None,
+) -> DrainState:
+    """The standby machine as a history recalculation would leave it (ADR-018 Amendment).
+
+    Called by the history button after the statistics were rewritten, with the
+    recalculation lock held: a fresh machine replays the whole rebuild window (the
+    same ``min(max_history_days, keep_days)`` the efficiency rebuild uses), so what it
+    counts is what the rewritten statistics and the recorded counters say now. It is not
+    the restart replay: nothing is restored, so nothing is suppressed.
+    """
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    window = efficiency_rebuild_window(entry_options, storage.retention_days())
+    return await async_update_standby(
+        hass, entry_options, DrainState(), now, storage=storage, window=window
+    )
 
 
 def efficiency_rebuild_window(entry_options: dict[str, Any], keep_days: int) -> timedelta:

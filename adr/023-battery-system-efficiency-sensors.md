@@ -353,3 +353,16 @@ minimum of 15 for the hysteresis; half-slot boundaries for the span sums
    live state, takes the dump with the later `last_slot` when two sensors
    restore, and the first slot job after that catches up at most 3 days. The
    valley machine decides for itself in TASK-0025.
+
+## Amendment — 2026-11-01
+
+**Reason:** The human asked for an attribute that shows the first evaluated slot
+of each machine (see ADR-018 Amendment 2026-11-01).
+
+**Decision (human):** the charge, discharge and battery efficiency sensors show
+`first_processed_slot`, the first slot their machine took since its state began
+(kept across restarts); the roundtrip sensor shows the later of the run and
+battery machines' first slots. The history button now also rebuilds the standby
+machine, before this rebuild.
+
+**Decided by:** human (2026-11-01)

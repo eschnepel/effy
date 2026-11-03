@@ -1001,6 +1001,7 @@ class EffyStandbyPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
             "last_drain_interval_end": drain.last_end.isoformat() if drain.last_end else None,
             "drain_source": drain.last_source,
             "counted_intervals": drain.count,
+            "first_processed_slot": drain.first_slot.isoformat() if drain.first_slot else None,
             "last_processed_slot": processed.isoformat() if processed else None,
         }
 
@@ -1161,6 +1162,9 @@ class EffyEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
             "last_counted_end": estimate.last_end.isoformat() if estimate.last_end else None,
             "counted_kwh": round(estimate.counted_kwh, 3),
             "counted_runs": estimate.counted_runs,
+            "first_processed_slot": self._machine.first_slot.isoformat()
+            if self._machine.first_slot
+            else None,
             "last_processed_slot": processed.isoformat() if processed else None,
         }
 
@@ -1289,6 +1293,9 @@ class EffyBatteryEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[
             else None,
             "counted_kwh": round(estimate.counted_kwh, 3),
             "counted_runs": estimate.counted_spans,
+            "first_processed_slot": self._machine.first_slot.isoformat()
+            if self._machine.first_slot
+            else None,
             "last_processed_slot": self._machine.last_slot.isoformat()
             if self._machine.last_slot
             else None,
@@ -1420,6 +1427,11 @@ class EffyRoundtripEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignor
             return None
         charge, battery_value, discharge = values
         estimate = battery.estimate
+        firsts = [
+            m.first_slot
+            for m in (self._run_machine, battery)
+            if m is not None and m.first_slot is not None
+        ]
         return {
             "last_counted_value": round(charge * battery_value * discharge / 10000.0, 1),
             "last_counted_end": estimate.last_span_end.isoformat()
@@ -1427,6 +1439,8 @@ class EffyRoundtripEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignor
             else None,
             "counted_kwh": round(estimate.counted_kwh, 3),
             "counted_runs": estimate.counted_spans,
+            # the product is only complete from the later of the two machines' first slots
+            "first_processed_slot": max(firsts).isoformat() if len(firsts) == 2 else None,
             "last_processed_slot": battery.last_slot.isoformat() if battery.last_slot else None,
         }
 

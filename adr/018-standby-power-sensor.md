@@ -250,3 +250,40 @@ inputs that share the standby.
 None. Decided by the human on 2026-10-13: the resolution is learned (D1), a
 drain peak is exactly one step (D2), the 125 min validation delay stays (D3),
 the sensor exists only if at least one BMS input is configured (D4).
+
+## Amendment — 2026-11-01
+
+**Reason:** The human (2026-11-01), asked what the history button rebuilds:
+*"Standby should be included in button recalc."* Until now the button replayed
+the efficiency and battery machines (ADR-023 decision 9) and left the standby
+machine alone; it was fed by the slot job and replayed only at a restart (24
+hours back for a fresh state, at most 3 days for a restored one). The human also
+reported that all three sensors show at most 3 counted runs or intervals, and
+asked for an attribute that shows the first evaluated slot so that what a replay
+covers can be validated.
+
+**Decision (human):**
+
+1. The history button also rebuilds the standby machine, **before** the
+   efficiency rebuild, with the recalculation lock held: a fresh `DrainState`
+   replays the same window as the efficiency rebuild,
+   `min(max_history_days, recorder keep_days)` (`async_rebuild_standby`).
+   Nothing is restored, so nothing is suppressed. It is not the restart replay,
+   which is unchanged. A failure is logged and the old state stays.
+1. `DrainState`, the efficiency `RunState` and the battery `ValleyState` carry
+   `first_slot`, the first slot the machine took since its state began; it is
+   set once, kept through gaps and replays, saved and restored (data saved
+   before the field existed restores without it). The standby, charge and
+   discharge efficiency and battery sensors show it as `first_processed_slot`;
+   the roundtrip sensor shows the later of its two machines' first slots.
+1. The rebuild does not rewrite the sensor's past: Effy writes no statistics for
+   it, and the efficiency replay still reads the **recorded** standby statistic
+   of each slot (ADR-023 decision 3).
+
+**Consequence to confirm:** a rebuild starts from a fresh state, so an estimate
+learned over months is replaced by the one the window gives, and if the window
+holds no counted interval the sensor is unavailable until one counts, and the
+efficiency sensors, which wait for a standby value, with it. The efficiency
+rebuild already behaves like this.
+
+**Decided by:** human (2026-11-01)

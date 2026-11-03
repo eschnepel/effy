@@ -12,6 +12,7 @@ under test is the *standby* power, the only loss in these worlds.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -705,3 +706,55 @@ class TestFeedAndRestore:
         discharge, end = _night(hours=10)
         replayed = _feed_all({"discharge": discharge}, T0, end)
         assert replayed.suppress_until is None and replayed.count >= 5
+
+
+class TestFirstSlot:
+    """``first_slot`` is where the machine began; the attribute that shows what a replay covered."""
+
+    def test_it_is_the_first_slot_fed_and_stays_there(self) -> None:
+        activity: Activity = {_at(1, m): frozenset() for m in range(0, 30, 5)}
+        slots = [_at(1, m) for m in range(0, 30, 5)]
+        state = drain_feed(DrainState(), [], slots[:1], activity)
+        assert state.first_slot == _at(1, 0)
+        assert drain_feed(state, [], slots, activity).first_slot == _at(1, 0)
+        assert drain_feed(DrainState(), [], slots, activity).first_slot == _at(1, 0)
+
+    def test_a_feed_without_a_completed_slot_sets_nothing(self) -> None:
+        assert drain_feed(DrainState(), [], [], {}).first_slot is None
+
+    def test_it_is_saved_and_restored(self) -> None:
+        activity: Activity = {_at(1, m): frozenset() for m in range(0, 15, 5)}
+        state = drain_feed(
+            DrainState(estimate=10.0, count=2), [], [_at(1, m) for m in range(0, 15, 5)], activity
+        )
+        data = json.loads(json.dumps(drain_restore_data(state)))
+        assert data["first_slot"] == _at(1, 0).isoformat()
+        restored = drain_state_from_restore(data)
+        assert restored is not None and restored.first_slot == _at(1, 0)
+
+    def test_a_restart_replay_keeps_the_original_first_slot(self) -> None:
+        """The replay feeds earlier slots again; what the estimate contains began earlier."""
+        activity: Activity = {_at(3, m): frozenset() for m in range(0, 30, 5)}
+        restored = drain_state_from_restore(
+            {
+                "estimate": 10.0,
+                "count": 2,
+                "last_slot": _at(3, 10).isoformat(),
+                "first_slot": _at(1, 0).isoformat(),
+                "resolution": {},
+            }
+        )
+        assert restored is not None
+        replayed = drain_feed(restored, [], [_at(3, m) for m in range(0, 30, 5)], activity)
+        assert replayed.first_slot == _at(1, 0)
+
+    def test_data_saved_before_the_field_existed_restores_without_it(self) -> None:
+        restored = drain_state_from_restore(
+            {
+                "estimate": 10.0,
+                "count": 2,
+                "last_slot": _at(3, 10).isoformat(),
+                "resolution": {},
+            }
+        )
+        assert restored is not None and restored.first_slot is None

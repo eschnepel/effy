@@ -492,3 +492,35 @@ class TestTheSimulatedBattery:
         # the machine ignores them: its estimate is on the true value although the mixed
         # slots charge at three times the grid import (a ratio of 3)
         assert feed(slots).charge.value == pytest.approx(0.95, abs=0.005)
+
+
+class TestFirstSlot:
+    """``first_slot`` is where the machine began; the attribute that shows what a replay covered."""
+
+    def test_it_is_the_first_slot_the_machine_takes(self) -> None:
+        state = feed([idle_slot(7)])
+        assert state.first_slot == when(7) == state.last_slot
+
+    def test_nothing_moves_it_afterwards(self) -> None:
+        slots = [idle_slot(0), *[charge_slot(i) for i in range(1, 6)]]
+        assert feed(slots).first_slot == when(0)
+        assert feed([idle_slot(0), charge_slot(40)]).first_slot == when(0)  # a gap ends the run
+
+    def test_a_slot_already_taken_or_older_does_not_set_it(self) -> None:
+        state = feed([idle_slot(5)])
+        assert run_step(state, idle_slot(5), ROLES) is state
+        assert run_step(state, idle_slot(2), ROLES).first_slot == when(5)
+
+    def test_it_is_saved_and_restored(self) -> None:
+        state = TestRestore()._state()
+        data = json.loads(json.dumps(run_restore_data(state)))
+        assert data["first_slot"] == when(0).isoformat()
+        restored = run_state_from_restore(data)
+        assert restored is not None and restored.first_slot == when(0)
+
+    def test_data_saved_before_the_field_existed_restores_without_it(self) -> None:
+        data = json.loads(json.dumps(run_restore_data(TestRestore()._state())))
+        del data["first_slot"]
+        restored = run_state_from_restore(data)
+        assert restored is not None and restored.first_slot is None
+        assert feed([idle_slot(40)], restored).first_slot == when(40)  # the next slot sets it

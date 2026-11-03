@@ -167,15 +167,25 @@ works too: an isolated reading above 0 is a jump, two consecutive readings above
 The sensor is **unavailable** (not unknown, and never an invented default) until
 the first interval has counted. It is rounded to 0.1 W and has these attributes:
 `last_counted_value`, `last_drain_interval_end`, `drain_source`,
-`counted_intervals` and `last_processed_slot`.
+`counted_intervals`, `first_processed_slot` and `last_processed_slot`.
 
 After a restart the estimate and its counters come back from Home Assistant's
 restored state; Effy then replays the last 24 hours of BMS jumps and slot
 statistics inside its first slot job (it never blocks Home Assistant's startup),
 which gives the same result as uninterrupted operation. A downtime longer than 3
-days loses the intervals that would have been confirmed in the gap. If your BMS
-reports in a unit that jumps rarely (hours between jumps), the estimate is slow
-to appear.
+days loses the intervals that would have been confirmed in the gap.
+
+`first_processed_slot` is the first slot the estimate was evaluated from since
+it began, and it is kept across restarts; with `last_processed_slot` it tells
+what the estimate can contain. The **Re-calculate History** button resets the
+standby estimate and replays it over the whole history window (the shorter of
+`max_history_days` and the recorder's retention), like the efficiency estimates,
+so after a press `first_processed_slot` is the start of that window. A rebuild
+replaces an estimate learned earlier by the one the window gives; if no interval
+counts in the window the sensor is unavailable until one does. It does not
+rewrite the sensor's past: that is the recorder's record of its live state. If
+your BMS reports in a unit that jumps rarely (hours between jumps), the estimate
+is slow to appear.
 
 ---
 
@@ -275,8 +285,9 @@ Both sensors are **unavailable** (not unknown) until their first measurement and
 until the standby power sensor has its first value. Their attributes are
 `last_counted_value` (the last counted slot on its own, in %),
 `last_counted_end`, `counted_kwh` (gross input counted since the estimate
-began), `counted_runs` (pure runs that counted at least one slot) and
-`last_processed_slot`.
+began), `counted_runs` (pure runs that counted at least one slot),
+`first_processed_slot` (the first slot the estimate was evaluated from since it
+began, kept across restarts) and `last_processed_slot`.
 
 Because a counter that does not tick is redistributed backwards over up to two
 hours when it next ticks, the idle counters of a short charge or discharge look
@@ -295,13 +306,15 @@ without a standby value in that window simply do not count.
 With charge and discharge counters, a SoC sensor and a capacity entity
 configured, Effy creates `sensor.effy_battery_efficiency`; it is unavailable
 until its first valley span and does not wait for standby. Its attributes use
-`counted_runs` for counted spans and include `last_valley_span_begin` and
-`last_valley_span_end`. When charge, battery and discharge efficiencies all
-exist, Effy also creates `sensor.effy_roundtrip_efficiency`, the product of
-those three published values; it is unavailable whenever any component is
-unavailable. Both sensors are percent measurements recorded by Home Assistant
-with `mean`, `min` and `max`, and both restore their machine state after a
-restart.
+`counted_runs` for counted spans and include `first_processed_slot`,
+`last_valley_span_begin` and `last_valley_span_end`. When charge, battery and
+discharge efficiencies all exist, Effy also creates
+`sensor.effy_roundtrip_efficiency`, the product of those three published values;
+it is unavailable whenever any component is unavailable, and its
+`first_processed_slot` is the later of the first slots of the run and battery
+estimates, from where all three factors are covered. Both sensors are percent
+measurements recorded by Home Assistant with `mean`, `min` and `max`, and both
+restore their machine state after a restart.
 
 The roundtrip estimate runs slightly high because battery-fed standby is counted
 as output by battery efficiency while discharge efficiency removes standby only

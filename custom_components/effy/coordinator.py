@@ -150,6 +150,7 @@ from .history import (
     async_recalculate_recent,
     async_rebuild_battery,
     async_rebuild_efficiency,
+    async_rebuild_standby,
     async_rewrite_hourly,
     async_update_battery,
     async_update_efficiency,
@@ -961,14 +962,40 @@ class EffyCoordinator:
             )
             if touched:
                 self.notify_updated(touched, last_values)
-            # The efficiency machine is rebuilt over the rewritten statistics (ADR-023
-            # decision 9); here, at the caller, not inside the recalculation.
+            # The standby, efficiency and battery machines are rebuilt over the rewritten
+            # statistics (ADR-018 Amendment 2026-11-01, ADR-023 decision 9); here, at the
+            # caller, not inside the recalculation. Standby first: the efficiency replay
+            # reads the standby statistic the recorder holds, not the machine.
+            await self._async_rebuild_standby()
             await self._async_rebuild_efficiency()
             await self._async_rebuild_battery()
             # The closing step comes last (ADR-012 Amendment 2026-10-18, ADR-021).
             if recalculated_from is not None:
                 self.set_recalculated_from(recalculated_from)
             return written
+
+    async def _async_rebuild_standby(self) -> None:
+        """Reset the standby machine and replay it over the history window (ADR-018).
+
+        Called by the history recalculation's caller with the recalculation lock held, so
+        the statistics it just rewrote are what is replayed. Does nothing without a BMS
+        input or before the sensor restored. A failure is logged and the old state stays:
+        it never fails the history recalculation (ADR-000 §8).
+        """
+        if self._standby_state is None or not self._bms_input_ids:
+            return
+        try:
+            rebuilt = await async_rebuild_standby(
+                self._hass, self._entry.options, self._now(), storage=self._storage
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Effy: rebuilding the standby power estimate failed")
+            return
+        self._standby_state = rebuilt
+        for cb in list(self._standby_subscribers):
+            cb(rebuilt)
 
     async def _async_rebuild_efficiency(self) -> None:
         """Reset the efficiency machine and replay it over the history window (ADR-023).

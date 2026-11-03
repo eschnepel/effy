@@ -18,6 +18,7 @@ import pytest
 
 from tests.test_history_recent_equivalence import (
     _energy_world,
+    _FrozenDatetime,
     _history,
     _install,
     _options,
@@ -274,6 +275,78 @@ class TestReplay:
         )
         assert again == state
         assert world.raw_calls == []
+
+
+class TestTheButtonRebuild:
+    """``async_rebuild_standby``: a fresh machine over the history window (ADR-018, 2026-11-01)."""
+
+    DAYS = 6
+
+    async def _six_days(self, monkeypatch: pytest.MonkeyPatch) -> tuple[_World, datetime]:
+        end = T0 + timedelta(days=self.DAYS)
+        loads = [
+            (
+                T0 + timedelta(days=d, hours=6),
+                T0 + timedelta(days=d, hours=6, minutes=30),
+                20,
+            )
+            for d in range(self.DAYS)
+        ]
+        readings = _simulate_counter([(T0, end, 12), *loads], T0, end)
+        out = _simulate_counter(loads, T0, end, base_kwh=50.00)
+        world = _world(discharge=list(readings), out=list(out))
+        _rig(monkeypatch, world)
+        now = end + timedelta(seconds=5)
+        _FrozenDatetime.frozen = now
+        # the statistics the machine reads: Effy's own, written by one real history run
+        await _history.async_recalculate_history(object(), _opts())
+        return world, now
+
+    async def test_the_rebuild_reaches_back_the_whole_window_further_than_a_restart_replay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world, now = await self._six_days(monkeypatch)
+        last_slot = T0 + timedelta(days=self.DAYS) - SLOT
+        restart = await _history.async_update_standby(object(), _opts(), DrainState(), now)
+        rebuilt = await _history.async_rebuild_standby(object(), _opts(), now)
+        window = timedelta(
+            days=5
+        )  # CONF_MAX_HISTORY_DAYS of the options, below the 10 of keep_days
+        assert window > _history.STANDBY_REPLAY_MAX
+        assert restart.first_slot is not None and rebuilt.first_slot is not None
+        assert restart.first_slot >= last_slot - _history.STANDBY_REPLAY_MAX
+        assert rebuilt.first_slot == last_slot - window
+        assert rebuilt.last_slot == last_slot
+        assert rebuilt.count > restart.count >= 1  # more days, more counted intervals
+        assert rebuilt.estimate is not None
+
+    async def test_a_rebuild_is_a_fresh_start_nothing_is_suppressed_or_carried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world, now = await self._six_days(monkeypatch)
+        rebuilt = await _history.async_rebuild_standby(object(), _opts(), now)
+        assert rebuilt.suppress_until is None
+        again = await _history.async_rebuild_standby(object(), _opts(), now)
+        assert again == rebuilt  # nothing depends on a state it was not given
+
+    async def test_the_rebuild_reads_the_window_and_not_more(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world, now = await self._six_days(monkeypatch)
+        world.raw_calls.clear()
+        world.stats_calls.clear()
+        await _history.async_rebuild_standby(object(), _opts(), now)
+        earliest = now - timedelta(days=5) - SLOT * 3
+        assert world.raw_calls and min(s for _eid, s, _e in world.raw_calls) >= earliest
+        assert world.stats_calls and min(s for s, _e in world.stats_calls) >= earliest
+
+    async def test_without_a_bms_input_a_rebuild_changes_nothing_and_reads_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world, now = await self._six_days(monkeypatch)
+        world.raw_calls.clear()
+        state = await _history.async_rebuild_standby(object(), _opts(bms=False), now)
+        assert state == DrainState() and world.raw_calls == []
 
 
 # ---------------------------------------------------------------------------

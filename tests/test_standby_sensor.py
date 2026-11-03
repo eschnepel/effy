@@ -231,6 +231,7 @@ def _state(estimate: float | None, count: int = 3) -> Any:
         last_end=datetime(2026, 1, 11, 3, 0, tzinfo=UTC),
         last_source="sensor.bms",
         last_slot=datetime(2026, 1, 11, 5, 0, tzinfo=UTC),
+        first_slot=datetime(2026, 1, 9, 5, 0, tzinfo=UTC),
     )
 
 
@@ -261,6 +262,7 @@ class TestEntityShape:
             "last_drain_interval_end": "2026-01-11T03:00:00+00:00",
             "drain_source": "sensor.bms",
             "counted_intervals": 3,
+            "first_processed_slot": "2026-01-09T05:00:00+00:00",
             "last_processed_slot": "2026-01-11T05:00:00+00:00",
         }
 
@@ -272,6 +274,14 @@ class TestEntityShape:
         stored = entity.extra_restore_state_data.as_dict()
         assert stored["estimate"] == 12.3456  # not the rounded 12.3
         assert stored["count"] == 3 and stored["resolution"] == {"sensor.bms": 10.0}
+
+    def test_a_machine_that_has_not_begun_shows_no_first_slot(self) -> None:
+        from dataclasses import replace
+
+        entity = _entity()
+        entity._drain = replace(_state(12.3456), first_slot=None)
+        attributes = entity.extra_state_attributes
+        assert attributes is not None and attributes["first_processed_slot"] is None
 
 
 class TestLifecycle:

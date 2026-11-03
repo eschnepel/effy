@@ -284,6 +284,7 @@ def _machine(charge: float | None = 0.9512, discharge: float | None = 0.8801) ->
         charge=estimate(charge, 12.34567, 4, 0.94321, 3),
         discharge=estimate(discharge, 20.5, 7, 0.87654, 4),
         last_slot=datetime(2026, 1, 11, 5, 0, tzinfo=UTC),
+        first_slot=datetime(2026, 1, 9, 5, 0, tzinfo=UTC),
     )
 
 
@@ -303,6 +304,7 @@ def _valley(value: float | None = 0.9) -> Any:
     return _calc.ValleyState(
         estimate=estimate,
         last_slot=datetime(2026, 1, 11, 5, 0, tzinfo=UTC),
+        first_slot=datetime(2026, 1, 10, 5, 0, tzinfo=UTC),
     )
 
 
@@ -390,6 +392,7 @@ class TestEntityShape:
             "last_counted_end": "2026-01-11T03:00:00+00:00",
             "counted_kwh": 12.346,
             "counted_runs": 4,
+            "first_processed_slot": "2026-01-09T05:00:00+00:00",
             "last_processed_slot": "2026-01-11T05:00:00+00:00",
         }
         other = _entity("discharging")
@@ -511,6 +514,7 @@ class TestBatteryAndRoundtripSensors:
             "last_counted_end": "2026-01-11T03:00:00+00:00",
             "counted_kwh": 42.346,
             "counted_runs": 6,
+            "first_processed_slot": "2026-01-10T05:00:00+00:00",
             "last_processed_slot": "2026-01-11T05:00:00+00:00",
             "last_valley_span_begin": "2026-01-11T01:00:00+00:00",
             "last_valley_span_end": "2026-01-11T03:00:00+00:00",
@@ -604,10 +608,52 @@ class TestBatteryAndRoundtripSensors:
             "last_counted_end": "2026-01-11T03:00:00+00:00",
             "counted_kwh": 42.346,
             "counted_runs": 6,
+            "first_processed_slot": "2026-01-10T05:00:00+00:00",
             "last_processed_slot": "2026-01-11T05:00:00+00:00",
         }
         entity._battery_machine = _valley(None)
         assert entity.extra_state_attributes is None
+
+    @pytest.mark.parametrize(
+        ("run_first", "battery_first", "expected"),
+        [
+            (
+                datetime(2026, 1, 9, 5, 0, tzinfo=UTC_TZ),
+                datetime(2026, 1, 10, 5, 0, tzinfo=UTC_TZ),
+                "2026-01-10T05:00:00+00:00",
+            ),
+            (
+                datetime(2026, 1, 10, 5, 0, tzinfo=UTC_TZ),
+                datetime(2026, 1, 9, 5, 0, tzinfo=UTC_TZ),
+                "2026-01-10T05:00:00+00:00",
+            ),
+            (None, datetime(2026, 1, 9, 5, 0, tzinfo=UTC_TZ), None),
+            (datetime(2026, 1, 9, 5, 0, tzinfo=UTC_TZ), None, None),
+        ],
+    )
+    def test_the_roundtrip_is_complete_from_the_later_of_the_two_first_slots(
+        self, run_first: datetime | None, battery_first: datetime | None, expected: str | None
+    ) -> None:
+        from dataclasses import replace
+
+        coordinator = _FakeCoordinator()
+        coordinator.efficiency_state = replace(_machine(), first_slot=run_first)
+        coordinator.battery_state = replace(_valley(), first_slot=battery_first)
+        entity = _sensor.EffyRoundtripEfficiencySensor(object(), _Entry(), coordinator)
+        attributes = entity.extra_state_attributes
+        assert attributes is not None and attributes["first_processed_slot"] == expected
+
+    def test_a_machine_that_has_not_begun_shows_no_first_slot(self) -> None:
+        from dataclasses import replace
+
+        charge = _entity("charging")
+        charge._machine = replace(_machine(), first_slot=None)
+        attributes = charge.extra_state_attributes
+        assert attributes is not None and attributes["first_processed_slot"] is None
+        battery = _sensor.EffyBatteryEfficiencySensor(object(), _Entry(), _FakeCoordinator())
+        battery._machine = replace(_valley(), first_slot=None)
+        attributes = battery.extra_state_attributes
+        assert attributes is not None and attributes["first_processed_slot"] is None
 
     def test_roundtrip_has_nothing_to_restore_until_both_machines_exist(self) -> None:
         coordinator = _FakeCoordinator()

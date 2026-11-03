@@ -918,3 +918,38 @@ class TestTheSimulatedBattery:
             json.loads(json.dumps(valley_restore_data(half, H))), H
         )
         assert feed(slots[len(slots) // 2 :], restored) == live
+
+
+class TestFirstSlot:
+    """``first_slot`` is where the machine began; the attribute that shows what a replay covered."""
+
+    def test_it_is_the_first_slot_the_machine_takes(self) -> None:
+        assert feed(series([50.0], start=7)).first_slot == when(7)
+
+    def test_a_first_slot_without_soc_is_still_the_first_slot(self) -> None:
+        assert feed([bat(3, None), bat(4, 50.0)]).first_slot == when(3)
+
+    def test_nothing_moves_it_afterwards(self) -> None:
+        state = feed(series([50.0, 40.0, 30.0], start=2))
+        assert state.first_slot == when(2)
+        assert feed(series([50.0, 40.0], start=2) + series([30.0], start=50)).first_slot == when(2)
+        assert feed([bat(2, 50.0), bat(3, None), bat(4, 50.0)]).first_slot == when(2)
+
+    def test_a_slot_already_taken_or_older_does_not_set_it(self) -> None:
+        state = feed(series([50.0], start=5))
+        assert valley_step(state, bat(5, 50.0), H) is state
+        assert valley_step(state, bat(2, 50.0), H).first_slot == when(5)
+
+    def test_it_is_saved_and_restored(self) -> None:
+        state = feed(series([50.0, 45.0, 40.0], start=4))
+        data = json.loads(json.dumps(valley_restore_data(state, H)))
+        assert data["first_slot"] == when(4).isoformat()
+        restored = valley_state_from_restore(data, H)
+        assert restored is not None and restored.first_slot == when(4)
+
+    def test_data_saved_before_the_field_existed_restores_without_it(self) -> None:
+        data = json.loads(json.dumps(valley_restore_data(feed(series([50.0, 45.0], start=4)), H)))
+        del data["first_slot"]
+        restored = valley_state_from_restore(data, H)
+        assert restored is not None and restored.first_slot is None
+        assert valley_step(restored, bat(9, 50.0), H).first_slot == when(9)

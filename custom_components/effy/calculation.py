@@ -698,6 +698,9 @@ class DrainState:
     # Replay after a restart: a confirmation at a slot up to here is already in the
     # restored estimate and must not count again.
     suppress_until: datetime | None = None
+    # The first slot this machine took since its state began (a reset or a first start):
+    # what the estimate can contain reaches back to here. Kept for good, saved and restored.
+    first_slot: datetime | None = None
 
 
 def energy_drain_events(
@@ -898,6 +901,7 @@ def _drain_slot(
         pending=tuple(p for p in pending if p not in ready),
         last_slot=slot,
         last_slot_active=activity.get(slot, _UNKNOWN_ACTIVITY),
+        first_slot=state.first_slot if state.first_slot is not None else slot,
     )
     for interval in ready:
         state = _drain_confirm(state, interval, slot)
@@ -968,6 +972,7 @@ def drain_restore_data(state: DrainState) -> dict[str, Any]:
         "last_end": state.last_end.isoformat() if state.last_end else None,
         "last_source": state.last_source,
         "last_slot": processed.isoformat() if processed is not None else None,
+        "first_slot": state.first_slot.isoformat() if state.first_slot is not None else None,
         "resolution": dict(state.resolution),
     }
 
@@ -1020,6 +1025,7 @@ def drain_state_from_restore(data: Mapping[str, Any]) -> DrainState | None:
         last_end=_restore_time(data.get("last_end")),
         last_source=last_source if isinstance(last_source, str) else None,
         suppress_until=last_slot,
+        first_slot=_restore_time(data.get("first_slot")),
     )
 
 
@@ -1139,6 +1145,8 @@ class RunState:
     # The current pure run has already counted a slot (so ``counted_runs`` counts it once).
     run_counted: bool = False
     last_slot: datetime | None = None
+    # The first slot this machine took since its state began; kept, saved and restored.
+    first_slot: datetime | None = None
 
 
 def classify_slot(active: Iterable[str], roles: EffRoles) -> EffKind | None:
@@ -1215,6 +1223,7 @@ def run_step(state: RunState, slot: EffSlot, roles: EffRoles) -> RunState:
         prev2=prev1,
         run_counted=run_counted,
         last_slot=slot.start,
+        first_slot=state.first_slot if state.first_slot is not None else slot.start,
     )
 
 
@@ -1271,6 +1280,7 @@ def run_restore_data(state: RunState) -> dict[str, Any]:
         "prev2": _record_data(state.prev2),
         "run_counted": state.run_counted,
         "last_slot": state.last_slot.isoformat() if state.last_slot else None,
+        "first_slot": state.first_slot.isoformat() if state.first_slot else None,
     }
 
 
@@ -1346,6 +1356,7 @@ def run_state_from_restore(data: Mapping[str, Any]) -> RunState | None:
         prev2=prev2,
         run_counted=run_counted,
         last_slot=last_slot,
+        first_slot=_restore_time(data.get("first_slot")),
     )
 
 
@@ -1470,6 +1481,8 @@ class ValleyState:
     peak: float | None = None
     records: tuple[SpanPoint, ...] = ()
     last_slot: datetime | None = None
+    # The first slot this machine took since its state began; kept, saved and restored.
+    first_slot: datetime | None = None
     # Spans that could not be measured, and why the last one could not.
     dropped_spans: int = 0
     last_drop: SpanDrop | None = None
@@ -1568,9 +1581,12 @@ def valley_step(state: ValleyState, slot: BatSlot, hysteresis: float) -> ValleyS
         raise ValueError(f"the valley hysteresis must be above {VALLEY_BAND:g} points")
     if state.last_slot is not None and slot.start <= state.last_slot:
         return state
+    if state.first_slot is None:
+        state = replace(state, first_slot=slot.start)
     if state.last_slot is None or slot.start != state.last_slot + _DRAIN_SLOT or slot.soc is None:
         state = ValleyState(
             estimate=state.estimate,
+            first_slot=state.first_slot,
             dropped_spans=state.dropped_spans,
             last_drop=state.last_drop,
         )
@@ -1707,6 +1723,7 @@ def valley_restore_data(state: ValleyState, hysteresis: float) -> dict[str, Any]
         "peak": state.peak,
         "records": [_sums_data(r) for r in state.records],
         "last_slot": state.last_slot.isoformat() if state.last_slot else None,
+        "first_slot": state.first_slot.isoformat() if state.first_slot else None,
         "dropped_spans": state.dropped_spans,
         "last_drop": state.last_drop,
     }
@@ -1826,6 +1843,7 @@ def valley_state_from_restore(data: Mapping[str, Any], hysteresis: float) -> Val
         peak=peak,
         records=points,
         last_slot=last_slot,
+        first_slot=_restore_time(data.get("first_slot")),
         dropped_spans=dropped,
         last_drop=last_drop,
     )

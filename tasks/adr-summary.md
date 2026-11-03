@@ -109,6 +109,12 @@ authoritative.
   what is asked; `clear()`, `snapshot()`, `from_snapshot()` (a replay is a cache
   over a storage that raises); the history button reads fresh. Justified by
   replay (TASK-0037), not speed.
+- The history button rebuilds the standby, efficiency and battery machines
+  (standby first), each from a fresh state over
+  `min(max_history_days, keep_days)`; each machine keeps `first_slot` and its
+  sensor shows `first_processed_slot` (ADR-018 and ADR-023 Amendments
+  2026-11-01, human). None of the three has statistics that Effy writes: the
+  rebuild does not rewrite their past.
 - `calculation.py` tested with zero mocking, loaded via file-path import
   (ADR-000 §6).
 

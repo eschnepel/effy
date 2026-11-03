@@ -301,6 +301,26 @@ async def _fake_async_rebuild_efficiency(
     return _calc_mod.RunState(charge=_calc_mod.EffEstimate(counted_runs=99), last_slot=_ts(1, 0))
 
 
+# The standby machine's rebuild after the history button (ADR-018 Amendment 2026-11-01):
+# (options, now, lock_held) per call.
+_rebuild_standby_calls: list[tuple[Any, datetime, bool]] = []
+_rebuild_standby_raise_next: list[bool] = [False]
+
+
+async def _fake_async_rebuild_standby(
+    hass: Any, entry_options: Any, now: datetime, storage: Any = None
+) -> Any:
+    _storage_seen.append(("rebuild_standby", storage))
+    lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
+    _rebuild_standby_calls.append((entry_options, now, lock_held))
+    if _job_hook[0] is not None:
+        await _job_hook[0]("rebuild_standby")
+    if _rebuild_standby_raise_next[0]:
+        _rebuild_standby_raise_next[0] = False
+        raise RuntimeError("standby rebuild exploded")
+    return _calc_mod.DrainState(estimate=7.0, count=99, last_slot=_ts(1, 0))
+
+
 # The valley machine's feed (TASK-0025): (options, state, now, lock_held) per call.
 _battery_calls: list[tuple[Any, Any, datetime, bool]] = []
 _battery_raise_next: list[bool] = [False]
@@ -360,6 +380,7 @@ _history_stub.async_rewrite_hourly = _fake_async_rewrite_hourly  # type: ignore[
 _history_stub.async_update_standby = _fake_async_update_standby  # type: ignore[attr-defined]
 _history_stub.async_update_efficiency = _fake_async_update_efficiency  # type: ignore[attr-defined]
 _history_stub.async_rebuild_efficiency = _fake_async_rebuild_efficiency  # type: ignore[attr-defined]
+_history_stub.async_rebuild_standby = _fake_async_rebuild_standby  # type: ignore[attr-defined]
 _history_stub.async_update_battery = _fake_async_update_battery  # type: ignore[attr-defined]
 _history_stub.async_rebuild_battery = _fake_async_rebuild_battery  # type: ignore[attr-defined]
 _history_stub.async_probe_last_slot_ready = _fake_async_probe_last_slot_ready  # type: ignore[attr-defined]
@@ -831,6 +852,8 @@ def _reset_slot_job_fakes() -> None:
     _efficiency_calls.clear()
     _efficiency_raise_next[0] = False
     _rebuild_calls.clear()
+    _rebuild_standby_calls.clear()
+    _rebuild_standby_raise_next[0] = False
     _rebuild_raise_next[0] = False
     _battery_calls.clear()
     _battery_raise_next[0] = False
@@ -2177,7 +2200,14 @@ class TestBatteryRebuildAfterHistory(_BatteryBase):
         order = self._order(coord)
         self._full_result()
         assert await coord.async_recalculate_history_and_report() == 3
-        assert order == ["history", "rebuild", "rebuild_battery", "subscriber", "closing"]
+        assert order == [
+            "history",
+            "rebuild_standby",  # ADR-018 Amendment 2026-11-01: standby first
+            "rebuild",
+            "rebuild_battery",
+            "subscriber",
+            "closing",
+        ]
         options, now, lock_held = _rebuild_battery_calls[0]
         assert options == coord._entry.options and lock_held and now.tzinfo is not None
 
@@ -2320,7 +2350,7 @@ class TestClosingStep(_SlotCoordinatorBase):
             {"sensor.effy_x": (1.0, "W")},
         )
         assert await coord.async_recalculate_history_and_report() == 3
-        assert order == ["history", "notify", "closing"]
+        assert order == ["history", "notify", "rebuild_standby", "closing"]
         assert coord.recalculated_from == _ts(9, 0)
 
     @pytest.mark.asyncio
@@ -2561,3 +2591,117 @@ class TestTheCoordinatorOwnsOneStorage(_SlotCoordinatorBase):
         first = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"]))
         second = EffyCoordinator(_FakeHass(), _FakeEntry(["sensor.pv"], ["sensor.out"]))
         assert first._storage is not second._storage
+
+
+class TestWhatTheHistoryButtonRebuilds(_BatteryBase):
+    """The button's reach (the question of 2026-11-01, the human's decision of the same day).
+
+    After the history recalculation it resets and replays the standby, the efficiency and
+    the battery machine (ADR-018 Amendment 2026-11-01, ADR-023 decision 9). None of the
+    three has statistics that Effy writes: their sensors are live states the recorder
+    records, so their past is not rewritten by the button, only what they show now.
+    """
+
+    @pytest.mark.asyncio
+    async def test_all_three_machines_are_rebuilt_standby_first_and_never_fed(self) -> None:
+        coord = self._battery_coordinator()
+        coord.restore_efficiency(None)
+        assert coord.standby_enabled and coord.efficiency_enabled and coord.battery_enabled
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        await coord.async_recalculate_history_and_report()
+        assert order == ["history", "rebuild_standby", "rebuild", "rebuild_battery"]
+        assert (
+            len(_rebuild_standby_calls) == len(_rebuild_calls) == len(_rebuild_battery_calls) == 1
+        )
+        assert _standby_calls == []  # a rebuild is not a feed
+
+
+class TestStandbyRebuildAfterHistory(_BatteryBase):
+    """The standby machine is reset and replayed by the history button (ADR-018 Amendment)."""
+
+    @staticmethod
+    def _full_result() -> None:
+        _history_full_return_value[0] = (
+            3,
+            _ts(9, 0),
+            {"sensor.effy_x"},
+            {"sensor.effy_x": (1.0, "W")},
+        )
+
+    @pytest.mark.asyncio
+    async def test_it_runs_under_the_lock_after_notify_and_before_the_closing_step(self) -> None:
+        coord = self._battery_coordinator()
+        order: list[str] = []
+
+        async def hook(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = hook
+        coord.subscribe_updates("sensor.effy_x", lambda _v, _u: order.append("notify"))
+        coord.subscribe_recalculated_from(lambda _ts: order.append("closing"))
+        coord.subscribe_standby(lambda _state: order.append("standby subscriber"))
+        self._full_result()
+        await coord.async_recalculate_history_and_report()
+        assert order[:4] == ["history", "notify", "rebuild_standby", "standby subscriber"]
+        assert order[-1] == "closing"
+        options, now, lock_held = _rebuild_standby_calls[0]
+        assert options == coord._entry.options and lock_held and now.tzinfo is not None
+
+    @pytest.mark.asyncio
+    async def test_the_old_state_is_replaced_and_the_sensor_is_told(self) -> None:
+        coord = self._battery_coordinator()
+        seen: list[Any] = []
+        coord.subscribe_standby(seen.append)
+        old = coord.standby_state
+        self._full_result()
+        await coord.async_recalculate_history_and_report()
+        assert coord.standby_state is not old
+        assert coord.standby_state is not None and coord.standby_state.count == 99
+        assert seen == [coord.standby_state]
+
+    @pytest.mark.asyncio
+    async def test_without_a_bms_input_or_before_a_restore_nothing_is_rebuilt(self) -> None:
+        plain = self._coordinator()
+        plain.restore_standby(None)
+        assert not plain.standby_enabled  # restored, but no BMS input
+        self._full_result()
+        await plain.async_recalculate_history_and_report()
+        assert _rebuild_standby_calls == []
+        unrestored = self._battery_coordinator()
+        unrestored._standby_state = None
+        self._full_result()
+        await unrestored.async_recalculate_history_and_report()
+        assert _rebuild_standby_calls == [] and unrestored.standby_state is None
+
+    @pytest.mark.asyncio
+    async def test_a_failure_is_logged_the_old_state_stays_and_the_rest_still_runs(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coord = self._battery_coordinator()
+        old = coord.standby_state
+        _rebuild_standby_raise_next[0] = True
+        self._full_result()
+        with caplog.at_level(logging.ERROR):
+            written = await coord.async_recalculate_history_and_report()
+        assert written == 3
+        assert coord.standby_state is old
+        assert "rebuilding the standby power estimate failed" in caplog.text
+        assert len(_rebuild_calls) == 1 and len(_rebuild_battery_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cancellation_propagates(self) -> None:
+        coord = self._battery_coordinator()
+
+        async def hook(which: str) -> None:
+            if which == "rebuild_standby":
+                raise asyncio.CancelledError
+
+        _job_hook[0] = hook
+        self._full_result()
+        with pytest.raises(asyncio.CancelledError):
+            await coord.async_recalculate_history_and_report()

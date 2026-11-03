@@ -141,10 +141,16 @@ def _now_of(index: int) -> datetime:
 
 
 def _close(a: Any, b: Any, path: str = "") -> None:
-    """Two dumps are equal; numbers within the rounding of kWh -> W -> kWh."""
+    """Two dumps are equal; numbers within the rounding of kWh -> W -> kWh.
+
+    ``first_slot`` is where a machine began, not what it measured: two machines that end in
+    the same state may have begun at different slots, so it is the one key left out.
+    """
     if isinstance(a, dict) and isinstance(b, dict):
         assert a.keys() == b.keys(), path
         for key in a:
+            if key == "first_slot":
+                continue
             _close(a[key], b[key], f"{path}.{key}")
     elif isinstance(a, list) and isinstance(b, list):
         assert len(a) == len(b), path
@@ -536,6 +542,9 @@ class TestTheSimulatedBattery:
         # direct feed gets the data only: the same machine, so the same state
         direct = _direct(slots)
         _close(valley_restore_data(whole, H), valley_restore_data(direct, H))
+        # ... and the live one says it began where its window did, the direct one at the data
+        assert direct.first_slot == when(0)
+        assert whole.first_slot is not None and whole.first_slot < when(0)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
