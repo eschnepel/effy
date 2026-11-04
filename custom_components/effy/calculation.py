@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 
@@ -1046,6 +1046,9 @@ EFF_VALIDATION_DELAY = DRAIN_VALIDATION_DELAY
 # 5 % per kWh of gross input (ADR-023 decision 7): a measurement of x kWh multiplies
 # what was there before by ``0.95 ** x``.
 EFF_DECAY_PER_KWH = 0.95
+# A counter whose energy in a slot is below this share of the slot's largest counter does not
+# count as flowing in it.
+EFF_SIGNIFICANT_SHARE = 0.05
 
 # The process of a pure slot. Not the published ``function`` of a source (ADR-021): that is
 # a property of a counter, this is what the whole slot is doing.
@@ -1147,6 +1150,39 @@ class RunState:
     last_slot: datetime | None = None
     # The first slot this machine took since its state began; kept, saved and restored.
     first_slot: datetime | None = None
+    # The smallest step of each counter in kWh (source entity ID -> step), learned from the
+    # counters' own jumps. A slot whose input is not larger than the step is not a
+    # measurement: it is one tick of the counter, or less, spread over a gap.
+    resolution: Mapping[str, float] = field(default_factory=dict)
+
+
+def run_learn_resolution(state: RunState, steps: Mapping[str, float]) -> RunState:
+    """The state with the smaller of each known and each newly seen counter step."""
+    merged = dict(state.resolution)
+    for source, step in steps.items():
+        if step > 0.0:
+            merged[source] = min(step, merged.get(source, step))
+    return state if merged == dict(state.resolution) else replace(state, resolution=merged)
+
+
+def _significant_flow(slot: EffSlot, roles: EffRoles) -> frozenset[str]:
+    """The sensors with flow in ``slot``, without a counter whose energy is a small share of
+    the slot's largest counter: that is a late tick of the counter redistributed over a
+    gap (ADR-023 Amendment 2026-11-04), not a flow. Other sensors (PV inputs) stay."""
+    energies = {
+        roles.grid_import: slot.grid_import_kwh,
+        roles.discharge: slot.discharge_kwh,
+        roles.charge: slot.charge_kwh,
+        roles.grid_export: slot.grid_export_kwh,
+    }
+    top = max(energies.values())
+    if top <= 0.0:
+        return slot.active
+    return frozenset(
+        eid
+        for eid in slot.active
+        if eid not in energies or energies[eid] >= EFF_SIGNIFICANT_SHARE * top
+    )
 
 
 def classify_slot(active: Iterable[str], roles: EffRoles) -> EffKind | None:
@@ -1171,11 +1207,14 @@ def _eff_record(slot: EffSlot, kind: EffKind | None) -> EffRecord:
     return EffRecord(slot.start, None, 0.0, 0.0, slot.standby_kwh)
 
 
-def _eff_count(estimate: EffEstimate, record: EffRecord, new_run: bool) -> EffEstimate | None:
+def _eff_count(
+    estimate: EffEstimate, record: EffRecord, new_run: bool, resolution: float = 0.0
+) -> EffEstimate | None:
     """The estimate with ``record`` counted, or ``None`` when it does not count: no
-    standby statistic, or an input not larger than the standby energy (decision 5)."""
+    standby statistic, an input not larger than the standby energy (decision 5), or an
+    input not larger than the counter's resolution (less than one tick measures nothing)."""
     standby = record.standby_kwh
-    if standby is None or record.energy_in <= standby:
+    if standby is None or record.energy_in <= standby or record.energy_in <= resolution:
         return None
     net = record.energy_in - standby
     return EffEstimate(
@@ -1202,14 +1241,20 @@ def run_step(state: RunState, slot: EffSlot, roles: EffRoles) -> RunState:
     if state.last_slot is None or slot.start != state.last_slot + _DRAIN_SLOT:
         prev1 = prev2 = None
         run_counted = False
-    kind = classify_slot(slot.active, roles)
+    kind = classify_slot(_significant_flow(slot, roles), roles)
     charge, discharge = state.charge, state.discharge
     if kind is None or prev1 is None or prev1.kind != kind:
         run_counted = False  # no run, or a new one begins
     if kind is not None and prev1 is not None and prev2 is not None:
         if prev1.kind == kind and prev2.kind == kind:
             current = charge if kind == EFF_KIND_CHARGE else discharge
-            counted = _eff_count(current, prev1, new_run=not run_counted)
+            source = roles.grid_import if kind == EFF_KIND_CHARGE else roles.discharge
+            counted = _eff_count(
+                current,
+                prev1,
+                new_run=not run_counted,
+                resolution=state.resolution.get(source or "", 0.0),
+            )
             if counted is not None:
                 run_counted = True
                 if kind == EFF_KIND_CHARGE:
@@ -1224,6 +1269,7 @@ def run_step(state: RunState, slot: EffSlot, roles: EffRoles) -> RunState:
         run_counted=run_counted,
         last_slot=slot.start,
         first_slot=state.first_slot if state.first_slot is not None else slot.start,
+        resolution=state.resolution,
     )
 
 
@@ -1281,6 +1327,7 @@ def run_restore_data(state: RunState) -> dict[str, Any]:
         "run_counted": state.run_counted,
         "last_slot": state.last_slot.isoformat() if state.last_slot else None,
         "first_slot": state.first_slot.isoformat() if state.first_slot else None,
+        "resolution": dict(state.resolution),
     }
 
 
@@ -1349,7 +1396,15 @@ def run_state_from_restore(data: Mapping[str, Any]) -> RunState | None:
         return None
     if prev1 is None and prev2 is not None:
         return None  # the two records are the last two slots: a hole in them is nonsense
+    raw_resolution = data.get("resolution")
+    resolution: dict[str, float] = {}
+    if isinstance(raw_resolution, Mapping):
+        for source, step in raw_resolution.items():
+            number = _restore_number(step)
+            if isinstance(source, str) and number is not None and number > 0.0:
+                resolution[source] = number
     return RunState(
+        resolution=resolution,
         charge=charge,
         discharge=discharge,
         prev1=prev1,
@@ -1358,6 +1413,40 @@ def run_state_from_restore(data: Mapping[str, Any]) -> RunState | None:
         last_slot=last_slot,
         first_slot=_restore_time(data.get("first_slot")),
     )
+
+
+def rebuild_summary(state: DrainState | RunState | ValleyState) -> dict[str, Any]:
+    """What a rebuilt machine holds, as plain JSON: where it began and ended and what it
+    counted. The debug export records it (TASK-0037) and its fixture replay compares it."""
+
+    def iso(moment: datetime | None) -> str | None:
+        return moment.astimezone(timezone.utc).isoformat() if moment is not None else None
+
+    def percent(value: float | None) -> float | None:
+        return None if value is None else round(value * 100.0, 6)
+
+    summary: dict[str, Any] = {
+        "first_slot": iso(state.first_slot),
+        "last_slot": iso(state.last_slot),
+    }
+    if isinstance(state, DrainState):
+        summary["count"] = state.count
+        summary["estimate_w"] = state.estimate
+    elif isinstance(state, RunState):
+        for kind, estimate in (
+            (EFF_KIND_CHARGE, state.charge),
+            (EFF_KIND_DISCHARGE, state.discharge),
+        ):
+            summary[f"{kind}_percent"] = percent(estimate.value)
+            summary[f"{kind}_counted_kwh"] = round(estimate.counted_kwh, 9)
+            summary[f"{kind}_counted_runs"] = estimate.counted_runs
+        summary["resolution_kwh"] = {k: round(v, 9) for k, v in sorted(state.resolution.items())}
+    else:
+        summary["percent"] = percent(state.estimate.value)
+        summary["counted_kwh"] = round(state.estimate.counted_kwh, 9)
+        summary["counted_spans"] = state.estimate.counted_spans
+        summary["dropped_spans"] = state.dropped_spans
+    return summary
 
 
 # ---------------------------------------------------------------------------

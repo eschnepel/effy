@@ -104,10 +104,13 @@ async def replay(document: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> R
     )
 
 
-def assert_same(replayed: Replayed) -> None:
-    """The same keys exactly and the values within ADR-022's tolerance; the same result."""
+def assert_same(replayed: Replayed, *, require_rows: bool = True) -> None:
+    """The same keys exactly and the values within ADR-022's tolerance; the same result.
+
+    A run that changed nothing wrote nothing: ``require_rows=False`` accepts that."""
     assert set(replayed.actual) == set(replayed.expected)
-    assert replayed.expected, "the recorded run wrote something"
+    if require_rows:
+        assert replayed.expected, "the recorded run wrote something"
     for key, row in replayed.expected.items():
         assert replayed.actual[key]["mean"] == pytest.approx(row["mean"], rel=1e-9, abs=1e-9), key
         assert replayed.actual[key]["state"] == pytest.approx(row["state"], rel=1e-9, abs=1e-9), key
@@ -115,3 +118,41 @@ def assert_same(replayed: Replayed) -> None:
     assert written == replayed.recorded_result["rows_written"]
     recorded_from = replayed.recorded_result["recalculated_from"]
     assert (earliest.isoformat() if earliest is not None else None) == recorded_from
+
+
+async def replay_rebuilds(
+    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> dict[str, dict[str, Any]]:
+    """Run the standby, efficiency and battery rebuilds again from ``document`` alone.
+
+    The order and the conditions are the coordinator's (``async_recalculate_history_and_report``):
+    standby first, each only if the configuration enables it. The cache is the file's, over a
+    storage that raises on any read it does not hold. Returns what ``rebuild_summary`` says of
+    each, the shape of ``document["result"]["rebuilds"]``.
+    """
+    ran_at = datetime.fromisoformat(document["inputs"]["ran_at"])
+    recorder = StoredRecorder()
+    _install_ha_api(monkeypatch, recorder)
+    monkeypatch.setattr(_history, "get_recorder", lambda _hass: recorder)
+    cache = _history.Cache.from_snapshot(
+        document["cache"],
+        RaisingStorage(),
+        clock=lambda: ran_at,
+        settle=_history.RECORDER_SETTLE,
+    )
+    config = document["config"]
+    summary = _history.run_feed.__globals__["rebuild_summary"]  # in the machines' own module
+    rebuilt: dict[str, dict[str, Any]] = {}
+    if _history.bms_input_ids(config):
+        rebuilt["standby"] = summary(
+            await _history.async_rebuild_standby(object(), config, ran_at, storage=cache)
+        )
+    if _history.efficiency_enabled(config):
+        rebuilt["efficiency"] = summary(
+            await _history.async_rebuild_efficiency(object(), config, ran_at, storage=cache)
+        )
+    if _history.battery_enabled(config):
+        rebuilt["battery"] = summary(
+            await _history.async_rebuild_battery(object(), config, ran_at, storage=cache)
+        )
+    return rebuilt

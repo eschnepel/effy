@@ -218,3 +218,11 @@ __marimo__/
 .streamlit/secrets.toml
 
 custom_components/effy.zip
+
+# tests/fixtures/debug_export/_generated/: a regenerated fixture between a failing replay and the next
+tests/fixtures/debug_export/_generated/
+
+# a raw debug export holds real entity IDs and dates: import it with utils/import_debug_export.py
+/debug.json
+/debug.yaml
+effy-export-*.json

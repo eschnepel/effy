@@ -366,3 +366,29 @@ battery machines' first slots. The history button now also rebuilds the standby
 machine, before this rebuild.
 
 **Decided by:** human (2026-11-01)
+
+## Amendment — 2026-11-04
+
+**Reason:** The debug export of 2026-11-04 showed a charge efficiency of 156 %
+from 0.01 kWh counted. A counter that ticks 10 Wh after a long idle time is
+redistributed backwards over up to two hours (ADR-012): the counters that were
+not flowing showed 0.4 to 0.5 Wh per slot in the real charge runs and made every
+slot impure, and the only slots left that were pure were the redistributed tick
+of the import and charge counters themselves (in equal to out, so out ÷ (in −
+standby) was 156 %). Replayed over the export, a 5 % share with a minimum input
+of one resolution step gave charge 93.4 % over 3.54 kWh and discharge 96.3 %
+over 3.71 kWh.
+
+**Decision (human, 2026-11-04):**
+
+1. A counter whose energy in a slot is below 5 % of the slot's largest counter
+   does not count as flowing in it (`EFF_SIGNIFICANT_SHARE`); PV inputs are not
+   affected.
+1. A slot whose input is not larger than the resolution of its input counter
+   does not count. The resolution is the smallest jump of each of the four
+   counters in kWh, learned from the raw states the efficiency feed reads anyway
+   (`async_read_counter_resolution`), kept in the run state
+   (`RunState.resolution`) and persisted. Unknown (power-family counter, no jump
+   seen, older data) means no minimum.
+
+**Decided by:** human (2026-11-04)

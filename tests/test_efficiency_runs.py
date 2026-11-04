@@ -183,8 +183,9 @@ class TestRuns:
 
     def test_an_impure_neighbour_is_not_a_pure_neighbour(self) -> None:
         pv_slot = charge_slot(3, active=frozenset({GI, CH, PV}))
-        slots = [charge_slot(i, grid_in=1.0 + i) for i in (0, 1, 2)] + [pv_slot]
-        slots += [charge_slot(i, grid_in=1.0 + i) for i in (4, 5, 6)]
+        slots = [charge_slot(i, grid_in=1.0 + i, out=0.9 * (1.0 + i)) for i in (0, 1, 2)]
+        slots += [pv_slot]
+        slots += [charge_slot(i, grid_in=1.0 + i, out=0.9 * (1.0 + i)) for i in (4, 5, 6)]
         state = feed(slots)
         assert state.charge.counted_kwh == pytest.approx((1.0 + 1) + (1.0 + 5))  # slots 1 and 5
 
@@ -194,7 +195,9 @@ class TestRuns:
         assert state.charge.counted_kwh == 0 and state.discharge.counted_kwh == 0
 
     def test_a_missing_slot_or_a_gap_ends_the_run(self) -> None:
-        slots = [charge_slot(i, grid_in=1.0 + i) for i in (0, 1, 2, 4, 5, 6)]  # 3 is missing
+        slots = [
+            charge_slot(i, grid_in=1.0 + i, out=0.9 * (1.0 + i)) for i in (0, 1, 2, 4, 5, 6)
+        ]  # 3 is missing
         state = feed(slots)
         # slot 2 must not count with 4 as its neighbour: only 1 and 5 count
         assert state.charge.counted_kwh == pytest.approx((1.0 + 1) + (1.0 + 5))
@@ -223,8 +226,8 @@ class TestRuns:
 
     def test_a_slot_whose_input_is_not_larger_than_its_standby_is_not_counted(self) -> None:
         slots = [charge_slot(i) for i in range(5)]
-        slots[2] = charge_slot(2, grid_in=STANDBY, out=0.0)
-        slots[3] = charge_slot(3, grid_in=STANDBY / 2, out=0.0)
+        slots[2] = charge_slot(2, grid_in=STANDBY, out=STANDBY / 10)
+        slots[3] = charge_slot(3, grid_in=STANDBY / 2, out=STANDBY / 20)
         state = feed(slots)
         assert state.charge.counted_kwh == pytest.approx(0.30)  # slot 1 only
 
@@ -324,6 +327,122 @@ class TestFeed:
         start = RunState()
         feed(slots, start)
         assert start == RunState() and slots == before
+
+
+class TestTheSmearOfALateTick:
+    """ADR-023 Amendment 2026-11-04: the data of 2026-11-03/04. A counter that ticks 10 Wh
+    after a long idle time is redistributed back over up to two hours: a flow of a few Wh
+    per slot in a counter that does not flow, or in both counters of a run that does not
+    exist."""
+
+    def test_a_small_share_of_another_counter_does_not_make_a_slot_impure(self) -> None:
+        def slot(i: int) -> Any:
+            return EffSlot(
+                when(i),
+                frozenset({GI, CH, DIS, GE}),
+                grid_import_kwh=0.099,
+                charge_kwh=0.09,
+                discharge_kwh=0.0005,  # 0.5 % of the flow: the smear of a late tick
+                grid_export_kwh=0.00048,
+                standby_kwh=STANDBY,
+            )
+
+        state = feed([slot(i) for i in range(6)])
+        assert state.charge.counted_kwh == pytest.approx(4 * 0.099)
+        assert state.discharge.counted_kwh == 0
+
+    def test_a_counter_with_a_real_share_still_makes_the_slot_impure(self) -> None:
+        def slot(i: int) -> Any:
+            return EffSlot(
+                when(i),
+                frozenset({GI, CH, DIS, GE}),
+                grid_import_kwh=0.10,
+                charge_kwh=0.09,
+                discharge_kwh=0.01,  # 10 % of the flow: real
+                grid_export_kwh=0.009,
+                standby_kwh=STANDBY,
+            )
+
+        assert feed([slot(i) for i in range(6)]).charge.counted_kwh == 0
+
+    def test_the_share_is_five_percent_of_the_largest_counter(self) -> None:
+        share = _calculation.EFF_SIGNIFICANT_SHARE
+        assert share == 0.05
+
+        def slot(discharge: float) -> Any:
+            return EffSlot(
+                when(0),
+                frozenset({GI, CH, DIS}),
+                grid_import_kwh=1.0,
+                charge_kwh=0.9,
+                discharge_kwh=discharge,
+            )
+
+        assert _calculation._significant_flow(slot(0.0501), ROLES) == {GI, CH, DIS}
+        assert _calculation._significant_flow(slot(0.0499), ROLES) == {GI, CH}
+
+    def test_a_pv_input_is_never_dropped_by_the_share(self) -> None:
+        slot = EffSlot(
+            when(0), frozenset({GI, CH, PV}), grid_import_kwh=1.0, charge_kwh=0.9, standby_kwh=0.0
+        )
+        assert _calculation._significant_flow(slot, ROLES) == {GI, CH, PV}
+
+    def test_the_smeared_tick_of_both_counters_is_not_a_run_when_the_resolution_is_known(
+        self,
+    ) -> None:
+        # 0.01 kWh over 24 slots in grid import and charge: 156 % after the standby is taken
+        slots = [charge_slot(i, 0.01 / 24, 0.01 / 24, standby=0.00015) for i in range(26)]
+        known = RunState(resolution={GI: 0.01, CH: 0.01})
+        assert feed(slots, known).charge.counted_runs == 0
+        # without a resolution nothing is known and the slots count, as before
+        assert feed(slots).charge.value == pytest.approx(1.5625)
+
+    def test_an_input_above_the_resolution_counts_and_one_at_it_does_not(self) -> None:
+        known = RunState(resolution={GI: 0.30})
+        assert feed([charge_slot(i, 0.30, 0.27) for i in range(5)], known).charge.counted_kwh == 0
+        known = RunState(resolution={GI: 0.29})
+        counted = feed([charge_slot(i, 0.30, 0.27) for i in range(5)], known).charge.counted_kwh
+        assert counted == pytest.approx(0.90)
+
+    def test_the_input_counter_of_the_kind_decides(self) -> None:
+        known = RunState(resolution={DIS: 0.5, GI: 0.01})
+        state = feed([charge_slot(i) for i in range(5)] + [idle_slot(5)], known)
+        assert state.charge.counted_kwh == pytest.approx(0.90)
+        state = feed([discharge_slot(i) for i in range(5)], known)
+        assert state.discharge.counted_kwh == 0
+
+
+class TestTheResolution:
+    def test_the_smallest_step_seen_is_kept(self) -> None:
+        learn = _calculation.run_learn_resolution
+        state = learn(RunState(), {GI: 0.02, CH: 0.01})
+        state = learn(state, {GI: 0.01, DIS: 0.03})
+        state = learn(state, {GI: 0.05})
+        assert dict(state.resolution) == {GI: 0.01, CH: 0.01, DIS: 0.03}
+
+    def test_nothing_new_returns_the_same_state_and_a_zero_step_is_ignored(self) -> None:
+        learn = _calculation.run_learn_resolution
+        state = learn(RunState(), {GI: 0.01})
+        assert learn(state, {GI: 0.01}) is state
+        assert learn(state, {GI: 0.0, CH: -1.0}) is state
+
+    def test_it_survives_json_and_older_data_restores_without_it(self) -> None:
+        state = feed([charge_slot(i) for i in range(5)], RunState(resolution={GI: 0.01, CH: 0.01}))
+        data = json.loads(json.dumps(run_restore_data(state)))
+        assert run_state_from_restore(data) == state
+        del data["resolution"]
+        older = run_state_from_restore(data)
+        assert older is not None and dict(older.resolution) == {}
+
+    def test_unusable_steps_are_left_out_on_restore(self) -> None:
+        state = feed([charge_slot(i) for i in range(3)])
+        data = json.loads(json.dumps(run_restore_data(state)))
+        data["resolution"] = {GI: 0.01, CH: -1, DIS: "x", GE: 0, 7: 1.0}
+        restored = run_state_from_restore(data)
+        assert restored is not None and dict(restored.resolution) == {GI: 0.01}
+        data["resolution"] = "nonsense"
+        restored = run_state_from_restore(data)
+        assert restored is not None and dict(restored.resolution) == {}
 
 
 class TestRestore:

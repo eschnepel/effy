@@ -238,14 +238,24 @@ class TestTheWholeChain:
     ) -> None:
         state, _standby, _world_ = await _baseline(monkeypatch)
         assert state.charge.counted_runs == 1 and state.discharge.counted_runs == 1
-        # only the pure slots count: of 9 kWh of grid import and 7.5 kWh of discharge
-        assert 1.0 < state.charge.counted_kwh < 4.0
+        # the idle counters' redistributed ticks are a small share of the flow and do not
+        # make a slot impure (ADR-023 Amendment 2026-11-04): all but the edges of 9 kWh of
+        # grid import count
+        assert 7.0 < state.charge.counted_kwh < 9.0
         assert 5.0 < state.discharge.counted_kwh < 7.5
         assert state.charge.value == pytest.approx(ETA_C, abs=0.02)
         assert state.discharge.value == pytest.approx(ETA_D, abs=0.02)
         # the last job ran at LAST (9 h 10 min 5 s): the newest slot the machine took is the
         # last one that is 125 minutes old by then, 7 h 5 min 5 s after T0
         assert state.last_slot == T0 + timedelta(hours=7, minutes=5)
+
+    @pytest.mark.asyncio
+    async def test_the_resolution_of_the_four_counters_is_learned_from_their_jumps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state, _standby, _world_ = await _baseline(monkeypatch)
+        assert set(state.resolution) == {GI, DIS, CH, GE}
+        assert all(0.0 < step < 0.05 for step in state.resolution.values())
 
     @pytest.mark.asyncio
     async def test_the_energies_are_read_in_kwh_and_the_standby_in_kwh_too(

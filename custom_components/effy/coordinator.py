@@ -114,6 +114,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -130,6 +131,7 @@ from .calculation import (
     RunState,
     ValleyState,
     drain_state_from_restore,
+    rebuild_summary,
     run_state_from_restore,
     valley_state_from_restore,
 )
@@ -291,6 +293,9 @@ class EffyCoordinator:
         # storage: a cache over the recorder (ADR-025). One per config entry, in memory,
         # never persisted; the history button clears it before it reads.
         self._storage: Any = create_storage(hass, clock=lambda: self._now(), warn=_LOGGER.warning)
+        # The record of an exported history run, until the rebuilds are done and it is written.
+        self._pending_export: ExportRecord | None = None
+        self._rebuild_summary: dict[str, dict[str, Any]] = {}
 
         # End time (the ``now`` it ran with) of the last slot-timer cycle that
         # *completed* without raising — volatile, in memory only, so ``None``
@@ -958,6 +963,7 @@ class EffyCoordinator:
             # an edit of the recorder's history or a changed unit. What this run reads
             # then fills the cache for the slot jobs that follow.
             self._storage.clear()
+            self._pending_export = None
             # With the debug export on, the cache of this run is the export (TASK-0037):
             # the lock keeps other recalculations out.
             export = None
@@ -976,31 +982,47 @@ class EffyCoordinator:
             # statistics (ADR-018 Amendment 2026-11-01, ADR-023 decision 9); here, at the
             # caller, not inside the recalculation. Standby first: the efficiency replay
             # reads the standby statistic the recorder holds, not the machine.
+            self._rebuild_summary = {}
             await self._async_rebuild_standby()
             await self._async_rebuild_efficiency()
             await self._async_rebuild_battery()
+            # The export is written after the rebuilds: their reads (SoC, capacity, the
+            # standby statistic) are in the cache only now, and their outcome is in the file.
+            await self._async_write_pending_export()
             # The closing step comes last (ADR-012 Amendment 2026-10-18, ADR-021).
             if recalculated_from is not None:
                 self.set_recalculated_from(recalculated_from)
             return written
 
-    def _debug_export_hook(self) -> Callable[[ExportRecord], Awaitable[ExportOutcome]]:
+    def _debug_export_hook(self) -> Callable[[ExportRecord], Awaitable[None]]:
         """What the history run calls once it has written (TASK-0037).
 
-        Runs with the recorder-job lock held. The snapshot of the cache is taken here, on
-        the event loop, with no ``await`` between the end of the run and the copy; the
+        It only keeps the record: the file is written by ``_async_write_pending_export``
+        after the standby, efficiency and battery rebuilds (TASK-0038), with the lock held,
+        so the cache holds their reads too. The snapshot is taken on the event loop; the
         encoding, the writing and the pruning of old files run in an executor.
         """
 
-        async def export(record: ExportRecord) -> ExportOutcome:
+        async def export(record: ExportRecord) -> None:
+            self._pending_export = record
+
+        return export
+
+    async def _async_write_pending_export(self) -> None:
+        """Write the file of this run, after the rebuilds; never fails the run (ADR-000 §8)."""
+        record, self._pending_export = self._pending_export, None
+        if record is None:
+            return
+        began = time.monotonic()
+        try:
+            record.result["rebuilds"] = dict(self._rebuild_summary)
             cache = self._storage.snapshot()
             meta = await self._export_meta()
             config = copy.deepcopy(dict(self._entry.options))
-            directory = self._hass.config.path(DIRECTORY)
             outcome: ExportOutcome = await self._hass.async_add_executor_job(
                 partial(
                     export_to_file,
-                    directory,
+                    self._hass.config.path(DIRECTORY),
                     self._entry.entry_id,
                     record,
                     config=config,
@@ -1008,9 +1030,28 @@ class EffyCoordinator:
                     meta=meta,
                 )
             )
-            return outcome
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            _LOGGER.warning(
+                "Effy: the debug export failed (%s: %s); the recalculation is not affected",
+                type(err).__name__,
+                err,
+            )
+            return
+        _LOGGER.info(
+            "Effy: debug export %.0f KiB in %.2f s -> %s%s",
+            outcome.size / 1024,
+            time.monotonic() - began,
+            outcome.path,
+            f", left out for size: {', '.join(outcome.omitted)}" if outcome.omitted else "",
+        )
 
-        return export
+    def _note_rebuild(self, name: str, state: DrainState | RunState | ValleyState) -> None:
+        """What a rebuild produced, for the export's ``result``: where it began, what it counted."""
+        if self._pending_export is None:
+            return
+        self._rebuild_summary[name] = rebuild_summary(state)
 
     async def _export_meta(self) -> dict[str, Any]:
         """The ``meta`` section: versions, the time zone and when the file was written."""
@@ -1051,6 +1092,7 @@ class EffyCoordinator:
             _LOGGER.exception("Effy: rebuilding the standby power estimate failed")
             return
         self._standby_state = rebuilt
+        self._note_rebuild("standby", rebuilt)
         for cb in list(self._standby_subscribers):
             cb(rebuilt)
 
@@ -1074,6 +1116,7 @@ class EffyCoordinator:
             _LOGGER.exception("Effy: rebuilding the charge and discharge efficiency failed")
             return
         self._efficiency_state = rebuilt
+        self._note_rebuild("efficiency", rebuilt)
         for cb in list(self._efficiency_subscribers):
             cb(rebuilt)
 
@@ -1097,6 +1140,7 @@ class EffyCoordinator:
             _LOGGER.exception("Effy: rebuilding the battery efficiency failed")
             return
         self._battery_state = rebuilt
+        self._note_rebuild("battery", rebuilt)
         for cb in list(self._battery_subscribers):
             cb(rebuilt)
 

@@ -2629,7 +2629,7 @@ class TestTheCoordinatorOwnsOneStorage(_SlotCoordinatorBase):
         assert first._storage is not second._storage
 
 
-class TestTheDebugExportOfTheButton(_SlotCoordinatorBase):
+class TestTheDebugExportOfTheButton(_BatteryBase):
     """TASK-0037: with the option on, the button's history run is exported; the coordinator
     owns the lock, the clean cache and the probe that must not fill it."""
 
@@ -2659,15 +2659,48 @@ class TestTheDebugExportOfTheButton(_SlotCoordinatorBase):
         coord = self._exporting(tmp_path)
         await coord.async_recalculate_history_and_report()
         assert list(_export_seen[0]) == ["export"]
-        [outcome] = _export_outcomes
-        assert outcome.path.startswith(str(tmp_path / "effy_debug"))
-        assert outcome.path.endswith("-01HZXYEN.json")
-        document = debug_export.loads(open(outcome.path, "rb").read())
+        assert _export_outcomes == [None]  # the history run is told "later"
+        [path] = (tmp_path / "effy_debug").glob("effy-export-*.json")
+        document = debug_export.loads(path.read_bytes())
+        assert path.name.endswith("-01HZXYEN.json")
         assert document["config"] == coord._entry.options
         assert document["cache"]["version"] == 1  # what the storage's snapshot() returned
         assert document["meta"]["time_zone"] == "Europe/Berlin"
         assert document["meta"]["effy_version"] == "unknown"  # no Home Assistant to ask here
         assert _storage_events == ["clear", "history", "snapshot"]  # cleared first, dumped after
+
+    @pytest.mark.asyncio
+    async def test_the_file_is_written_after_the_rebuilds_and_says_what_they_produced(
+        self, tmp_path: Any
+    ) -> None:
+        import effy.debug_export as debug_export
+
+        coord = self._battery_coordinator()
+        coord._entry.options["debug_export"] = True
+        coord._hass.config.directory = str(tmp_path)
+        order: list[str] = []
+
+        async def note(which: str) -> None:
+            order.append(which)
+
+        _job_hook[0] = note
+        original = coord._storage.snapshot
+
+        def snapshot() -> Any:
+            order.append("snapshot")
+            return original()
+
+        coord._storage.snapshot = snapshot
+        await coord.async_recalculate_history_and_report()
+        assert order[-1] == "snapshot" and "rebuild_standby" in order
+        [path] = (tmp_path / "effy_debug").glob("effy-export-*.json")
+        rebuilds = debug_export.loads(path.read_bytes())["result"]["rebuilds"]
+        assert rebuilds["standby"] == {
+            "first_slot": None,
+            "last_slot": _ts(1, 0).astimezone(timezone.utc).isoformat(),
+            "count": 99,
+            "estimate_w": 7.0,
+        }
 
     @pytest.mark.asyncio
     async def test_the_cache_is_cleared_before_and_dumped_with_the_lock_held(

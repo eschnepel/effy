@@ -290,11 +290,15 @@ began), `counted_runs` (pure runs that counted at least one slot),
 began, kept across restarts) and `last_processed_slot`.
 
 Because a counter that does not tick is redistributed backwards over up to two
-hours when it next ticks, the idle counters of a short charge or discharge look
-active in every slot of it: only runs longer than about two hours leave pure
-slots, and the estimate moves slowly. After a restart both sensors come back
-from Home Assistant's restored state, and Effy catches up the slots it missed,
-at most the last 3 days, inside its first slot job.
+hours when it next ticks, the idle counters of a short charge or discharge show
+a small flow in every slot of it. A counter whose energy in a slot is below 5 %
+of the slot's largest counter therefore does not count as flowing, and a slot
+whose input is not larger than the counter's **resolution** (its smallest jump,
+learned from the counter's own steps, for example 0.01 kWh) does not count
+either: that is one tick or less spread over a gap, not a measurement. After a
+restart both sensors come back from Home Assistant's restored state, and Effy
+catches up the slots it missed, at most the last 3 days, inside its first slot
+job.
 
 A history recalculation (the button) resets both estimates and replays them over
 the window `min(max history days, recorder keep_days)` from the statistics the

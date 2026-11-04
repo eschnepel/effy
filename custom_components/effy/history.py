@@ -209,6 +209,7 @@ from .calculation import (
     recent_rewrite_start,
     recent_trigger_from,
     run_feed,
+    run_learn_resolution,
     trapezoidal_jump_windows,
     trapezoidal_slot_contributions,
     valley_feed,
@@ -711,8 +712,9 @@ _active_timings: ContextVar[_PhaseTimings] = ContextVar("effy_active_timings", d
 _active_export: ContextVar[ExportRecord | None] = ContextVar("effy_active_export", default=None)
 
 # What the coordinator hands to a history run that is to be exported: it receives the
-# record, writes the file and says where.
-ExportHook = Callable[[ExportRecord], Awaitable[ExportOutcome]]
+# record and either writes the file and says where, or returns ``None`` when it writes the
+# file later (the coordinator does, after the rebuilds).
+ExportHook = Callable[[ExportRecord], Awaitable["ExportOutcome | None"]]
 
 # Fallback only used if the recorder instance somehow has no usable
 # keep_days value (should not normally happen) – matches HA's own default.
@@ -1767,7 +1769,8 @@ async def _run_export(export: ExportHook, record: ExportRecord, phases: _PhaseTi
         )
         phases.note_export(_clock() - began, None, f"{type(err).__name__}: {err}")
         return
-    phases.note_export(_clock() - began, outcome)
+    if outcome is not None:
+        phases.note_export(_clock() - began, outcome)
 
 
 async def _recalculate_history(
@@ -2491,6 +2494,42 @@ async def async_read_efficiency_energy(
     return energy, standby
 
 
+async def async_read_counter_resolution(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    start: datetime,
+    end: datetime,
+    storage: Storage | None = None,
+) -> dict[str, float]:
+    """The smallest jump (kWh) of each energy-family counter of the efficiency machine in
+    ``[start, end)`` (ADR-023 Amendment 2026-11-04). A counter that did not jump, or a
+    power-family one, is absent: its resolution is not known."""
+    roles = efficiency_roles(entry_options)
+    counters = [
+        eid for eid in (roles.grid_import, roles.discharge, roles.charge, roles.grid_export) if eid
+    ]
+    if not counters:
+        return {}
+    recorder = get_recorder(hass)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    classes = await _classify_sensors(hass, recorder, counters, storage)
+    steps: dict[str, float] = {}
+    for eid in counters:
+        unit, is_energy = classes[eid]
+        if not is_energy:
+            continue
+        raw: list[tuple[datetime, str]] = await storage.raw_states(eid, start, end)
+        wh_per_unit = 1000.0 if unit == "kWh" else 1.0
+        heights = [
+            peak.height
+            for peak in energy_drain_events(eid, raw, wh_per_unit)
+            if isinstance(peak, DrainPeak)
+        ]
+        if heights:
+            steps[eid] = min(heights) / 1000.0
+    return steps
+
+
 async def async_update_efficiency(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
@@ -2542,6 +2581,9 @@ async def async_update_efficiency(
                 standby_kwh=standby.get(slot),
             )
         )
+    state = run_learn_resolution(
+        state, await async_read_counter_resolution(hass, entry_options, first, end, storage)
+    )
     return run_feed(state, slots, roles, now)
 
 
