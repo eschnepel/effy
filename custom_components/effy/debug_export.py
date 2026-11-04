@@ -5,7 +5,8 @@ Effy's configuration, the clock, and what the recorder returned; the cache holds
 last (``Cache.snapshot()``), so one file with those three is enough to run the same
 recalculation again, offline (``tests/replay.py``).
 
-The file is JSON, gzip-compressed, with an explicit ``format_version``. Sections:
+The file is plain JSON, written with line breaks and two-space indentation so it can be
+read in an editor, with an explicit ``format_version``. Sections:
 
 - ``meta``: versions, the time zone, when it was written, which sections were left out
   for size (``omitted``) and how large each one is (``section_bytes``);
@@ -40,10 +41,10 @@ _LOGGER = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 FILE_PREFIX = "effy-export-"
-FILE_SUFFIX = ".json.gz"
+FILE_SUFFIX = ".json"
 DIRECTORY = "effy_debug"
 KEEP_FILES = 5
-# The bound is on the uncompressed JSON; the Pi's 28 days are a few MB (TASK-0037 Stage 1).
+# The bound is on the JSON as written; the Pi's 28 days are a few MB (TASK-0037 Stage 1).
 MAX_BYTES = 50 * 1024 * 1024
 
 # Always written: small, and the replay needs them. ``cache`` first, then ``written``: the
@@ -101,7 +102,7 @@ class ExportOutcome:
 
 
 def _dumps(value: Any) -> str:
-    return json.dumps(value, separators=(",", ":"), allow_nan=True)
+    return json.dumps(value, indent=2, allow_nan=True)
 
 
 def encode(
@@ -115,7 +116,7 @@ def encode(
     """The file's bytes, and the names of the sections left out for size.
 
     The small sections are always in; ``cache`` and ``written`` are kept in that order
-    while the total stays within ``max_bytes`` (uncompressed), and a section that would
+    while the total stays within ``max_bytes``, and a section that would
     exceed it is left out and named in ``meta``: never cut short.
     """
     if record.ran_at is None or record.window_start is None:
@@ -150,12 +151,20 @@ def encode(
         },
     }
     sections = {"format_version": str(SCHEMA_VERSION), "meta": _dumps(full_meta), **small, **kept}
-    raw = "{" + ",".join(f'"{name}":{text}' for name, text in sections.items()) + "}"
-    return gzip.compress(raw.encode("utf-8"), compresslevel=6, mtime=0), omitted
+    raw = (
+        "{\n"
+        + ",\n".join(
+            f'  "{name}": {text.replace(chr(10), chr(10) + "  ")}'
+            for name, text in sections.items()
+        )
+        + "\n}\n"
+    )
+    return raw.encode("utf-8"), omitted
 
 
 def loads(payload: bytes) -> dict[str, Any]:
-    """The document in ``payload`` (gzip or plain JSON); refuses anything it cannot replay."""
+    """The document in ``payload`` (plain JSON, or gzip as older files were); refuses anything
+    it cannot replay."""
     try:
         raw = gzip.decompress(payload) if payload[:2] == b"\x1f\x8b" else payload
         document = json.loads(raw.decode("utf-8"))

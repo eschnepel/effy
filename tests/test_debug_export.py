@@ -87,10 +87,13 @@ def _encode(**kwargs: Any) -> tuple[bytes, list[str]]:
 
 
 class TestTheFile:
-    def test_it_is_gzip_json_with_every_section_and_a_format_version(self) -> None:
+    def test_it_is_indented_plain_json_with_every_section_and_a_format_version(self) -> None:
         payload, omitted = _encode()
-        assert payload[:2] == b"\x1f\x8b" and omitted == []
-        document = json.loads(gzip.decompress(payload))
+        assert payload[:2] != b"\x1f\x8b" and omitted == []
+        text = payload.decode("utf-8")
+        assert text.startswith('{\n  "format_version": 1,\n  "meta": {\n    "')
+        assert text.endswith("\n}\n")
+        document = json.loads(text)
         assert document["format_version"] == debug_export.SCHEMA_VERSION == 1
         assert list(document) == [
             "format_version",
@@ -128,8 +131,8 @@ class TestTheFile:
         assert datetime.fromisoformat(document["inputs"]["ran_at"]) == record.ran_at
         assert document["written"][0]["rows"][0]["start"] == "2026-11-03T12:00:00+00:00"
 
-    def test_a_plain_json_file_is_read_too(self) -> None:
-        raw = gzip.decompress(_encode()[0])
+    def test_a_gzip_file_of_an_older_build_is_read_too(self) -> None:
+        raw = gzip.compress(_encode()[0])
         assert debug_export.loads(raw)["config"] == {"pv_input_sensors": ["sensor.pv"]}
 
     def test_a_run_that_did_not_note_its_time_cannot_be_exported(self) -> None:
@@ -139,13 +142,13 @@ class TestTheFile:
 
 class TestTheFileIsRefusedWhenItCannotBeReplayed:
     def _tampered(self, **changes: Any) -> bytes:
-        document = json.loads(gzip.decompress(_encode()[0]))
+        document = json.loads(_encode()[0])
         for key, value in changes.items():
             if value is None:
                 del document[key]
             else:
                 document[key] = value
-        return gzip.compress(json.dumps(document).encode())
+        return json.dumps(document).encode()
 
     def test_another_format_version_is_refused_with_both_versions_named(self) -> None:
         with pytest.raises(debug_export.ExportError, match=r"format version 2.*reads 1"):
@@ -193,7 +196,7 @@ class TestTheSizeBound:
             debug_export.loads(payload)
 
     def test_the_small_sections_are_always_in(self) -> None:
-        raw = json.loads(gzip.decompress(_encode(max_bytes=10)[0]))
+        raw = json.loads(_encode(max_bytes=10)[0])
         assert {"config", "inputs", "result", "meta"} <= set(raw)
         assert raw["meta"]["omitted"] == ["cache", "written"]
 
@@ -201,21 +204,19 @@ class TestTheSizeBound:
 class TestWhereTheFilesGo:
     def test_the_name_is_the_utc_time_of_the_run_and_the_entry(self) -> None:
         moment = datetime(2026, 11, 3, 14, 5, 9, tzinfo=timezone(timedelta(hours=2)))
-        assert (
-            debug_export.file_name(ENTRY, moment) == "effy-export-20261103T120509Z-01HZXYEN.json.gz"
-        )
-        assert debug_export.file_name("a-b_c!", moment).endswith("-abc.json.gz")
-        assert debug_export.file_name("---", moment).endswith("-entry.json.gz")
+        assert debug_export.file_name(ENTRY, moment) == "effy-export-20261103T120509Z-01HZXYEN.json"
+        assert debug_export.file_name("a-b_c!", moment).endswith("-abc.json")
+        assert debug_export.file_name("---", moment).endswith("-entry.json")
 
     def test_the_oldest_past_the_limit_go_and_nothing_else_is_ever_named(self) -> None:
-        mine = [f"effy-export-2026110{d}T120000Z-01HZXYEN.json.gz" for d in range(1, 8)]
-        other_entry = ["effy-export-20261101T120000Z-OTHER123.json.gz"]
+        mine = [f"effy-export-2026110{d}T120000Z-01HZXYEN.json" for d in range(1, 8)]
+        other_entry = ["effy-export-20261101T120000Z-OTHER123.json"]
         foreign = [
             "notes.txt",
-            "effy-export-garbage.json.gz",
-            "effy-export-20261101T120000Z-01HZXYEN.json.gz.tmp",
-            "x-effy-export-20261101T120000Z-01HZXYEN.json.gz",
-            "effy-export-20261101T120000Z-01HZXYEN.json.gz.bak",
+            "effy-export-garbage.json",
+            "effy-export-20261101T120000Z-01HZXYEN.json.tmp",
+            "x-effy-export-20261101T120000Z-01HZXYEN.json",
+            "effy-export-20261101T120000Z-01HZXYEN.json.bak",
         ]
         doomed = debug_export.files_to_remove([*foreign, *other_entry, *reversed(mine)], ENTRY, 3)
         assert doomed == mine[:4]
@@ -226,7 +227,7 @@ class TestWhereTheFilesGo:
         self, tmp_path: Path
     ) -> None:
         (tmp_path / "notes.txt").write_text("keep me")
-        (tmp_path / "effy-export-20260101T000000Z-OTHER123.json.gz").write_bytes(b"x")
+        (tmp_path / "effy-export-20260101T000000Z-OTHER123.json").write_bytes(b"x")
         for day in (1, 2, 3, 4):
             record = _record(ran_at=datetime(2026, 11, day, 12, 0, tzinfo=UTC))
             debug_export.export_to_file(
@@ -234,9 +235,9 @@ class TestWhereTheFilesGo:
             )
         names = sorted(os.listdir(tmp_path))
         assert names == [
-            "effy-export-20260101T000000Z-OTHER123.json.gz",
-            "effy-export-20261103T120000Z-01HZXYEN.json.gz",
-            "effy-export-20261104T120000Z-01HZXYEN.json.gz",
+            "effy-export-20260101T000000Z-OTHER123.json",
+            "effy-export-20261103T120000Z-01HZXYEN.json",
+            "effy-export-20261104T120000Z-01HZXYEN.json",
             "notes.txt",
         ]
         assert (tmp_path / "notes.txt").read_text() == "keep me"
@@ -270,7 +271,7 @@ class TestWhereTheFilesGo:
     def test_a_file_that_cannot_be_removed_is_a_warning_not_a_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        old = tmp_path / "effy-export-20260101T000000Z-01HZXYEN.json.gz"
+        old = tmp_path / "effy-export-20260101T000000Z-01HZXYEN.json"
         old.write_bytes(b"x")
         original = Path.unlink
 
@@ -476,7 +477,7 @@ class TestTheRecordingOfARun:
             await _history.async_recalculate_history(object(), _opts(), storage=cache, export=hook)
         assert recorder.rows
         [path] = list(tmp_path.iterdir())
-        raw = json.loads(gzip.decompress(path.read_bytes()))
+        raw = json.loads(path.read_bytes())
         assert raw["meta"]["omitted"], raw["meta"]
         line = next(r.getMessage() for r in caplog.records if "timing (history)" in r.getMessage())
         assert f"left out for size: {', '.join(raw['meta']['omitted'])}" in line

@@ -2661,7 +2661,7 @@ class TestTheDebugExportOfTheButton(_SlotCoordinatorBase):
         assert list(_export_seen[0]) == ["export"]
         [outcome] = _export_outcomes
         assert outcome.path.startswith(str(tmp_path / "effy_debug"))
-        assert outcome.path.endswith("-01HZXYEN.json.gz")
+        assert outcome.path.endswith("-01HZXYEN.json")
         document = debug_export.loads(open(outcome.path, "rb").read())
         assert document["config"] == coord._entry.options
         assert document["cache"]["version"] == 1  # what the storage's snapshot() returned

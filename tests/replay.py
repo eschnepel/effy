@@ -8,7 +8,7 @@ file does not contain fails (``UnrecordedRead``) instead of being answered from 
 
 Used by ``tests/test_debug_export.py``; whoever has an export file can use it the same way:
 
-    document = debug_export.loads(Path("effy-export-....json.gz").read_bytes())
+    document = debug_export.loads(Path("effy-export-....json").read_bytes())
     replayed = await replay(document, monkeypatch)
     assert_same(replayed)
 """

@@ -579,11 +579,13 @@ recalculation can be run again on another machine, with no Home Assistant.
   Only the button's (and the service's) history recalculation is exported, not
   the 5-minute job.
 - **Where:**
-  `<config>/effy_debug/effy-export-<UTC time of the run>-<entry>.json.gz`. The
-  newest 5 per entry are kept. The recalculation's log line (logger
-  `custom_components.effy.history`) ends with the path, the size and the time it
-  took: `debug export 812 KiB in 0.40 s -> /config/effy_debug/...`. If a part
-  would pass 50 MiB it is left out and the line says which.
+  `<config>/effy_debug/effy-export-<UTC time of the run>-<entry>.json`. The file
+  is plain JSON with line breaks and indentation, so it opens in any editor (a
+  few times larger than compact JSON). The newest 5 per entry are kept. The
+  recalculation's log line (logger `custom_components.effy.history`) ends with
+  the path, the size and the time it took:
+  `debug export 812 KiB in 0.40 s -> /config/effy_debug/...`. If a part would
+  pass 50 MiB it is left out and the line says which.
 - **What is in it:** the options of the entry (entity ids and numbers), the
   readings of your configured sources over the history window with their times,
   the units, Effy's own statistics ids and the rows the run wrote. No secrets or

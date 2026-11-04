@@ -272,16 +272,20 @@ snapshot equals the set of reads).
 | `cache` | `Cache.snapshot()`: raw states, statistics rows, anchors, capacity states, and the *observed* kinds: the units, state classes, retention, statistics units, and the **stored rows that decided what was written** (ADR-024) | in | the 4,804 raw states are about 0.5 MB as JSON; 28 days of one power source about 0.7 MB |
 | `written` | the rows the writer scheduled, per statistic and table (`5minute`, `hour`), the expected result of the replay | in | the first press after a change of settings: all rows, about 2.6 MB for 5 series; a repeated press writes only the changed rows (ADR-024), so almost nothing |
 
-Estimates from row counts and 60 to 100 bytes per JSON row, **not measured on
-the Pi**; gzip typically takes a fifth to a tenth of it. The bound is 50 MiB of
-uncompressed JSON; a section that would exceed it is left out whole (the cache
-first kept, then `written`), named in `meta.omitted` and in the log, never cut.
-A file without `cache` cannot be replayed and says so.
+Estimates from row counts and 60 to 100 bytes per compact JSON row, **not
+measured on the Pi**; the indentation added on 2026-11-04 (human request: line
+breaks and indentation, so the file is readable) makes the file a few times
+larger. The bound is 50 MiB of JSON as written; a section that would exceed it
+is left out whole (the cache first kept, then `written`), named in
+`meta.omitted` and in the log, never cut. A file without `cache` cannot be
+replayed and says so.
 
-**Format.** JSON, gzip (`.json.gz`), compact separators, written by the pure
-`debug_export.py` (no `hass`). Datetimes are ISO 8601 in UTC with the offset,
-microseconds kept; states are the strings the recorder returned (`unavailable`,
-`unknown` too), never parsed. A sample (shortened):
+**Format.** Plain JSON (`.json`) with line breaks and two-space indentation
+(changed 2026-11-04 from gzip with compact separators; `loads` still reads a
+gzip file), written by the pure `debug_export.py` (no `hass`). Datetimes are ISO
+8601 in UTC with the offset, microseconds kept; states are the strings the
+recorder returned (`unavailable`, `unknown` too), never parsed. A sample
+(shortened):
 
 ```json
 {
@@ -368,7 +372,7 @@ microseconds kept; states are the strings the recorder returned (`unavailable`,
 ```
 
 **Where.**
-`<config>/effy_debug/effy-export-<UTC time of the run>-<8 characters of the entry id>.json.gz`,
+`<config>/effy_debug/effy-export-<UTC time of the run>-<8 characters of the entry id>.json`,
 written to `name.tmp` and renamed. The newest 5 per entry are kept
 (`KEEP_FILES`); only names of exactly this shape are ever removed, other files
 in the directory and other entries' exports are left alone; a file that cannot

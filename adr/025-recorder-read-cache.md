@@ -339,22 +339,23 @@ ids**; **the slot job gets no export**, only the button's history run.
    and the copy) and writes the file in an executor job. The rebuilds of the
    standby, efficiency and battery machines that follow the run are not in the
    file.
-1. **The file** (`debug_export.py`, pure, no `hass`): gzip JSON, `.json.gz`,
-   `format_version` 1 (the literal `schema_version` is reserved to
-   `effy_exports.py`). Sections: `meta` (versions, time zone, `omitted`,
-   `section_bytes`), `config`, `inputs` (`ran_at`, `window_start`, the ADR-015
-   reading cache as the run started with it), `result`, `cache` (the snapshot,
-   with the observed units and the stored rows that decided what was written)
-   and `written` (the rows the writer scheduled, per statistic and table).
-   Datetimes are ISO 8601 in UTC with their offset; states are the recorder's
-   strings. The format version is checked on reading and a file with another
-   one, a damaged file, or one without `cache` is refused.
+1. **The file** (`debug_export.py`, pure, no `hass`): plain JSON with line
+   breaks and two-space indentation, `.json` (it was gzip in the first build; a
+   gzip file is still read), `format_version` 1 (the literal `schema_version` is
+   reserved to `effy_exports.py`). Sections: `meta` (versions, time zone,
+   `omitted`, `section_bytes`), `config`, `inputs` (`ran_at`, `window_start`,
+   the ADR-015 reading cache as the run started with it), `result`, `cache` (the
+   snapshot, with the observed units and the stored rows that decided what was
+   written) and `written` (the rows the writer scheduled, per statistic and
+   table). Datetimes are ISO 8601 in UTC with their offset; states are the
+   recorder's strings. The format version is checked on reading and a file with
+   another one, a damaged file, or one without `cache` is refused.
 1. **Where and how many.**
-   `<config>/effy_debug/effy-export-<UTC time>-<8 characters of the entry id>.json.gz`,
+   `<config>/effy_debug/effy-export-<UTC time>-<8 characters of the entry id>.json`,
    written to a temporary name and renamed. The newest 5 per entry are kept;
-   only names of exactly that shape are removed. A bound of 50 MiB of
-   uncompressed JSON: a section that would exceed it (the `written` section
-   first) is left out whole and named in `meta.omitted` and in the log.
+   only names of exactly that shape are removed. A bound of 50 MiB of JSON as
+   written: a section that would exceed it (the `written` section first) is left
+   out whole and named in `meta.omitted` and in the log.
 1. **The timing record** of the run carries the export (path, size, time,
    left-out sections, or its failure); a failing export is logged once and never
    changes the run's result.
