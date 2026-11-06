@@ -17,6 +17,11 @@ CONF_CHARGE_SENSOR = "charge_sensor"
 CONF_GRID_EXPORT_SENSOR = "grid_export_sensor"
 CONF_MAX_HISTORY_DAYS = "max_history_days"
 
+# The EPS/UPS port of the inverter (ADR-026): one optional signed power sensor, positive while
+# energy leaves through the port, negative while it enters (another inverter feeds it). Neither
+# a PV input nor a BMS counter; per slot it is split into an EPS output and an EPS input.
+CONF_EPS_SENSOR = "eps_sensor"
+
 # The battery efficiency's own options (ADR-023 decision 1), all optional: the state of charge,
 # the battery capacity and the valley hysteresis. SoC and capacity are neither inputs nor
 # outputs of the waterfall; they exist only to measure the battery's own efficiency.
@@ -35,6 +40,8 @@ DEFAULT_VALLEY_HYSTERESIS = 30
 MIN_VALLEY_HYSTERESIS = 15
 # The capacity entity reports energy in one of these units, any other is an error (decision 1).
 CAPACITY_UNITS = ("Wh", "kWh")
+# The EPS sensor reports power in one of these units, any other is an error (ADR-026 decision 1).
+EPS_UNITS = ("W", "kW")
 
 # The published contract (schema version, aggregations, entity IDs, keys) lives in
 # effy_exports.py, a standalone file other projects copy (ADR-021 Amendment 2026-10-23).

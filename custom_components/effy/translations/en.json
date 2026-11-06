@@ -5,13 +5,14 @@
     "step": {
       "user": {
         "title": "Configure Effy",
-        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required. Optional, for the battery efficiency: the state of charge sensor together with the battery capacity entity, and the valley hysteresis.",
+        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required. Optional, for the battery efficiency: the state of charge sensor together with the battery capacity entity, and the valley hysteresis. Optional, for the EPS/UPS port of the inverter: one signed power sensor (positive when energy leaves through the port, negative when it enters). While the port is in use, the standby and efficiency sensors wait for a quiet or pure slot.",
         "data": {
           "pv_input_sensors": "PV input sensors (PV strings)",
           "grid_import_sensor": "Grid import counter (BMS input: energy from the grid)",
           "discharge_sensor": "Discharge counter (BMS input: energy out of the battery, battery side)",
           "charge_sensor": "Charge counter (BMS output: energy into the battery, battery side)",
           "grid_export_sensor": "Grid export counter (BMS output: energy to the grid)",
+          "eps_sensor": "EPS/UPS sensor (optional: one signed power sensor of the EPS/UPS port; positive = energy leaves through the port, negative = another inverter feeds it)",
           "soc_sensor": "State of charge sensor (optional, for the battery efficiency; set together with the capacity)",
           "capacity_entity": "Battery capacity entity (optional, in Wh or kWh: a sensor, number or input_number; set together with the state of charge)",
           "valley_hysteresis": "Valley hysteresis (state of charge points, at least 15)",
@@ -27,7 +28,10 @@
       "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first.",
       "soc_and_capacity_together": "The state of charge sensor and the battery capacity entity belong together: set both or neither.",
       "soc_needs_measurement": "The state of charge sensor must have the state class 'measurement'. Please pick a different sensor.",
-      "capacity_unit_not_energy": "The battery capacity must be in Wh or kWh. Please pick a different entity or fix its unit."
+      "capacity_unit_not_energy": "The battery capacity must be in Wh or kWh. Please pick a different entity or fix its unit.",
+      "eps_needs_power_class": "The EPS/UPS sensor must be a power sensor (device class 'power'). Please pick a different sensor or fix its device class.",
+      "eps_needs_measurement": "The EPS/UPS sensor must have the state class 'measurement'. Please pick a different sensor.",
+      "eps_unit_not_power": "The EPS/UPS sensor must report W or kW. Please pick a different sensor or fix its unit."
     }
   },
   "options": {
@@ -40,13 +44,14 @@
           "discharge_sensor": "Discharge counter (BMS input: energy out of the battery, battery side)",
           "charge_sensor": "Charge counter (BMS output: energy into the battery, battery side)",
           "grid_export_sensor": "Grid export counter (BMS output: energy to the grid)",
+          "eps_sensor": "EPS/UPS sensor (optional: one signed power sensor of the EPS/UPS port; positive = energy leaves through the port, negative = another inverter feeds it)",
           "soc_sensor": "State of charge sensor (optional, for the battery efficiency; set together with the capacity)",
           "capacity_entity": "Battery capacity entity (optional, in Wh or kWh: a sensor, number or input_number; set together with the state of charge)",
           "valley_hysteresis": "Valley hysteresis (state of charge points, at least 15)",
           "max_history_days": "Maximum history (days)",
           "debug_export": "Write a debug export with every history recalculation (a file in effy_debug, for a bug report)"
         },
-        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required. Optional, for the battery efficiency: the state of charge sensor together with the battery capacity entity, and the valley hysteresis."
+        "description": "Set up effective PV loss distribution. Assign your PV inputs and the four BMS counters: grid import and discharge (inputs), charge and grid export (outputs). At least one input and one output (charge or grid export) are required. Optional, for the battery efficiency: the state of charge sensor together with the battery capacity entity, and the valley hysteresis. Optional, for the EPS/UPS port of the inverter: one signed power sensor (positive when energy leaves through the port, negative when it enters). While the port is in use, the standby and efficiency sensors wait for a quiet or pure slot."
       }
     },
     "error": {
@@ -56,7 +61,10 @@
       "output_needs_device_class": "Every output sensor must have a device class (power or energy) set. Please pick a different sensor or fix its device class first.",
       "soc_and_capacity_together": "The state of charge sensor and the battery capacity entity belong together: set both or neither.",
       "soc_needs_measurement": "The state of charge sensor must have the state class 'measurement'. Please pick a different sensor.",
-      "capacity_unit_not_energy": "The battery capacity must be in Wh or kWh. Please pick a different entity or fix its unit."
+      "capacity_unit_not_energy": "The battery capacity must be in Wh or kWh. Please pick a different entity or fix its unit.",
+      "eps_needs_power_class": "The EPS/UPS sensor must be a power sensor (device class 'power'). Please pick a different sensor or fix its device class.",
+      "eps_needs_measurement": "The EPS/UPS sensor must have the state class 'measurement'. Please pick a different sensor.",
+      "eps_unit_not_power": "The EPS/UPS sensor must report W or kW. Please pick a different sensor or fix its unit."
     }
   },
   "entity": {

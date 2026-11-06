@@ -21,6 +21,7 @@ from .const import (
     CONF_CAPACITY_ENTITY,
     CONF_CHARGE_SENSOR,
     CONF_DISCHARGE_SENSOR,
+    CONF_EPS_SENSOR,
     CONF_GRID_EXPORT_SENSOR,
     CONF_GRID_IMPORT_SENSOR,
     CONF_PV_INPUT_SENSORS,
@@ -74,6 +75,16 @@ def soc_id(options: Mapping[str, Any]) -> str | None:
 def capacity_id(options: Mapping[str, Any]) -> str | None:
     """The battery-capacity entity of the battery efficiency (ADR-023), or ``None``."""
     return _role_id(options, CONF_CAPACITY_ENTITY)
+
+
+def eps_id(options: Mapping[str, Any]) -> str | None:
+    """The EPS/UPS sensor (ADR-026), a signed power sensor, or ``None``.
+
+    Neither a PV input nor a BMS counter, so it is in none of ``pv_input_ids``,
+    ``bms_input_ids``, ``output_ids`` and ``all_input_ids`` (TASK-0041 puts it into the
+    input list when the waterfall learns to split it).
+    """
+    return _role_id(options, CONF_EPS_SENSOR)
 
 
 def valley_hysteresis(options: Mapping[str, Any]) -> float:

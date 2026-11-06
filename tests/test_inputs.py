@@ -43,6 +43,7 @@ GRID_EXPORT = _const.CONF_GRID_EXPORT_SENSOR
 SOC = _const.CONF_SOC_SENSOR
 CAPACITY = _const.CONF_CAPACITY_ENTITY
 HYSTERESIS = _const.CONF_VALLEY_HYSTERESIS
+EPS = _const.CONF_EPS_SENSOR
 LEGACY = _inputs.LEGACY_CONF_INPUT_SENSORS
 # the ADR-019 keys: read nowhere any more (ADR-023 decision 1), only used to show they are ignored
 OLD_BMS = "bms_input_sensors"
@@ -62,6 +63,10 @@ class TestKeys:
         assert SOC == "soc_sensor"
         assert CAPACITY == "capacity_entity"
         assert HYSTERESIS == "valley_hysteresis"
+
+    def test_the_eps_option_key_and_units_are_fixed_by_adr_026(self) -> None:
+        assert EPS == "eps_sensor"
+        assert set(_const.EPS_UNITS) == {"W", "kW"}
 
     def test_the_hysteresis_default_and_minimum_are_fixed_by_adr_023(self) -> None:
         # default 30, minimum 15 so that it stays above the 10-point valley band (decision 1)
@@ -187,6 +192,38 @@ class TestBatteryOptionAccessors:
         options = {PV: ["sensor.pv"], **ALL_FOUR}
         assert _inputs.soc_id(options) is None
         assert _inputs.capacity_id(options) is None
+
+
+class TestEpsAccessor:
+    """TASK-0040: the EPS/UPS sensor is a role of its own and changes no pool (ADR-026)."""
+
+    def test_the_id_is_returned_and_an_unset_or_emptied_picker_is_none(self) -> None:
+        assert _inputs.eps_id({EPS: "sensor.eps"}) == "sensor.eps"
+        assert _inputs.eps_id({EPS: ""}) is None
+        assert _inputs.eps_id({EPS: None}) is None
+        assert _inputs.eps_id({}) is None
+
+    def test_the_eps_sensor_is_in_no_pool_yet(self) -> None:
+        # TASK-0041 adds it to the input list; here the option is only stored and validated
+        plain = {PV: ["sensor.pv"], **ALL_FOUR}
+        with_eps = {**plain, EPS: "sensor.eps"}
+        assert _inputs.all_input_ids(with_eps) == _inputs.all_input_ids(plain)
+        assert _inputs.bms_input_ids(with_eps) == _inputs.bms_input_ids(plain)
+        assert _inputs.output_ids(with_eps) == _inputs.output_ids(plain)
+        assert _inputs.pv_input_ids(with_eps) == ["sensor.pv"]
+        assert "sensor.eps" not in _inputs.all_input_ids(with_eps) + _inputs.output_ids(with_eps)
+
+    def test_an_entry_without_the_option_has_none(self) -> None:
+        assert _inputs.eps_id({PV: ["sensor.pv"], **ALL_FOUR}) is None
+
+    def test_the_eps_sensor_is_not_a_new_key_for_the_legacy_migration(self) -> None:
+        # only the PV list and the four counters decide whether the old list is moved
+        options = {LEGACY: ["sensor.a"], EPS: "sensor.eps"}
+        assert _inputs.legacy_inputs_were_moved(options) is True
+        migrated = _inputs.migrate_legacy_input_options(options)
+        assert (
+            migrated is not None and migrated[PV] == ["sensor.a"] and migrated[EPS] == "sensor.eps"
+        )
 
 
 class TestTheHysteresisTheMachineRuns:

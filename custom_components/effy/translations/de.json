@@ -5,13 +5,14 @@
     "step": {
       "user": {
         "title": "Effy konfigurieren",
-        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese.",
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese. Optional, für den EPS/USV-Anschluss des Wechselrichters: ein vorzeichenbehafteter Leistungssensor (positiv, wenn Energie über den Anschluss das System verlässt, negativ, wenn sie hineinfließt). Solange der Anschluss genutzt wird, warten die Standby- und Wirkungsgrad-Sensoren auf einen ruhigen bzw. reinen Zeitschlitz.",
         "data": {
           "pv_input_sensors": "PV-Eingangs-Sensoren (PV-Strings)",
           "grid_import_sensor": "Netzimport-Zähler (BMS-Eingang: Energie aus dem Netz)",
           "discharge_sensor": "Entlade-Zähler (BMS-Eingang: Energie aus der Batterie, Batterieseite)",
           "charge_sensor": "Lade-Zähler (BMS-Ausgang: Energie in die Batterie, Batterieseite)",
           "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
+          "eps_sensor": "EPS/USV-Sensor (optional: ein vorzeichenbehafteter Leistungssensor des EPS/USV-Anschlusses; positiv = Energie verlässt das System über den Anschluss, negativ = ein anderer Wechselrichter speist ein)",
           "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
           "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
           "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
@@ -27,7 +28,10 @@
       "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
       "soc_and_capacity_together": "Ladezustand-Sensor und Batteriekapazität gehören zusammen: entweder beide oder keine setzen.",
       "soc_needs_measurement": "Der Ladezustand-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
-      "capacity_unit_not_energy": "Die Batteriekapazität muss in Wh oder kWh angegeben sein. Bitte eine andere Entität wählen oder deren Einheit korrigieren."
+      "capacity_unit_not_energy": "Die Batteriekapazität muss in Wh oder kWh angegeben sein. Bitte eine andere Entität wählen oder deren Einheit korrigieren.",
+      "eps_needs_power_class": "Der EPS/USV-Sensor muss ein Leistungssensor sein (Geräteklasse 'power'). Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
+      "eps_needs_measurement": "Der EPS/USV-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
+      "eps_unit_not_power": "Der EPS/USV-Sensor muss in W oder kW angegeben sein. Bitte einen anderen Sensor wählen oder dessen Einheit korrigieren."
     }
   },
   "options": {
@@ -40,13 +44,14 @@
           "discharge_sensor": "Entlade-Zähler (BMS-Eingang: Energie aus der Batterie, Batterieseite)",
           "charge_sensor": "Lade-Zähler (BMS-Ausgang: Energie in die Batterie, Batterieseite)",
           "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
+          "eps_sensor": "EPS/USV-Sensor (optional: ein vorzeichenbehafteter Leistungssensor des EPS/USV-Anschlusses; positiv = Energie verlässt das System über den Anschluss, negativ = ein anderer Wechselrichter speist ein)",
           "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
           "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
           "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
           "max_history_days": "Maximale Historie (Tage)",
           "debug_export": "Bei jeder Historien-Neuberechnung einen Debug-Export schreiben (Datei in effy_debug, für einen Fehlerbericht)"
         },
-        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese."
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese. Optional, für den EPS/USV-Anschluss des Wechselrichters: ein vorzeichenbehafteter Leistungssensor (positiv, wenn Energie über den Anschluss das System verlässt, negativ, wenn sie hineinfließt). Solange der Anschluss genutzt wird, warten die Standby- und Wirkungsgrad-Sensoren auf einen ruhigen bzw. reinen Zeitschlitz."
       }
     },
     "error": {
@@ -56,7 +61,10 @@
       "output_needs_device_class": "Jeder Ausgangs-Sensor muss eine Geräteklasse (Leistung oder Energie) besitzen. Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
       "soc_and_capacity_together": "Ladezustand-Sensor und Batteriekapazität gehören zusammen: entweder beide oder keine setzen.",
       "soc_needs_measurement": "Der Ladezustand-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
-      "capacity_unit_not_energy": "Die Batteriekapazität muss in Wh oder kWh angegeben sein. Bitte eine andere Entität wählen oder deren Einheit korrigieren."
+      "capacity_unit_not_energy": "Die Batteriekapazität muss in Wh oder kWh angegeben sein. Bitte eine andere Entität wählen oder deren Einheit korrigieren.",
+      "eps_needs_power_class": "Der EPS/USV-Sensor muss ein Leistungssensor sein (Geräteklasse 'power'). Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
+      "eps_needs_measurement": "Der EPS/USV-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
+      "eps_unit_not_power": "Der EPS/USV-Sensor muss in W oder kW angegeben sein. Bitte einen anderen Sensor wählen oder dessen Einheit korrigieren."
     }
   },
   "entity": {

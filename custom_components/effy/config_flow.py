@@ -15,6 +15,7 @@ from .const import (
     CONF_CHARGE_SENSOR,
     CONF_DEBUG_EXPORT,
     CONF_DISCHARGE_SENSOR,
+    CONF_EPS_SENSOR,
     CONF_GRID_EXPORT_SENSOR,
     CONF_GRID_IMPORT_SENSOR,
     CONF_MAX_HISTORY_DAYS,
@@ -24,6 +25,7 @@ from .const import (
     DEFAULT_MAX_HISTORY_DAYS,
     DEFAULT_VALLEY_HYSTERESIS,
     DOMAIN,
+    EPS_UNITS,
     MIN_VALLEY_HYSTERESIS,
 )
 from .inputs import valley_hysteresis
@@ -46,26 +48,31 @@ _BATTERY_KEYS = (CONF_SOC_SENSOR, CONF_CAPACITY_ENTITY)
 # A capacity can be a sensor, but also a number or an input_number: it can follow the battery's
 # ageing. A typed number is not offered.
 _CAPACITY_DOMAINS = ["sensor", "number", "input_number"]
+# The EPS sensor is signed, so only a power sensor can be one: an energy counter cannot be negative
+# (ADR-026 decision 1).
+_EPS_DEVICE_CLASSES = ["power"]
 
 
 def _picker(
     key: str,
     suggested: str | None,
     *,
-    device_class: bool,
+    device_class: bool | list[str],
     domains: list[str] | None = None,
 ) -> tuple[Any, Any]:
     """One optional single-entity picker, with a *suggested* (never a default) value.
 
     A default would bring a cleared picker back (the frontend omits an emptied
-    optional field), and every role must be clearable.
+    optional field), and every role must be clearable. ``device_class`` is ``True`` for the
+    outputs (power or energy), or the list of the classes the picker offers (the EPS sensor:
+    power only).
     """
     config: dict[str, Any] = {"domain": domains or ["sensor"]}
     if device_class:
         # Restricting the picker is the first line of defense;
         # _outputs_missing_device_class below re-checks at submit time, since an
         # already-configured sensor's device_class can change or be removed later.
-        config["device_class"] = ["power", "energy"]
+        config["device_class"] = ["power", "energy"] if device_class is True else device_class
     description = {"suggested_value": suggested} if suggested else None
     return vol.Optional(key, description=description), selector.selector({"entity": config})
 
@@ -76,6 +83,7 @@ def _build_schema(
     discharge_sensor: str | None = None,
     charge_sensor: str | None = None,
     grid_export_sensor: str | None = None,
+    eps_sensor: str | None = None,
     soc_sensor: str | None = None,
     capacity_entity: str | None = None,
     valley_hysteresis: float = DEFAULT_VALLEY_HYSTERESIS,
@@ -99,6 +107,8 @@ def _build_schema(
     ):
         marker, picker = _picker(key, value, device_class=device_class)
         schema[marker] = picker
+    marker, picker = _picker(CONF_EPS_SENSOR, eps_sensor, device_class=_EPS_DEVICE_CLASSES)
+    schema[marker] = picker
     marker, picker = _picker(CONF_SOC_SENSOR, soc_sensor, device_class=False)
     schema[marker] = picker
     marker, picker = _picker(
@@ -181,16 +191,41 @@ def _validate_battery_options(hass: Any, user_input: dict[str, Any]) -> dict[str
     return {}
 
 
+def _validate_eps_option(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
+    """The checks of the EPS/UPS sensor (ADR-026 decision 1).
+
+    It must be a power sensor (the device class is re-checked here like the outputs', since an
+    already-configured sensor's can change; an entity without a state has none to show), it
+    needs state class ``measurement`` (a signed power is a level, not a counter), and a unit,
+    if it reports one, must be W or kW. A sensor without a unit cannot be judged here and is
+    accepted. An unset EPS sensor is no error: the option is optional.
+    """
+    eps = user_input.get(CONF_EPS_SENSOR) or None
+    if eps is None:
+        return {}
+    if _entity_attribute(hass, eps, "device_class") not in _EPS_DEVICE_CLASSES:
+        return {CONF_EPS_SENSOR: "eps_needs_power_class"}
+    if _entity_attribute(hass, eps, "state_class") != "measurement":
+        return {CONF_EPS_SENSOR: "eps_needs_measurement"}
+    unit = _entity_attribute(hass, eps, "unit_of_measurement")
+    if unit is not None and unit not in EPS_UNITS:
+        return {CONF_EPS_SENSOR: "eps_unit_not_power"}
+    return {}
+
+
 def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
     """Validate one submit of the config or the options flow (ADR-019, ADR-023).
 
     Returns translatable error keys (resolved via translations/*.json), never
     raw text — ADR-000 §8. The first failing check wins, in this order: at
     least one input in total (the PV list, grid import or discharge); no entity
-    in two roles (the PV list, the four counters, the SoC sensor and the capacity
-    entity; the error sits on the later field); at least one output (charge or
-    grid export); every output has a device class; then the battery options
-    (``_validate_battery_options``). Each picker alone is optional.
+    in two roles (the PV list, the four counters, the SoC sensor, the capacity
+    entity and the EPS sensor; the error sits on the later field); at least one output
+    (charge or grid export); every output has a device class; then the battery options
+    (``_validate_battery_options``) and the EPS sensor (``_validate_eps_option``). Each
+    picker alone is optional. The EPS sensor counts for neither minimum: only the PV list and
+    the grid import and discharge counters are inputs here, only charge and grid export
+    outputs (ADR-026 decision 1).
     """
     pv = list(user_input.get(CONF_PV_INPUT_SENSORS) or [])
     counters = {key: user_input.get(key) or None for key in _COUNTER_KEYS}
@@ -205,7 +240,7 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
     if len(seen) != len(pv):
         errors[CONF_PV_INPUT_SENSORS] = "sensor_in_two_roles"
         return errors
-    for key in (*_COUNTER_KEYS, *_BATTERY_KEYS):
+    for key in (*_COUNTER_KEYS, *_BATTERY_KEYS, CONF_EPS_SENSOR):
         entity_id = user_input.get(key) or None
         if entity_id is None:
             continue
@@ -221,14 +256,17 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
         if _outputs_missing_device_class(hass, [entity_id]):
             errors[key] = "output_needs_device_class"
             return errors
-    return _validate_battery_options(hass, user_input)
+    errors = _validate_battery_options(hass, user_input)
+    if errors:
+        return errors
+    return _validate_eps_option(hass, user_input)
 
 
 def _normalised(user_input: dict[str, Any]) -> dict[str, Any]:
     """The submitted options: the PV list always present (possibly empty), a counter, the SoC
-    sensor and the capacity entity only if set; everything else (the hysteresis, the history
-    days) as submitted."""
-    optional = (*_COUNTER_KEYS, *_BATTERY_KEYS)
+    sensor, the capacity entity and the EPS sensor only if set; everything else (the hysteresis,
+    the history days) as submitted."""
+    optional = (*_COUNTER_KEYS, *_BATTERY_KEYS, CONF_EPS_SENSOR)
     result = {key: value for key, value in user_input.items() if key not in optional}
     result[CONF_PV_INPUT_SENSORS] = list(user_input.get(CONF_PV_INPUT_SENSORS) or [])
     for key in optional:
@@ -314,6 +352,7 @@ class EffyOptionsFlow(config_entries.OptionsFlowWithReload):  # type: ignore[mis
                 discharge_sensor=current.get(CONF_DISCHARGE_SENSOR),
                 charge_sensor=current.get(CONF_CHARGE_SENSOR),
                 grid_export_sensor=current.get(CONF_GRID_EXPORT_SENSOR),
+                eps_sensor=current.get(CONF_EPS_SENSOR),
                 soc_sensor=current.get(CONF_SOC_SENSOR),
                 capacity_entity=current.get(CONF_CAPACITY_ENTITY),
                 valley_hysteresis=valley_hysteresis(current),

@@ -1,6 +1,6 @@
 # Task: The optional EPS/UPS sensor picker, its validation and its accessor
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-12
 - **Related ADRs:** \[ADR-026 decision 1, ADR-019 Amendment 2026-11-06, ADR-023
   decision 1 and Amendment 2026-11-06\]
@@ -79,4 +79,38 @@ calculation until TASK-0041.
 
 <!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
 
-- _(open)_
+- `custom_components/effy/const.py` → `CONF_EPS_SENSOR = "eps_sensor"`,
+  `EPS_UNITS = ("W", "kW")`.
+- `custom_components/effy/inputs.py` →
+  `eps_id(options: Mapping[str, Any]) -> str | None` (unset or emptied gives
+  `None`). `all_input_ids`, `bms_input_ids`, `output_ids` and `pv_input_ids` are
+  unchanged and do not contain the EPS sensor; TASK-0041 adds it to
+  `all_input_ids`.
+- `custom_components/effy/config_flow.py` → picker `eps_sensor` (single sensor,
+  domain `sensor`, device class `["power"]`, suggested value only, placed after
+  the four counters and before the SoC sensor); `_picker(..., device_class)` now
+  takes `bool | list[str]` (`True` still means power and energy);
+  `_EPS_DEVICE_CLASSES = ["power"]`; `_validate_eps_option(hass, user_input)`
+  (device class, state class, unit; run after `_validate_battery_options`); the
+  EPS sensor is in the one-role-per-sensor loop (the error sits on `eps_sensor`)
+  and in `_normalised`'s optional keys (saved only if set);
+  `_build_schema(..., eps_sensor=None, ...)`; the options flow passes the saved
+  value. Error keys: `eps_needs_power_class` ◇ (device class is not `power`, or
+  the entity has no state; a third key beyond the two the task named, so the
+  message is not the outputs' "power or energy" one), `eps_needs_measurement`,
+  `eps_unit_not_power`. The two minimums (`at_least_one_input`,
+  `at_least_one_output`) are unchanged and the EPS sensor satisfies neither.
+- `custom_components/effy/translations/en.json`, `de.json` → data key
+  `eps_sensor`, the three error keys, and one sentence in the description, in
+  both flows (`config`, `options`).
+- `README.md` → a configuration table row and a paragraph (meaning of the sign,
+  validation, role rules, consequence for standby and efficiency). The paragraph
+  describes the behaviour of the whole capability: the option is stored and
+  validated here and has no effect on the calculation until TASK-0041.
+- `tests/test_config_flow.py` → `TestEpsOptionInTheForm`,
+  `TestEpsOptionValidation`, `TestEpsTranslations`; `tests/test_inputs.py` →
+  `TestEpsAccessor` and a key test.
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+- Verification: 1686 tests pass (1663 before, 23 new); `ruff check` and
+  `mypy --strict` clean; `ruff format --check` flags only `tests/test_cache.py`
+  (already flagged before CAP-12, not touched).

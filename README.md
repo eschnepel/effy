@@ -89,6 +89,7 @@ All parameters are set via the UI (Config Flow + Options Flow).
 | **Discharge counter** | BMS input: energy the battery gives to the BMS (battery side) | – |
 | **Charge counter** | BMS output: energy into the battery (battery side) | – |
 | **Grid export counter** | BMS output: energy the BMS gives to the grid | – |
+| **EPS/UPS sensor** | Optional: one signed power sensor of the inverter's EPS/UPS port, state class `measurement`, in W or kW: positive while energy leaves through the port, negative while another inverter feeds it | – |
 | **State of charge sensor** | Optional, for the battery efficiency: the battery's SoC in %, state class `measurement`; set together with the capacity | – |
 | **Battery capacity entity** | Optional, for the battery efficiency: a sensor, number or input_number in Wh or kWh; set together with the SoC | – |
 | **Valley hysteresis** | Optional, for the battery efficiency: how far the SoC must rise out of a valley (in SoC points, at least 15) before the valley counts | 30 |
@@ -101,6 +102,21 @@ roles, and the charge and grid export sensors need a device class (power or
 energy). The loss calculation treats all inputs as one pool and the outputs as
 the other — the roles tell Effy which counter is which, for the standby power
 sensor and for the efficiency sensors.
+
+The **EPS/UPS sensor** (ADR-026) is for an inverter whose emergency power supply
+port feeds backup loads and, when another inverter is connected to it, can also
+take energy in. Pick the one power sensor that reports the port with a sign:
+positive when energy leaves through the port, negative when it enters. It must
+be a power sensor (device class `power`) with state class `measurement`, and a
+unit, if it has one, must be W or kW; otherwise saving is refused. It is neither
+a PV input nor a BMS counter: a sensor cannot have it and another role, and it
+counts for neither of the two minimums above. Per slot Effy treats a positive
+value as an output (the backup loads no longer count as loss) and a negative
+value as an input that takes a loss share like any other. While the port is in
+use the standby and efficiency sensors have fewer quiet or pure slots to work
+with, because Effy cannot tell the port's energy from the battery's: with a
+backup load that never pauses they may stop updating. An entry without this
+option changes nothing.
 
 The **state of charge sensor** and the **battery capacity entity** are for the
 battery efficiency only (ADR-023): they are neither inputs nor outputs, so the

@@ -140,6 +140,7 @@ COUNTERS = (GRID_IMPORT, DISCHARGE, CHARGE, GRID_EXPORT)
 SOC = _const.CONF_SOC_SENSOR
 CAPACITY = _const.CONF_CAPACITY_ENTITY
 HYSTERESIS = _const.CONF_VALLEY_HYSTERESIS
+EPS = _const.CONF_EPS_SENSOR
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +184,21 @@ def _hass_with_outputs() -> _FakeHass:
             "sensor.cap_mwh": _FakeState("energy_storage", unit_of_measurement="MWh"),
             "sensor.cap_percent": _FakeState(None, unit_of_measurement="%"),
             "number.cap_no_unit": _FakeState(None),
+            # TASK-0040: the EPS/UPS sensor
+            "sensor.eps": _FakeState("power", state_class="measurement", unit_of_measurement="W"),
+            "sensor.eps_kw": _FakeState(
+                "power", state_class="measurement", unit_of_measurement="kW"
+            ),
+            "sensor.eps_no_unit": _FakeState("power", state_class="measurement"),
+            "sensor.eps_energy": _FakeState(
+                "energy", state_class="measurement", unit_of_measurement="kWh"
+            ),
+            "sensor.eps_no_class": _FakeState(None, state_class="measurement"),
+            "sensor.eps_total": _FakeState("power", state_class="total", unit_of_measurement="W"),
+            "sensor.eps_no_state_class": _FakeState("power", unit_of_measurement="W"),
+            "sensor.eps_percent": _FakeState(
+                "power", state_class="measurement", unit_of_measurement="%"
+            ),
         }
     )
 
@@ -610,6 +626,131 @@ class TestBatteryOptionsValidation:
         assert options[HYSTERESIS] == 40.0
 
 
+class TestEpsOptionInTheForm:
+    """TASK-0040: the optional EPS/UPS sensor picker (ADR-026 decision 1)."""
+
+    def _form(self, step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return TestSchemaHasTheFourCounterPickers()._form(step, options)
+
+    def _by_key(self, form: dict[str, Any]) -> dict[str, Any]:
+        return {marker.schema: cfg for marker, cfg in form["data_schema"].schema.items()}
+
+    def test_both_flows_offer_it_and_it_is_optional(self) -> None:
+        for step in ("user", "init"):
+            keys = _keys(self._form(step))
+            assert EPS in keys, step
+            assert keys[EPS].required is False
+
+    def test_it_is_one_sensor_restricted_to_the_power_device_class(self) -> None:
+        by_key = self._by_key(self._form("user"))
+        assert "multiple" not in by_key[EPS]["entity"]
+        assert by_key[EPS]["entity"]["domain"] == ["sensor"]
+        assert by_key[EPS]["entity"]["device_class"] == ["power"]
+        # the outputs keep power and energy
+        for key in (CHARGE, GRID_EXPORT):
+            assert by_key[key]["entity"]["device_class"] == ["power", "energy"]
+
+    def test_the_options_flow_suggests_the_saved_sensor(self) -> None:
+        options = {PV: ["sensor.pv"], GRID_IMPORT: "sensor.g", EPS: "sensor.eps"}
+        keys = _keys(self._form("init", options))
+        assert keys[EPS].description == {"suggested_value": "sensor.eps"}
+        assert keys[EPS].default is _MISSING  # a default would bring a cleared picker back
+
+    def test_an_unassigned_picker_has_no_suggestion_and_no_default(self) -> None:
+        for step in ("user", "init"):
+            keys = _keys(self._form(step, {PV: ["sensor.pv"]} if step == "init" else None))
+            assert keys[EPS].description is None
+            assert keys[EPS].default is _MISSING
+
+
+class TestEpsOptionValidation:
+    BASE: dict[str, Any] = {GRID_IMPORT: "sensor.g", CHARGE: "sensor.charge"}
+
+    def _submit(
+        self, extra: dict[str, Any], step: str = "user", base: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        user_input = {**(self.BASE if base is None else base), **extra}
+        if step == "user":
+            flow = _config_flow.EffyConfigFlow()
+            flow.hass = _hass_with_outputs()
+            return asyncio.run(flow.async_step_user(user_input))
+        entry = type("Entry", (), {"options": {}})()
+        options_flow = _config_flow.EffyOptionsFlow(entry)
+        options_flow.hass = _hass_with_outputs()
+        return asyncio.run(options_flow.async_step_init(user_input))
+
+    def _errors(self, extra: dict[str, Any], base: dict[str, Any] | None = None) -> dict[str, str]:
+        result = self._submit(extra, base=base)
+        return dict(result.get("errors", {})) if result["type"] == "form" else {}
+
+    def test_a_power_sensor_with_state_class_measurement_is_saved(self) -> None:
+        for eps in ("sensor.eps", "sensor.eps_kw", "sensor.eps_no_unit"):
+            result = self._submit({EPS: eps})
+            assert result["type"] == "create_entry", eps
+            assert result["options"][EPS] == eps
+
+    def test_a_sensor_without_the_power_device_class_is_rejected(self) -> None:
+        # an energy counter cannot be signed; a missing class and a missing state count too
+        for bad in ("sensor.eps_energy", "sensor.eps_no_class", "sensor.unknown"):
+            assert self._errors({EPS: bad}) == {EPS: "eps_needs_power_class"}, bad
+
+    def test_a_sensor_without_state_class_measurement_is_rejected(self) -> None:
+        for bad in ("sensor.eps_total", "sensor.eps_no_state_class"):
+            assert self._errors({EPS: bad}) == {EPS: "eps_needs_measurement"}, bad
+
+    def test_a_unit_other_than_w_or_kw_is_rejected_but_no_unit_is_accepted(self) -> None:
+        assert self._errors({EPS: "sensor.eps_percent"}) == {EPS: "eps_unit_not_power"}
+        assert self._errors({EPS: "sensor.eps_no_unit"}) == {}
+
+    def test_an_emptied_picker_counts_as_unset(self) -> None:
+        assert self._errors({EPS: ""}) == {}
+        assert self._errors({EPS: None}) == {}
+
+    def test_the_eps_sensor_takes_part_in_the_one_role_per_sensor_rule(self) -> None:
+        # the error sits on the EPS field, the later one, as for the other pickers
+        assert self._errors({PV: ["sensor.eps"], EPS: "sensor.eps"}) == {EPS: "sensor_in_two_roles"}
+        assert self._errors({EPS: "sensor.charge"}) == {EPS: "sensor_in_two_roles"}
+        assert self._errors({EPS: "sensor.g"}) == {EPS: "sensor_in_two_roles"}
+        assert self._errors({SOC: "sensor.soc", CAPACITY: "sensor.cap_kwh", EPS: "sensor.soc"}) == {
+            EPS: "sensor_in_two_roles"
+        }
+
+    def test_the_eps_sensor_is_not_an_input_for_the_minimum(self) -> None:
+        # only an output and the EPS sensor: still no input
+        assert self._errors({EPS: "sensor.eps"}, base={CHARGE: "sensor.charge"}) == {
+            PV: "at_least_one_input"
+        }
+
+    def test_the_eps_sensor_is_not_an_output_for_the_minimum(self) -> None:
+        assert self._errors({EPS: "sensor.eps"}, base={GRID_IMPORT: "sensor.g"}) == {
+            CHARGE: "at_least_one_output"
+        }
+
+    def test_an_eps_sensor_alone_is_no_input_and_no_output(self) -> None:
+        assert self._errors({EPS: "sensor.eps"}, base={}) == {PV: "at_least_one_input"}
+
+    def test_the_battery_options_are_checked_before_the_eps_sensor(self) -> None:
+        errors = self._errors(
+            {SOC: "sensor.soc_total", CAPACITY: "sensor.cap_kwh", EPS: "sensor.eps_total"}
+        )
+        assert errors == {SOC: "soc_needs_measurement"}
+
+    def test_the_options_flow_validates_it_the_same_way(self) -> None:
+        bad = self._submit({EPS: "sensor.eps_total"}, step="init")
+        assert bad["errors"] == {EPS: "eps_needs_measurement"}
+        ok = self._submit({EPS: "sensor.eps"}, step="init")
+        assert ok["type"] == "create_entry"
+        assert ok["data"][EPS] == "sensor.eps"
+
+    def test_an_unset_eps_sensor_is_not_saved_and_the_other_options_are_unchanged(self) -> None:
+        without = self._submit({})["options"]
+        emptied = self._submit({EPS: ""})["options"]
+        assert EPS not in without and EPS not in emptied
+        assert emptied == without
+        with_eps = self._submit({EPS: "sensor.eps"})["options"]
+        assert {k: v for k, v in with_eps.items() if k != EPS} == without
+
+
 class TestTranslations:
     def _load(self, lang: str) -> dict[str, Any]:
         import json
@@ -651,6 +792,38 @@ class TestTranslations:
                     "capacity_unit_not_energy",
                 ):
                     assert errors[error], (lang, section, error)
+
+
+class TestEpsTranslations:
+    def _load(self, lang: str) -> dict[str, Any]:
+        import json
+
+        path = _base / "translations" / f"{lang}.json"
+        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+    def test_en_and_de_name_the_picker_and_its_errors_in_both_flows(self) -> None:
+        for lang in ("en", "de"):
+            data = self._load(lang)
+            for section, step in (("config", "user"), ("options", "init")):
+                assert data[section]["step"][step]["data"][EPS], (lang, section)
+                errors = data[section]["error"]
+                for error in (
+                    "eps_needs_power_class",
+                    "eps_needs_measurement",
+                    "eps_unit_not_power",
+                ):
+                    assert errors[error], (lang, section, error)
+
+    def test_the_description_mentions_the_port_and_the_sign(self) -> None:
+        for lang, words in (
+            ("en", ("EPS", "positive", "negative")),
+            ("de", ("EPS", "positiv", "negativ")),
+        ):
+            data = self._load(lang)
+            for section, step in (("config", "user"), ("options", "init")):
+                text = data[section]["step"][step]["description"]
+                for word in words:
+                    assert word in text, (lang, section, word)
 
 
 class TestDebugExportOption:
