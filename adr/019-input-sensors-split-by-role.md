@@ -87,3 +87,19 @@ stays as it is.
 
 **Decided by:** human (grill session 2026-10-23: "no migration path, silent drop
 is fine, I will reconfigure my system; it is the only installation yet")
+
+---
+
+## Amendment — 2026-11-06 (draft: in force when ADR-026 is accepted)
+
+**Reason:** The EPS/UPS port of an inverter takes energy out and, from another
+inverter, in. It is neither a PV input nor a BMS counter, and "every output is a
+BMS reading" no longer holds for it.
+
+**Decision:** A fifth optional picker, `eps_sensor`, one signed power sensor, is
+split per slot into an EPS output (an output) and an EPS input (an input). Both
+halves are plain members of the output list and the input pool, so decision 2
+(one mixed pool, ADR-001 unchanged) stands. The EPS sensor is never a BMS input
+and never a drain source. Details: ADR-026.
+
+**Decided by:** human (chat 2026-11-06), confirmed by ADR-026's acceptance

@@ -10,7 +10,8 @@ the inputs that were active, and exposes the corrected values as sensors and
 ### System and entities
 
 **Input**: A source sensor for energy or power entering the system: a PV string,
-the battery's discharge counter, the grid-import counter. _Avoid_: Producer
+the battery's discharge counter, the grid-import counter, or the EPS input.
+_Avoid_: Producer
 
 **PV input**: An input that is a PV string. It can never be a drain source: PV
 active alone is loss and drain mixed.
@@ -19,8 +20,20 @@ active alone is loss and drain mixed.
 grid import. Only a BMS input can be a drain source.
 
 **Output**: A source sensor for energy or power leaving the system: the
-battery's charge counter, the grid-export counter. Every output is a BMS
-reading. _Avoid_: Sink, consumer
+battery's charge counter, the grid-export counter, or the EPS output. Every
+output except the EPS output is a BMS reading. _Avoid_: Sink, consumer
+
+**EPS port**: The inverter's emergency power supply (UPS) port. Energy leaves the
+system through it to the backup loads and, when another inverter feeds it,
+enters the system through it. _Avoid_: Backup port
+
+**EPS sensor**: The one signed power sensor of the EPS port: positive when
+energy leaves, negative when it enters. Neither a PV input nor a BMS reading,
+and never a drain source. _Avoid_: EPS counter
+
+**EPS output**: The positive part of the EPS sensor's value in a slot, an
+output. **EPS input**: its negative part as a positive number, an input that
+takes a loss share like any other. At most one of them is not zero in a slot.
 
 **Source sensor**: The user's original entity that an input or output is read
 from. _Avoid_: Source (unqualified), raw sensor

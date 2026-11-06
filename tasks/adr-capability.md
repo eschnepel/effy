@@ -250,3 +250,32 @@ export file, its format and its switch, the replay.
 across a restart (unless the human asks), a speed target (the history
 recalculation takes 3.92 s when repeated; ADR-022's measurement), any change to
 what Effy writes or publishes.
+
+## CAP-12 — The EPS/UPS port in the loss *(proposed 2026-11-06 by the human's request; Gate 1 approved 2026-11-06, smoothing option A; Draft ADR-026, amends ADR-013, ADR-019, ADR-021, ADR-023; TASK-0039 to TASK-0044, Gate 2 pending)*
+
+**What the user sees:** one more optional picker in the options, the EPS/UPS
+sensor (a signed power sensor: positive when energy leaves through the port,
+negative when another inverter feeds it). What the backup loads draw is no
+longer counted as loss, and what the other inverter feeds in is counted as an
+input that carries an equal loss share. `sensor.effy_<eps sensor>` shows that
+input half's effective value (0 while the port exports), and
+`sensor.effy_<eps sensor>_smoothed` the gap-interpolated signed series; both are
+published with role and function `eps`. Without the picker nothing changes.
+
+**End-to-end demonstration:** a slot with 200 W out through the port lowers the
+loss by 200 W; a slot with 150 W in raises the input total by 150 W and gives
+the EPS input an equal share like any input; Σ effective inputs = Σ outputs; the
+same sources without an EPS sensor give identical results (the CAP-1
+equivalence harness, full recalculation and slot timer); an active EPS sensor
+makes a slot impure for the efficiency sensors and breaks a drain interval; the
+published `sensors` list carries the entry.
+
+**Scope (in):** the picker and its validation, the signed split, the formula
+(README, glossary), the waterfall and the slot timer and history path seeing
+both halves, the activity reading of standby and efficiency including the EPS
+sensor, smoothing of its signed series, the effective and the smoothed sensor
+and their published entries (`effy_exports.py`), translations (en, de), tests.
+
+**Scope (out):** two separate EPS counters or an energy counter; gross in-slot
+flows; an EPS efficiency or standby sensor; more than one EPS port; a tolerance
+for small idle readings; any change in Shady or Chargy.

@@ -290,3 +290,19 @@ idle cycles and up to the extended start (≤ 1 day) on a cycle where a jump or
 recovery arrived.
 
 **Decided by:** Lead Agent (documentation only) — pending human confirmation.
+
+---
+
+## Amendment — 2026-11-06 (EPS sensor; draft: in force when ADR-026 is accepted)
+
+**Reason:** Decision 2 limits the gap-interpolated `effy_*_smoothed` sensor to
+power-family *input* sensors. The EPS sensor of ADR-026 is one signed power
+sensor that is an input and an output in turn.
+
+**Decision:** The EPS sensor is smoothed like a power-family input, on its
+signed series and before its split into an EPS output and an EPS input, so both
+halves see the same filled value; its smoothed series is signed. The sensor is
+in the input list, so the code of decision 2 serves it unchanged. The scope
+"input sensors only" otherwise stands.
+
+**Decided by:** human (Gate 1, 2026-11-06: smoothing, option A)

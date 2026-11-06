@@ -314,3 +314,21 @@ module).
 **Decided by:** human (request 2026-10-23: a symbol file "which other downstream
 projects can copy into their own namespace … Effy also uses the same file", and
 "each export definition should have an EFFY\_ prefix")
+
+---
+
+## Amendment — 2026-11-06 (EPS sensor; draft: in force when ADR-026 is accepted)
+
+**Reason:** ADR-026 adds the EPS sensor. Its two Effy sensors (the effective
+series of the input half and the signed smoothed series) are neither `pv` nor
+`bms` sources, and the smoothed one is neither an input nor an output.
+
+**Decision:** `role` gains the value `eps` and `function` gains the value `eps`
+for both entries of the EPS sensor; `direction` gains the value `both` for the
+signed `smoothed` entry (the effective entry is `input`). All are additive
+values: `schema_version` stays 1, a reader ignores a value it does not know.
+`effy_exports.py` gets `EFFY_ROLE_EPS`, `EFFY_FUNCTION_EPS` and
+`EFFY_DIRECTION_BOTH`.
+
+**Decided by:** Lead Agent (formalization ◇), to be confirmed by the human with
+ADR-026

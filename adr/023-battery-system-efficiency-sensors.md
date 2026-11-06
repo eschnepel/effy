@@ -392,3 +392,21 @@ over 3.71 kWh.
    seen, older data) means no minimum.
 
 **Decided by:** human (2026-11-04)
+
+---
+
+## Amendment — 2026-11-06 (EPS sensor; draft: in force when ADR-026 is accepted)
+
+**Reason:** ADR-026 adds an EPS/UPS sensor; decisions 1 and 4 must say what it
+means for validation and for pure slots.
+
+**Decision:**
+
+1. The EPS sensor is a role of its own: a sensor cannot have it and another role,
+   and it satisfies neither "at least one input" nor "at least one output".
+1. An active EPS sensor (a value that is not zero, in either direction) makes a
+   slot impure, like a PV input; it is not one of the four counters, so the 5 %
+   rule of Amendment 2026-11-04 does not apply to it. The efficiency formulas
+   do not change and EPS energy is never subtracted from the BMS side.
+
+**Decided by:** human (chat 2026-11-06: "EPS flow disqualifies the slot")
