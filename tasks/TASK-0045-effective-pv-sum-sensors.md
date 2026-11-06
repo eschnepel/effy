@@ -2,7 +2,7 @@
 
 - **Status:** todo
 - **Capability:** none yet (to be assigned by the Lead)
-- **Related ADRs:** \[ADR-019, ADR-007, ADR-013\]
+- **Related ADRs:** [ADR-019, ADR-007, ADR-013]
 - **Dependencies:** none
 - **Gate:** Gate 2 pending
 
