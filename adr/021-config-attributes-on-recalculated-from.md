@@ -317,7 +317,7 @@ projects can copy into their own namespace … Effy also uses the same file", an
 
 ---
 
-## Amendment — 2026-11-06 (EPS sensor; draft: in force when ADR-026 is accepted)
+## Amendment — 2026-11-06 (EPS sensor; in force, ADR-026 accepted 2026-11-06)
 
 **Reason:** ADR-026 adds the EPS sensor. Its two Effy sensors (the effective
 series of the input half and the signed smoothed series) are neither `pv` nor
@@ -330,5 +330,5 @@ values: `schema_version` stays 1, a reader ignores a value it does not know.
 `effy_exports.py` gets `EFFY_ROLE_EPS`, `EFFY_FUNCTION_EPS` and
 `EFFY_DIRECTION_BOTH`.
 
-**Decided by:** Lead Agent (formalization ◇), to be confirmed by the human with
-ADR-026
+**Decided by:** Lead Agent (formalization ◇), confirmed by the human at Gate 2
+with ADR-026

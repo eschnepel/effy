@@ -1,10 +1,10 @@
 # Task: Add three Effective PV Sum sensors
 
 - **Status:** todo
-- **Capability:** none yet (to be assigned by the Lead)
+- **Capability:** CAP-13
 - **Related ADRs:** [ADR-019, ADR-007, ADR-013]
 - **Dependencies:** none
-- **Gate:** Gate 2 pending
+- **Gate:** Gate 2 approved by the human (2026-11-06)
 
 ## Goal
 

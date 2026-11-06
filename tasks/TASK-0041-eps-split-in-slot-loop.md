@@ -6,8 +6,7 @@
   Amendment 2026-11-06, ADR-012, ADR-014, ADR-001, ADR-005\]
 - **Dependencies:** \[TASK-0039-eps-signed-split-pure,
   TASK-0040-eps-picker-in-config\]
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
-  confirms it.
+- **Gate:** Gate 2 approved by the human (2026-11-06); ADR-026 accepted.
 
 ## Goal
 

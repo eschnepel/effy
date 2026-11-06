@@ -395,7 +395,7 @@ over 3.71 kWh.
 
 ---
 
-## Amendment — 2026-11-06 (EPS sensor; draft: in force when ADR-026 is accepted)
+## Amendment — 2026-11-06 (EPS sensor; in force, ADR-026 accepted 2026-11-06)
 
 **Reason:** ADR-026 adds an EPS/UPS sensor; decisions 1 and 4 must say what it
 means for validation and for pure slots.

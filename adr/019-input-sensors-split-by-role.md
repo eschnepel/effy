@@ -90,7 +90,7 @@ is fine, I will reconfigure my system; it is the only installation yet")
 
 ---
 
-## Amendment — 2026-11-06 (draft: in force when ADR-026 is accepted)
+## Amendment — 2026-11-06 (in force, ADR-026 accepted 2026-11-06)
 
 **Reason:** The EPS/UPS port of an inverter takes energy out and, from another
 inverter, in. It is neither a PV input nor a BMS counter, and "every output is a

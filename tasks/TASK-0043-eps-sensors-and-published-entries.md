@@ -5,8 +5,7 @@
 - **Related ADRs:** \[ADR-026 decision 6, ADR-021 and Amendment 2026-11-06,
   ADR-023 decision 11, ADR-013 decision 2\]
 - **Dependencies:** [TASK-0041-eps-split-in-slot-loop]
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
-  confirms it.
+- **Gate:** Gate 2 approved by the human (2026-11-06); ADR-026 accepted.
 
 ## Goal
 

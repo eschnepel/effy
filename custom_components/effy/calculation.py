@@ -6,6 +6,10 @@ boundary is enforced and how it is exploited for zero-mock unit testing.
 
 Algorithm (full rationale in ADR-001):
   total_loss = max(0, sum(inputs_W) - sum(outputs_W))
+  The EPS/UPS sensor (ADR-026) is signed: ``split_signed_reading`` turns it
+  into an input half and an output half, which are plain members of the two
+  lists, so the formula reads
+  max(0, sum(inputs) + eps_in - sum(outputs) - eps_out).
 
   Waterfall distribution (ascending order by value, only non-zero inputs):
     1. Sort active (non-zero) inputs ascending by value.
@@ -127,6 +131,32 @@ def distribute_loss(
         total_loss_w=total_loss,
         shares=shares,
         effective_values_w=effective_values_w,
+    )
+
+
+def split_signed_reading(reading: SensorReading) -> tuple[SensorReading, SensorReading]:
+    """
+    Split the signed reading of the EPS/UPS sensor into its two halves (ADR-026).
+
+    The EPS sensor is positive while energy leaves the system through the port
+    and negative while it enters. A signed value must not go into ``distribute_loss``
+    as it is: in the outputs a negative value would be subtracted from their sum
+    and raise the loss, and it would never take a loss share.
+
+    Returns ``(input_half, output_half)``: the input half carries the absolute
+    value of a negative reading, the output half carries a positive one; at most
+    one of them is not zero. Both keep the entity ID and the unit of the reading
+    (ADR-002: the single normalisation point stays inside ``distribute_loss``).
+    The input half is returned even when it is 0, so that the sensor keeps a row in
+    the effective series; a 0 takes no loss share.
+    """
+    value = reading.raw_value
+    # Explicit branches, not max(): they cannot produce a negative zero.
+    input_value = -value if value < 0.0 else 0.0
+    output_value = value if value > 0.0 else 0.0
+    return (
+        replace(reading, raw_value=input_value),
+        replace(reading, raw_value=output_value),
     )
 
 

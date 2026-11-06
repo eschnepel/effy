@@ -1,11 +1,10 @@
 # Task: Pure split of the signed EPS reading into an EPS output and an EPS input
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-12
 - **Related ADRs:** [ADR-026 decisions 2 and 8, ADR-001, ADR-005, ADR-002]
 - **Dependencies:** []
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
-  confirms it.
+- **Gate:** Gate 2 approved by the human (2026-11-06); ADR-026 accepted.
 
 ## Goal
 
@@ -71,4 +70,21 @@ half first ◇), `tests/test_calculation.py`.
 
 <!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
 
-- _(open)_
+- `custom_components/effy/calculation.py` → function
+  `split_signed_reading(reading: SensorReading) -> tuple[SensorReading, SensorReading]`:
+  returns `(input_half, output_half)`; the input half carries the absolute value
+  of a negative reading, the output half a positive one, at most one is not
+  zero; both keep `entity_id` and `original_unit`, no unit conversion; the input
+  half is returned even when 0; a 0 half is never a negative zero. The module
+  docstring notes the EPS terms of the formula. `distribute_loss`,
+  `SensorReading` and every other symbol are unchanged.
+- `tests/test_calculation.py` → import alias `split_signed_reading`; classes
+  `TestSplitSignedReading` (halves, recombination, units, no mutation, no
+  negative zero) and `TestEpsFormula` (EPS output lowers the loss and is capped
+  at 0, EPS input raises the total and takes an equal share or its whole value,
+  Σ effective inputs = Σ outputs, a zero input keeps a row and takes no share,
+  kW equals W, why the split is needed).
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+- Verification: 1663 tests pass (1635 before, 28 new); `ruff check` and
+  `mypy --strict` clean; `ruff format` flags only `tests/test_cache.py`, which
+  was already flagged before CAP-12.

@@ -293,7 +293,7 @@ recovery arrived.
 
 ---
 
-## Amendment — 2026-11-06 (EPS sensor; draft: in force when ADR-026 is accepted)
+## Amendment — 2026-11-06 (EPS sensor; in force, ADR-026 accepted 2026-11-06)
 
 **Reason:** Decision 2 limits the gap-interpolated `effy_*_smoothed` sensor to
 power-family *input* sensors. The EPS sensor of ADR-026 is one signed power

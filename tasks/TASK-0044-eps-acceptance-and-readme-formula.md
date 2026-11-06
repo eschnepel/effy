@@ -5,8 +5,7 @@
 - **Related ADRs:** [ADR-026, ADR-001, ADR-005]
 - **Dependencies:** \[TASK-0042-eps-activity-in-standby-and-efficiency,
   TASK-0043-eps-sensors-and-published-entries\]
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
-  confirms it.
+- **Gate:** Gate 2 approved by the human (2026-11-06); ADR-026 accepted.
 
 ## Goal
 

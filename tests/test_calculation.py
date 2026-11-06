@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import math
 import sys
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -37,6 +38,7 @@ _spec.loader.exec_module(_calculation)
 if not TYPE_CHECKING:
     SensorReading = _calculation.SensorReading
 distribute_loss = _calculation.distribute_loss
+split_signed_reading = _calculation.split_signed_reading
 effective_in_original_unit = _calculation.effective_in_original_unit
 trapezoidal_slot_contributions = _calculation.trapezoidal_slot_contributions
 trapezoidal_jump_windows = _calculation.trapezoidal_jump_windows
@@ -171,6 +173,143 @@ class TestSingleSensor:
         outputs = [_r("load", 900)]
         dist = distribute_loss(inputs, outputs)
         assert sum(dist.effective_values_w.values()) == pytest.approx(900.0)
+
+
+class TestSplitSignedReading:
+    """The EPS sensor's signed reading becomes an input half and an output half (ADR-026)."""
+
+    def test_positive_value_is_an_eps_output(self) -> None:
+        eps_in, eps_out = split_signed_reading(_r("eps", 200))
+        assert eps_in.raw_value == 0.0
+        assert eps_out.raw_value == 200.0
+
+    def test_negative_value_is_an_eps_input(self) -> None:
+        eps_in, eps_out = split_signed_reading(_r("eps", -150))
+        assert eps_in.raw_value == 150.0
+        assert eps_out.raw_value == 0.0
+
+    def test_zero_gives_two_zero_halves(self) -> None:
+        eps_in, eps_out = split_signed_reading(_r("eps", 0))
+        assert eps_in.raw_value == 0.0
+        assert eps_out.raw_value == 0.0
+
+    @pytest.mark.parametrize("value", [-300.0, -0.5, 0.0, 0.5, 300.0])
+    def test_halves_recombine_and_at_most_one_is_set(self, value: float) -> None:
+        eps_in, eps_out = split_signed_reading(_r("eps", value))
+        assert eps_in.raw_value >= 0.0
+        assert eps_out.raw_value >= 0.0
+        assert eps_in.raw_value == 0.0 or eps_out.raw_value == 0.0
+        assert eps_out.raw_value - eps_in.raw_value == pytest.approx(value)
+
+    @pytest.mark.parametrize("value", [-5.0, 0.0, 5.0])
+    def test_a_zero_half_is_never_a_negative_zero(self, value: float) -> None:
+        for half in split_signed_reading(_r("eps", value)):
+            assert math.copysign(1.0, half.raw_value) == 1.0
+
+    @pytest.mark.parametrize("unit", ["W", "kW"])
+    def test_halves_keep_entity_id_and_unit_and_do_not_convert(self, unit: str) -> None:
+        eps_in, eps_out = split_signed_reading(_r("sensor.eps", -0.25, unit))
+        assert eps_in.entity_id == eps_out.entity_id == "sensor.eps"
+        assert eps_in.original_unit == eps_out.original_unit == unit
+        assert eps_in.raw_value == 0.25
+
+    def test_the_reading_is_not_mutated(self) -> None:
+        reading = _r("eps", -40)
+        split_signed_reading(reading)
+        assert reading.raw_value == -40
+        assert reading.original_unit == "W"
+
+
+class TestEpsFormula:
+    """What the split does to the loss formula and the waterfall (ADR-026, ADR-001, ADR-005).
+
+    Base case without an EPS sensor: grid import 1000 W and PV 500 W in,
+    charge 1300 W out, so the loss is 200 W.
+    """
+
+    @staticmethod
+    def _base_inputs() -> list[SensorReading]:
+        return [_r("grid_import", 1000), _r("pv", 500)]
+
+    @staticmethod
+    def _with_eps(value: float, unit: str = "W") -> tuple[list[SensorReading], list[SensorReading]]:
+        eps_in, eps_out = split_signed_reading(_r("eps", value, unit))
+        inputs = [*TestEpsFormula._base_inputs(), eps_in]
+        outputs = [_r("charge", 1300), eps_out]
+        return inputs, outputs
+
+    def test_base_case(self) -> None:
+        dist = distribute_loss(self._base_inputs(), [_r("charge", 1300)])
+        assert dist.total_loss_w == pytest.approx(200.0)
+
+    def test_an_eps_output_lowers_the_loss_by_its_power(self) -> None:
+        # 200 W leave through the EPS port: that energy is no longer "loss".
+        inputs, outputs = self._with_eps(200)
+        dist = distribute_loss(inputs, outputs)
+        assert dist.total_loss_w == pytest.approx(0.0)
+
+    def test_a_smaller_eps_output_lowers_it_by_exactly_that_much(self) -> None:
+        inputs, outputs = self._with_eps(120)
+        dist = distribute_loss(inputs, outputs)
+        assert dist.total_loss_w == pytest.approx(200.0 - 120.0)
+
+    def test_an_eps_output_above_the_loss_is_capped_at_zero_loss(self) -> None:
+        inputs, outputs = self._with_eps(500)
+        dist = distribute_loss(inputs, outputs)
+        assert dist.total_loss_w == 0.0
+        assert all(share == 0.0 for share in dist.shares.values())
+
+    def test_an_eps_input_raises_the_input_total_and_takes_an_equal_share(self) -> None:
+        inputs, outputs = self._with_eps(-150)
+        dist = distribute_loss(inputs, outputs)
+        # 1650 W in, 1300 W out: loss 350 W, shared 350 / 3 each (150 W can bear it).
+        assert dist.total_loss_w == pytest.approx(350.0)
+        assert dist.shares["eps"] == pytest.approx(350.0 / 3)
+        assert dist.shares["grid_import"] == pytest.approx(350.0 / 3)
+        assert dist.shares["pv"] == pytest.approx(350.0 / 3)
+        assert dist.effective_values_w["eps"] == pytest.approx(150.0 - 350.0 / 3)
+
+    def test_an_eps_input_too_small_for_its_share_passes_the_rest_on(self) -> None:
+        inputs, outputs = self._with_eps(-50)
+        dist = distribute_loss(inputs, outputs)
+        # 1550 W in, 1300 W out: loss 250 W; 50 W absorbs only its own value.
+        assert dist.total_loss_w == pytest.approx(250.0)
+        assert dist.shares["eps"] == pytest.approx(50.0)
+        assert dist.shares["grid_import"] == pytest.approx(100.0)
+        assert dist.shares["pv"] == pytest.approx(100.0)
+        assert dist.effective_values_w["eps"] == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("value", [-150.0, -50.0, 0.0, 120.0, 200.0])
+    def test_effective_inputs_equal_outputs(self, value: float) -> None:
+        inputs, outputs = self._with_eps(value)
+        dist = distribute_loss(inputs, outputs)
+        total_out = sum(r.raw_value for r in outputs)
+        if dist.total_loss_w > 0.0:
+            assert sum(dist.effective_values_w.values()) == pytest.approx(total_out)
+
+    def test_an_exporting_port_is_an_input_of_zero_that_takes_no_share(self) -> None:
+        inputs, outputs = self._with_eps(120)
+        dist = distribute_loss(inputs, outputs)
+        assert dist.shares["eps"] == 0.0
+        assert dist.effective_values_w["eps"] == 0.0
+        assert "eps" in dist.effective_values_w  # the sensor keeps a row
+
+    def test_kw_sensor_gives_the_same_result_as_w(self) -> None:
+        in_w, out_w = self._with_eps(-150)
+        in_kw, out_kw = self._with_eps(-0.15, "kW")
+        dist_w = distribute_loss(in_w, out_w)
+        dist_kw = distribute_loss(in_kw, out_kw)
+        assert dist_kw.total_loss_w == pytest.approx(dist_w.total_loss_w)
+        assert effective_in_original_unit("eps", dist_kw, "kW") == pytest.approx(
+            dist_w.effective_values_w["eps"] / 1000.0
+        )
+
+    def test_without_the_halves_a_negative_reading_would_be_wrong(self) -> None:
+        # Documents why the split exists: a signed value in the outputs adds to the loss
+        # instead of acting as an input that takes a share.
+        dist = distribute_loss(self._base_inputs(), [_r("charge", 1300), _r("eps", -150)])
+        assert dist.total_loss_w == pytest.approx(350.0)
+        assert "eps" not in dist.shares
 
 
 def _ts(h: int, m: int, s: int = 0) -> datetime:

@@ -251,7 +251,7 @@ across a restart (unless the human asks), a speed target (the history
 recalculation takes 3.92 s when repeated; ADR-022's measurement), any change to
 what Effy writes or publishes.
 
-## CAP-12 — The EPS/UPS port in the loss *(proposed 2026-11-06 by the human's request; Gate 1 approved 2026-11-06, smoothing option A; Draft ADR-026, amends ADR-013, ADR-019, ADR-021, ADR-023; TASK-0039 to TASK-0044, Gate 2 pending)*
+## CAP-12 — The EPS/UPS port in the loss *(proposed 2026-11-06 by the human's request; Gate 1 approved 2026-11-06, smoothing option A; ADR-026 accepted, amends ADR-013, ADR-019, ADR-021, ADR-023; TASK-0039 to TASK-0044, Gate 2 approved 2026-11-06)*
 
 **What the user sees:** one more optional picker in the options, the EPS/UPS
 sensor (a signed power sensor: positive when energy leaves through the port,
@@ -279,3 +279,26 @@ and their published entries (`effy_exports.py`), translations (en, de), tests.
 **Scope (out):** two separate EPS counters or an energy counter; gross in-slot
 flows; an EPS efficiency or standby sensor; more than one EPS port; a tolerance
 for small idle readings; any change in Shady or Chargy.
+
+## CAP-13 — Effective PV sum *(assigned by the Lead 2026-11-06 for the human's TASK-0045; Gate 1 and Gate 2 approved by the human 2026-11-06 with the pull)*
+
+**What the user sees:** three sensors that add up the effective values of all PV
+inputs: `Effective PV Sum now` (power), `Effective PV Sum today (integral)`
+(energy, resets at the Home Assistant local midnight) and
+`Effective PV Sum total (integral)` (energy, from the first processed slot of
+the history, never reset). They are rebuilt with the history and published with
+a role and function of their own. The EPS sensor of CAP-12 is not a PV input and
+is not in the sum.
+
+**End-to-end demonstration:** with two PV inputs in mixed units, the three
+sensors show the sum, the day's integral and the total; after the
+recalculate-history button the integrals are rebuilt and the sum of the
+per-input integrals equals the integral of the sum; an entry without a PV input
+has none of them.
+
+**Scope (in):** see `TASK-0045-effective-pv-sum-sensors.md`. **Scope (out):** a
+sum over anything but the PV inputs; any change of the per-input sensors.
+
+**Order:** after CAP-12; both touch `sensor.py`, `catalog.py`,
+`effy_exports.py`, `coordinator.py`, `README.md` and the translations, so they
+run strictly one after the other.

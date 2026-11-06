@@ -1,10 +1,11 @@
 # ADR-026 – The EPS/UPS Port as a Signed Power Sensor
 
-**Date:** 2026-11-06 **Status:** Draft — decisions were taken by the human in
-chat on 2026-11-06 (one signed power sensor; an EPS flow disqualifies a pure
-slot; the EPS input takes a loss share like any input; the EPS series is
-smoothed, option A, at Gate 1). ◇ marks my formalization of a decision, to be
-confirmed at Gate 2. Terms follow `GLOSSARY.md`.
+**Date:** 2026-11-06 **Status:** Accepted (Gate 2, 2026-11-06). The decisions
+were taken by the human in chat on 2026-11-06 (one signed power sensor; an EPS
+flow disqualifies a pure slot; the EPS input takes a loss share like any input;
+the EPS series is smoothed, option A, at Gate 1). ◇ marks my formalization of a
+decision; the human confirmed all of them at Gate 2 ("all approved"), including
+the new value `both` of `direction`. Terms follow `GLOSSARY.md`.
 
 ---
 
@@ -219,4 +220,4 @@ tolerance for small idle readings (5); any change in Shady or Chargy.
 ## Open decisions
 
 None. Smoothing was decided by the human at Gate 1 (option A, 2026-11-06). The
-points marked ◇ are mine and are confirmed or changed at Gate 2.
+points marked ◇ are mine and were confirmed by the human at Gate 2.

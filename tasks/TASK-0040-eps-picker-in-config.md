@@ -5,8 +5,7 @@
 - **Related ADRs:** \[ADR-026 decision 1, ADR-019 Amendment 2026-11-06, ADR-023
   decision 1 and Amendment 2026-11-06\]
 - **Dependencies:** []
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
-  confirms it.
+- **Gate:** Gate 2 approved by the human (2026-11-06); ADR-026 accepted.
 
 ## Goal
 

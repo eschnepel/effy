@@ -46,7 +46,7 @@
 | TASK-0036-recorder-read-cache | Stage 1: evaluate what Effy reads from the recorder and what a cache after Shady's `cache.py` would hold (raw states are events, statistics are slots), what it buys, and write Draft ADR-025; **gate: the human confirms the draft**; Stage 2: a pure `cache.py` that every read goes through, equal results, `clear()` and `snapshot()` (CAP-11; human request 2026-10-31) | review (2026-10-31; Stage 2 built; the human's Pi record outstanding) | — | — |
 | TASK-0037-recalculation-debug-export | Stage 1: decide how a debug export of the history recalculation is switched on, its content, format, place, size and privacy, and the replay; Stage 2: clear the cache, run the recalculation, write the cache and the context to one file, and replay it offline in the test harness (CAP-11; human request 2026-10-31; needs TASK-0036) | review (2026-11-03; Stage 1 decided with the human, Stage 2 built; the human's run on the Pi outstanding) | TASK-0036-recorder-read-cache | — |
 | TASK-0038-button-rebuilds-standby-first-processed-slot | The history button also rebuilds the standby machine (before efficiency), and the standby, efficiency, battery and roundtrip sensors show `first_processed_slot`; the symptom 'at most 3 runs or intervals' analysed (CAP-2, CAP-8, CAP-9; human request 2026-11-01) | review (2026-11-01; built; the human's check on the instance outstanding) | TASK-0036-recorder-read-cache | — |
-| TASK-0039-eps-signed-split-pure | Pure split of the signed EPS reading into an EPS output and an EPS input, with formula tests (CAP-12, ADR-026) | todo | — | — |
+| TASK-0039-eps-signed-split-pure | Pure split of the signed EPS reading into an EPS output and an EPS input, with formula tests (CAP-12, ADR-026) | done | — | inline (Lead) |
 | TASK-0040-eps-picker-in-config | The optional EPS/UPS sensor picker, its validation, translations, README row and `inputs.eps_id`; no pool changes (CAP-12, ADR-026 decision 1) | todo | — | — |
 | TASK-0041-eps-split-in-slot-loop | The EPS sensor in the waterfall path: input list, smoothing on the signed series, split in the slot loop; slot job equals full recalculation (CAP-12, ADR-026 decisions 2, 3) | todo | TASK-0039-eps-signed-split-pure, TASK-0040-eps-picker-in-config | — |
 | TASK-0042-eps-activity-in-standby-and-efficiency | An active EPS sensor, in either sign, makes a slot impure and breaks a drain interval; tests first, change only if one fails (CAP-12, ADR-026 decision 5) | todo | TASK-0041-eps-split-in-slot-loop | — |
@@ -54,10 +54,10 @@
 | TASK-0044-eps-acceptance-and-readme-formula | CAP-12 acceptance test; README formula, ADR index (CAP-12) | todo | TASK-0042-eps-activity-in-standby-and-efficiency, TASK-0043-eps-sensors-and-published-entries | — |
 | TASK-0045-effective-pv-sum-sensors | Three sensors: Effective PV Sum now, today (integral), total (integral) | todo | — | — |
 
-CAP-12 tasks (TASK-0039 to TASK-0044, proposed 2026-11-06, Gate 2 pending; Draft
-ADR-026): strictly sequential, in the order of the numbering. Shared files force
-it when working inline: 0040 and 0041 both edit `inputs.py`; 0041 and 0042 may
-both edit `history.py`; 0040, 0043 and 0044 edit `README.md` and 0040 the
+CAP-12 tasks (TASK-0039 to TASK-0044, approved at Gate 2 on 2026-11-06; ADR-026
+accepted): strictly sequential, in the order of the numbering. Shared files
+force it when working inline: 0040 and 0041 both edit `inputs.py`; 0041 and 0042
+may both edit `history.py`; 0040, 0043 and 0044 edit `README.md` and 0040 the
 translations, so merge README last. With sub-agents the disjoint pairs could run
 in parallel: 0039 beside 0040 (calculation.py against config), and 0042 beside
 0043 (history.py tests against catalog, sensor and exports). TASK-0042 is
@@ -215,6 +215,7 @@ changed.
 | 2026-11-01 | — | added TASK-0038-button-rebuilds-standby-first-processed-slot (depends on TASK-0036) | human request: standby belongs to the button recalculation; the sensors show at most 3 runs or intervals (a symptom); add the first evaluated slot as an attribute to validate what is included |
 | 2026-11-06 | — | added Draft ADR-026 and the CAP-12 proposal (the EPS/UPS port as one signed power sensor); draft amendments on ADR-019, ADR-021, ADR-023; glossary terms EPS port, EPS sensor, EPS output, EPS input; no task yet (Gate 1 pending) | human request: an output sensor option for the EPS/UPS, which can also take energy in from another inverter, formulas adjusted. Human decisions: one signed power sensor; EPS flow disqualifies a pure slot; the EPS input takes a loss share |
 | 2026-11-06 | — | Gate 1 (CAP-12) approved by the human with smoothing option A: ADR-026 rewired in its text (smoothing on the signed series before the split; a second published series, the signed smoothed one, direction `both`), draft amendment added to ADR-013 and extended on ADR-021; generated TASK-0039 to TASK-0044 (pure split · picker · waterfall path · activity pins · sensors and contract · acceptance). Gate 2 pending, no code | human: "With smoothing. Option A. Proceed.". Found while planning: the activity reading tests `mean != 0` on a power-family input's smoothed series, so option A also makes the signed EPS series the source of the EPS activity (TASK-0042 pins it, a negative value in particular) |
+| 2026-11-06 | — | Gate 2 approved by the human with the pull (mdformat applied, TASK-0039 to TASK-0044 included, TASK-0045 added by the human): ADR-026 set to Accepted, its amendments on ADR-013, ADR-019, ADR-021, ADR-023 in force; the new value `direction` `both` confirmed. Assigned TASK-0045 to CAP-13 and ordered it after CAP-12 (shared files). Baseline before any code: 1635 tests pass, `ruff check` and `mypy` clean, `ruff format --check` flags `tests/test_cache.py` (not touched by CAP-12) | human: "all approved now. proceed." |
 
 ## Audit Groups
 
