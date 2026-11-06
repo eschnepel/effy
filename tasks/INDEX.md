@@ -53,16 +53,16 @@
 | TASK-0043-eps-sensors-and-published-entries | The two EPS Effy sensors exist and are published with role/function `eps` and direction `both` for the signed series; `effy_exports.py` (CAP-12, ADR-026 decision 6) | todo | TASK-0041-eps-split-in-slot-loop | — |
 | TASK-0044-eps-acceptance-and-readme-formula | CAP-12 acceptance test; README formula, ADR index (CAP-12) | todo | TASK-0042-eps-activity-in-standby-and-efficiency, TASK-0043-eps-sensors-and-published-entries | — |
 
-CAP-12 tasks (TASK-0039 to TASK-0044, proposed 2026-11-06, Gate 2 pending;
-Draft ADR-026): strictly sequential, in the order of the numbering. Shared files
-force it when working inline: 0040 and 0041 both edit `inputs.py`; 0041 and
-0042 may both edit `history.py`; 0040, 0043 and 0044 edit `README.md` and
-0040 the translations, so merge README last. With sub-agents the disjoint
-pairs could run in parallel: 0039 beside 0040 (calculation.py against config),
-and 0042 beside 0043 (history.py tests against catalog, sensor and exports).
-TASK-0042 is evaluate-then-fix: its tests come first and the code is changed
-only if one fails. The three CAP-12 sensors of the existing machines (standby,
-efficiency, battery) are read, never changed, by this set.
+CAP-12 tasks (TASK-0039 to TASK-0044, proposed 2026-11-06, Gate 2 pending; Draft
+ADR-026): strictly sequential, in the order of the numbering. Shared files force
+it when working inline: 0040 and 0041 both edit `inputs.py`; 0041 and 0042 may
+both edit `history.py`; 0040, 0043 and 0044 edit `README.md` and 0040 the
+translations, so merge README last. With sub-agents the disjoint pairs could run
+in parallel: 0039 beside 0040 (calculation.py against config), and 0042 beside
+0043 (history.py tests against catalog, sensor and exports). TASK-0042 is
+evaluate-then-fix: its tests come first and the code is changed only if one
+fails. The three CAP-12 sensors of the existing machines (standby, efficiency,
+battery) are read, never changed, by this set.
 
 ADR-023 tasks (TASK-0017 to TASK-0027, proposed 2026-10-23; ADR-023 accepted
 2026-10-27 by the human's instruction to work on them, one after the other, a

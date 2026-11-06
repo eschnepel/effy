@@ -5,10 +5,9 @@
 
 This change set adds **no new external dependencies** (TASK-0039 to TASK-0044,
 the EPS/UPS port, are standard library only as well; the signed split is pure
-Python in `calculation.py`) (nor do TASK-0017 to
-TASK-0027: the efficiency machines are pure Python on the standard library).
-Entries below record what already exists so workers don't add redundant
-installs.
+Python in `calculation.py`) (nor do TASK-0017 to TASK-0027: the efficiency
+machines are pure Python on the standard library). Entries below record what
+already exists so workers don't add redundant installs.
 
 ## homeassistant (runtime-provided)
 

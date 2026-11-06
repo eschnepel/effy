@@ -2,9 +2,12 @@
 
 - **Status:** todo
 - **Capability:** CAP-12
-- **Related ADRs:** [ADR-026 decisions 2, 3, 8, ADR-013 decision 2 and Amendment 2026-11-06, ADR-012, ADR-014, ADR-001, ADR-005]
-- **Dependencies:** [TASK-0039-eps-signed-split-pure, TASK-0040-eps-picker-in-config]
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human confirms it.
+- **Related ADRs:** \[ADR-026 decisions 2, 3, 8, ADR-013 decision 2 and
+  Amendment 2026-11-06, ADR-012, ADR-014, ADR-001, ADR-005\]
+- **Dependencies:** \[TASK-0039-eps-signed-split-pure,
+  TASK-0040-eps-picker-in-config\]
+- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
+  confirms it.
 
 ## Goal
 
@@ -19,10 +22,10 @@ recalculation) must hold with the sensor.
 - Given an EPS sensor, then `all_input_ids` ends with it (after the PV and BMS
   inputs) and `output_ids` does not contain it; given none, then both are as
   before.
-- Given the EPS sensor's statistic `mean` in a slot, then the slot loop turns the
-  signed value into the two halves (TASK-0039's function): the input half replaces
-  the sensor's reading in the input readings, the output half is added to the
-  output readings; the sensor is fetched, smoothed and indexed once.
+- Given the EPS sensor's statistic `mean` in a slot, then the slot loop turns
+  the signed value into the two halves (TASK-0039's function): the input half
+  replaces the sensor's reading in the input readings, the output half is added
+  to the output readings; the sensor is fetched, smoothed and indexed once.
 - Given an EPS output of 200 W, then the slot's total loss is 200 W lower than
   without the sensor; given an EPS input of 150 W, then the input total is 150 W
   higher and the EPS input takes an equal share; the effective value of
@@ -49,8 +52,9 @@ recalculation) must hold with the sensor.
 
 `inputs.py` (`all_input_ids`), `history.py` (`_compute_effective_slots`, the
 slot loop), possibly `coordinator.py` and `sensor.py` (verification first),
-`tests/test_history_recent_equivalence.py`, `tests/test_history_compute_edges.py`,
-`tests/test_coordinator_slot.py`, one new `tests/test_eps_waterfall.py`.
+`tests/test_history_recent_equivalence.py`,
+`tests/test_history_compute_edges.py`, `tests/test_coordinator_slot.py`, one new
+`tests/test_eps_waterfall.py`.
 
 ## Definition of Done
 
@@ -71,7 +75,8 @@ slot loop), possibly `coordinator.py` and `sensor.py` (verification first),
   `_readings_for_slot` for the inputs and the outputs, `distribute_loss`,
   `effective_in_original_unit`; the smoothing loop `for eid in input_ids` calls
   `interpolate_slot_gaps` and merges filled rows into `indexed` with
-  `setdefault`), `_readings_for_slot`, `_effy_entity_id`, `_effy_smoothed_entity_id`.
+  `setdefault`), `_readings_for_slot`, `_effy_entity_id`,
+  `_effy_smoothed_entity_id`.
 - Pre-existing, `calculation.py`: `INTERPOLATION_MAX_GAP_SLOTS` (2),
   `interpolate_slot_gaps`.
 - To be filled by the Lead at Phase 3 from the Delivered Artifacts of

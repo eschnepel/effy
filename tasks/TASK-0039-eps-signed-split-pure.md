@@ -4,13 +4,14 @@
 - **Capability:** CAP-12
 - **Related ADRs:** [ADR-026 decisions 2 and 8, ADR-001, ADR-005, ADR-002]
 - **Dependencies:** []
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human confirms it.
+- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
+  confirms it.
 
 ## Goal
 
-A pure function in `calculation.py` that turns the EPS sensor's signed reading of
-one slot into its two halves (the EPS input for the inputs, the EPS output for
-the outputs), and tests that show what that does to the loss formula and the
+A pure function in `calculation.py` that turns the EPS sensor's signed reading
+of one slot into its two halves (the EPS input for the inputs, the EPS output
+for the outputs), and tests that show what that does to the loss formula and the
 waterfall. No Home Assistant, no I/O, no wiring.
 
 ## Acceptance Criteria
@@ -39,8 +40,8 @@ waterfall. No Home Assistant, no I/O, no wiring.
 ## Estimated File / Module Footprint (hint, not a commitment)
 
 `custom_components/effy/calculation.py` (one new function, e.g.
-`split_signed_reading(reading) -> tuple[SensorReading, SensorReading]`,
-input half first ◇), `tests/test_calculation.py`.
+`split_signed_reading(reading) -> tuple[SensorReading, SensorReading]`, input
+half first ◇), `tests/test_calculation.py`.
 
 ## Definition of Done
 
@@ -57,9 +58,11 @@ input half first ◇), `tests/test_calculation.py`.
 
 <!-- Filled by the Lead Agent BEFORE implementation, from the Delivered Artifacts of the dependency tasks. -->
 
-- Pre-existing, `calculation.py`: `SensorReading(entity_id, raw_value, original_unit)`,
+- Pre-existing, `calculation.py`:
+  `SensorReading(entity_id, raw_value, original_unit)`,
   `distribute_loss(inputs, outputs) -> LossDistribution`, `LossDistribution`
-  (`total_loss_w`, `shares`, `effective_values_w`), `effective_in_original_unit`.
+  (`total_loss_w`, `shares`, `effective_values_w`),
+  `effective_in_original_unit`.
 - Pre-existing, `tests/test_calculation.py`: the file-path import of
   `calculation` used by the existing classes.
 - No dependency tasks.

@@ -27,8 +27,8 @@ through the port, negative when it enters.
   subtracted from the outputs' sum: it would raise the loss, and it would never
   take a loss share. Adding the sensor to either list unchanged is therefore
   wrong; it has to be split first.
-- Outputs are always BMS readings (glossary, ADR-019). An EPS sensor is neither a
-  BMS reading nor a PV string.
+- Outputs are always BMS readings (glossary, ADR-019). An EPS sensor is neither
+  a BMS reading nor a PV string.
 
 **Assumptions:**
 
@@ -76,7 +76,8 @@ sensor cannot have two roles (ADR-023 decision 1).
 
 ### 2. The signed split, and the formula
 
-Per slot, the EPS sensor's value `v` (the `mean`, in W or kW) gives two readings:
+Per slot, the EPS sensor's value `v` (the `mean`, in W or kW) gives two
+readings:
 
 ```
 eps_out = max(v, 0)     → joins the outputs
@@ -90,28 +91,27 @@ total_loss = max(0, Σ inputs + eps_in − Σ outputs − eps_out)
 ```
 
 and the waterfall (ADR-001) is unchanged: the EPS input is an active input with
-an equal loss share like every other (human). The invariant
-Σ effective inputs = Σ outputs holds with both halves included, with the
-exception ADR-005 already names (a clamped slot). `distribute_loss` keeps its
-signature; the split is a pure function in `calculation.py` ◇ that the slot
-loop applies to the EPS sensor's reading. The EPS sensor is a member of the
-input list (`all_input_ids`, after the PV and BMS inputs ◇) and **not** of the
-output list: it is fetched, smoothed and shown once, and only the slot loop
-turns its signed value into the two readings, so the output half never needs
-a list of its own.
+an equal loss share like every other (human). The invariant Σ effective inputs =
+Σ outputs holds with both halves included, with the exception ADR-005 already
+names (a clamped slot). `distribute_loss` keeps its signature; the split is a
+pure function in `calculation.py` ◇ that the slot loop applies to the EPS
+sensor's reading. The EPS sensor is a member of the input list (`all_input_ids`,
+after the PV and BMS inputs ◇) and **not** of the output list: it is fetched,
+smoothed and shown once, and only the slot loop turns its signed value into the
+two readings, so the output half never needs a list of its own.
 
 ### 3. Smoothing: the signed series, before the split (human, option A)
 
 The EPS sensor is smoothed like a power-family input (ADR-013 decision 2): gaps
-of up to `INTERPOLATION_MAX_GAP_SLOTS` (2) slots are interpolated linearly
-**on the signed series**, and the interpolated values are merged into the
-per-slot series before the split, so both halves see the same filled value.
-(A gap that spans a change of sign passes through zero.) A longer gap stays a
-gap, no extrapolation. This is the one exception to "outputs are left
-untouched" (ADR-012): the output half is smoothed because it is the same
-reading as the input half. The interpolated series is published as its own
-Effy sensor (5). It is also what the standby and efficiency machines read as
-the EPS sensor's activity (4).
+of up to `INTERPOLATION_MAX_GAP_SLOTS` (2) slots are interpolated linearly **on
+the signed series**, and the interpolated values are merged into the per-slot
+series before the split, so both halves see the same filled value. (A gap that
+spans a change of sign passes through zero.) A longer gap stays a gap, no
+extrapolation. This is the one exception to "outputs are left untouched"
+(ADR-012): the output half is smoothed because it is the same reading as the
+input half. The interpolated series is published as its own Effy sensor (5). It
+is also what the standby and efficiency machines read as the EPS sensor's
+activity (4).
 
 ### 4. What the slot mean cannot show
 
@@ -128,8 +128,8 @@ input from its smoothed series and tests `mean != 0`, so the signed smoothed
 series of the EPS sensor shows activity in both directions with no change to
 that reading ◇ (a test pins it, for a negative value in particular). The EPS
 sensor is not one of the four counters, so, like a PV input, an active EPS
-sensor makes a slot impure (ADR-023 decision 4, `classify_slot`), is exempt
-from the 5 % significance rule (ADR-023 Amendment 2026-11-04) and breaks a drain
+sensor makes a slot impure (ADR-023 decision 4, `classify_slot`), is exempt from
+the 5 % significance rule (ADR-023 Amendment 2026-11-04) and breaks a drain
 interval (ADR-018 decision 3). The efficiency formulas and the standby machine
 are not touched (human). The EPS sensor is never a drain source: it is not a BMS
 input (ADR-018 decision 2).
@@ -147,9 +147,9 @@ is pure. There is no tolerance for small idle readings, as for PV inputs
     source's unit; 0 while the port is exporting), like the effective series of
     any input;
   - `sensor.effy_<slug>_smoothed`, the **signed** gap-interpolated series
-    (positive: energy leaves through the port, negative: it enters).
-  There is no derived-power sensor (power-family) and no series for the output
-  half (no output has one).
+    (positive: energy leaves through the port, negative: it enters). There is no
+    derived-power sensor (power-family) and no series for the output half (no
+    output has one).
 - They exist whenever the EPS sensor is configured, whether or not the port has
   ever imported ◇, so that a reader does not have to wait for a first import to
   find them.
@@ -158,24 +158,23 @@ is pure. There is no tolerance for small idle readings, as for PV inputs
   - `series` `effective`, `direction` `input`;
   - `series` `smoothed`, `direction` `both` ◇ (a signed series is neither an
     input nor an output; the sign convention is documented in
-    `effy_exports.py`).
-  The values `eps` (role, function) and `both` (direction) are new and additive
-  (ADR-021 decision 1: an additive key or value does not raise the schema
-  version). `EFFY_PUBLISHED_SCHEMA_VERSION` stays at 1; a reader ignores a value
-  it does not know. `effy_exports.py` gets `EFFY_ROLE_EPS`, `EFFY_FUNCTION_EPS`
-  and `EFFY_DIRECTION_BOTH`, and the literals `EffyRole`, `EffyFunction` and
-  `EffyDirection` the new values.
+    `effy_exports.py`). The values `eps` (role, function) and `both` (direction)
+    are new and additive (ADR-021 decision 1: an additive key or value does not
+    raise the schema version). `EFFY_PUBLISHED_SCHEMA_VERSION` stays at 1; a
+    reader ignores a value it does not know. `effy_exports.py` gets
+    `EFFY_ROLE_EPS`, `EFFY_FUNCTION_EPS` and `EFFY_DIRECTION_BOTH`, and the
+    literals `EffyRole`, `EffyFunction` and `EffyDirection` the new values.
 
 ### 7. Structure (ADR-000 §3/§6)
 
-The split is pure and tested with no mocking (`calculation.py`). `inputs.py` gets
-`eps_id(options)`; `config_flow.py` the picker and its validation;
-`history.py` the use of the split in the slot loop (one function serves the
-full recalculation and the slot job); `catalog.py` the two published entries
+The split is pure and tested with no mocking (`calculation.py`). `inputs.py`
+gets `eps_id(options)`; `config_flow.py` the picker and its validation;
+`history.py` the use of the split in the slot loop (one function serves the full
+recalculation and the slot job); `catalog.py` the two published entries
 (`sensor.py` builds the sensors as for any power-family input, to be verified,
-not assumed); `effy_exports.py` the three symbols. README (configuration table, the formula of
-"How the algorithm works"), the translations (en, de) and the glossary change
-with it.
+not assumed); `effy_exports.py` the three symbols. README (configuration table,
+the formula of "How the algorithm works"), the translations (en, de) and the
+glossary change with it.
 
 ### 8. Tests
 

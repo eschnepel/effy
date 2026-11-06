@@ -1,10 +1,10 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-11-06 (ADR-026 draft: the EPS/UPS port; TASK-0025: the battery feed; TASK-0024: the valley and
-span machine; TASK-0023: SoC, capacity and hysteresis options; ADR-023 accepted
-2026-10-27; the ADR-019 amendment is in force: four counter pickers, no update
-listener; `effy_exports.py` added). Keep this concise; ADRs in `adr/` are
-authoritative.
+Last updated: 2026-11-06 (ADR-026 draft: the EPS/UPS port; TASK-0025: the
+battery feed; TASK-0024: the valley and span machine; TASK-0023: SoC, capacity
+and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019 amendment is in
+force: four counter pickers, no update listener; `effy_exports.py` added). Keep
+this concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -139,16 +139,17 @@ authoritative.
   sensor (`eps_sensor`, domain sensor, device class power, state class
   `measurement`, W or kW). Per slot its `mean` is split: positive = EPS output
   (joins the outputs), negative = EPS input (joins the inputs and the waterfall
-  pool, equal loss share, ADR-001 unchanged); `total_loss = max(0, Σ inputs +
-  eps_in − Σ outputs − eps_out)`. Decided by the human 2026-11-06: one signed
-  power sensor; an active EPS sensor makes a slot impure (efficiency formulas
-  and the standby machine unchanged, no EPS energy subtracted); the EPS input
-  takes a loss share. ◇ Mine, to confirm: the EPS sensor satisfies neither the
-  input nor the output minimum; its effective series (input half) always exists;
-  published with role `eps` and function `eps` (direction `both` for the signed smoothed series), additive, schema version stays 1.
-  Smoothing, decided by the human at Gate 1 (option A): the signed series is
-  interpolated (gaps ≤ 2 slots) before the split and published as
-  `sensor.effy_<slug>_smoothed` (direction `both`, signed), next to the
+  pool, equal loss share, ADR-001 unchanged);
+  `total_loss = max(0, Σ inputs + eps_in − Σ outputs − eps_out)`. Decided by the
+  human 2026-11-06: one signed power sensor; an active EPS sensor makes a slot
+  impure (efficiency formulas and the standby machine unchanged, no EPS energy
+  subtracted); the EPS input takes a loss share. ◇ Mine, to confirm: the EPS
+  sensor satisfies neither the input nor the output minimum; its effective
+  series (input half) always exists; published with role `eps` and function
+  `eps` (direction `both` for the signed smoothed series), additive, schema
+  version stays 1. Smoothing, decided by the human at Gate 1 (option A): the
+  signed series is interpolated (gaps ≤ 2 slots) before the split and published
+  as `sensor.effy_<slug>_smoothed` (direction `both`, signed), next to the
   effective series of the input half; it is also the source of the EPS activity
   for standby and efficiency (`mean != 0`). Draft amendments on ADR-013,
   ADR-019, ADR-021, ADR-023 take effect with its acceptance. Not yet

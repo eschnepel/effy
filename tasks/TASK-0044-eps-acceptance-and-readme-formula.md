@@ -3,8 +3,10 @@
 - **Status:** todo
 - **Capability:** CAP-12
 - **Related ADRs:** [ADR-026, ADR-001, ADR-005]
-- **Dependencies:** [TASK-0042-eps-activity-in-standby-and-efficiency, TASK-0043-eps-sensors-and-published-entries]
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human confirms it.
+- **Dependencies:** \[TASK-0042-eps-activity-in-standby-and-efficiency,
+  TASK-0043-eps-sensors-and-published-entries\]
+- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
+  confirms it.
 
 ## Goal
 
@@ -16,14 +18,14 @@ glossary say the same.
 
 - Given the CAP-12 demonstration, then one test module drives the real history
   recalculation on the in-memory recorder with an EPS sensor: 200 W out lowers
-  the loss by 200 W; 150 W in raises the input total and takes an equal share;
-  Σ effective inputs = Σ outputs; the same sources without an EPS sensor give
+  the loss by 200 W; 150 W in raises the input total and takes an equal share; Σ
+  effective inputs = Σ outputs; the same sources without an EPS sensor give
   results identical to before; an active EPS sensor makes a slot impure; the
   published list carries both entries.
 - Given the README "How the algorithm works", then `total_loss` shows the EPS
-  terms (`max(0, Σ inputs + eps_in − Σ outputs − eps_out)`), says what the signed
-  sensor is split into, mentions the smoothing and the net-per-slot limit, and
-  the worked example is unchanged or extended by one EPS line.
+  terms (`max(0, Σ inputs + eps_in − Σ outputs − eps_out)`), says what the
+  signed sensor is split into, mentions the smoothing and the net-per-slot
+  limit, and the worked example is unchanged or extended by one EPS line.
 - Given the README ADR table, then ADR-026 is listed.
 - Given `GLOSSARY.md`, `tasks/adr-summary.md` and ADR-026, then they agree with
   what was built; any deviation is a stop-and-ask (Phase 0), not a silent edit.
@@ -54,8 +56,8 @@ glossary say the same.
 - To be filled by the Lead at Phase 3 from the Delivered Artifacts of
   TASK-0042-eps-activity-in-standby-and-efficiency and
   TASK-0043-eps-sensors-and-published-entries.
-- Pre-existing: the in-memory recorder rig of `tests/support.py`
-  (`FakeStorage`, `StrictRecorderMixin`) and the harness of
+- Pre-existing: the in-memory recorder rig of `tests/support.py` (`FakeStorage`,
+  `StrictRecorderMixin`) and the harness of
   `tests/test_history_recent_equivalence.py`.
 
 ## Delivered Artifacts

@@ -2,9 +2,11 @@
 
 - **Status:** todo
 - **Capability:** CAP-12
-- **Related ADRs:** [ADR-026 decision 1, ADR-019 Amendment 2026-11-06, ADR-023 decision 1 and Amendment 2026-11-06]
+- **Related ADRs:** \[ADR-026 decision 1, ADR-019 Amendment 2026-11-06, ADR-023
+  decision 1 and Amendment 2026-11-06\]
 - **Dependencies:** []
-- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human confirms it.
+- **Gate:** Gate 2 pending (2026-11-06); ADR-026 is a Draft until the human
+  confirms it.
 
 ## Goal
 
@@ -19,18 +21,18 @@ calculation until TASK-0041.
   picker, domain `sensor`, device class `power`, with a suggested (never a
   default) value, so it can be cleared.
 - Given an EPS sensor without state class `measurement` (or without a state),
-  then validation rejects it with a translated error (`eps_needs_measurement` ◇);
-  given a unit other than W and kW (when the entity has one), then it is rejected
-  (`eps_unit_not_power` ◇); the device class is re-checked at submit like the
-  outputs'.
+  then validation rejects it with a translated error (`eps_needs_measurement`
+  ◇); given a unit other than W and kW (when the entity has one), then it is
+  rejected (`eps_unit_not_power` ◇); the device class is re-checked at submit
+  like the outputs'.
 - Given the EPS sensor also chosen as a PV input or as one of the four counters,
   then the existing one-role-per-entity error fires (`sensor_in_two_roles`).
 - Given an entry whose only inputs or outputs would be the EPS sensor, then the
   two minimums are not satisfied by it: `at_least_one_input` and
   `at_least_one_output` fire as before.
 - Given `inputs.eps_id(options)`, then it returns the ID or `None` (unset or
-  emptied); `all_input_ids`, `bms_input_ids`, `output_ids` and `pv_input_ids` are
-  **unchanged** (a test pins this).
+  emptied); `all_input_ids`, `bms_input_ids`, `output_ids` and `pv_input_ids`
+  are **unchanged** (a test pins this).
 - Given `_normalised`, then the EPS sensor is saved only if set.
 - Given the translations (en, de) and the README configuration table, then the
   option, its two errors and its meaning (signed: positive out, negative in) are
@@ -60,9 +62,10 @@ calculation until TASK-0041.
 <!-- Filled by the Lead Agent BEFORE implementation, from the Delivered Artifacts of the dependency tasks. -->
 
 - Pre-existing, `config_flow.py`: `_build_schema(...)` (keyword parameters per
-  role, then `max_history_days`, `debug_export`), `_picker(key, suggested, *,
-  device_class, domains=None)`, `_validate_user_input(hass, user_input)` (the
-  first failing check wins; the battery checks run last), `_normalised`,
+  role, then `max_history_days`, `debug_export`),
+  `_picker(key, suggested, *, device_class, domains=None)`,
+  `_validate_user_input(hass, user_input)` (the first failing check wins; the
+  battery checks run last), `_normalised`,
   `_entity_attribute(hass, entity_id, attribute)`, `_validate_battery_options`
   (the model for the state-class check), `_COUNTER_KEYS`, `_OUTPUT_KEYS`.
 - Pre-existing, `inputs.py`: `_role_id`, `pv_input_ids`, `grid_import_id`,

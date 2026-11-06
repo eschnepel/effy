@@ -265,10 +265,10 @@ published with role and function `eps`. Without the picker nothing changes.
 **End-to-end demonstration:** a slot with 200 W out through the port lowers the
 loss by 200 W; a slot with 150 W in raises the input total by 150 W and gives
 the EPS input an equal share like any input; Σ effective inputs = Σ outputs; the
-same sources without an EPS sensor give identical results (the CAP-1
-equivalence harness, full recalculation and slot timer); an active EPS sensor
-makes a slot impure for the efficiency sensors and breaks a drain interval; the
-published `sensors` list carries the entry.
+same sources without an EPS sensor give identical results (the CAP-1 equivalence
+harness, full recalculation and slot timer); an active EPS sensor makes a slot
+impure for the efficiency sensors and breaks a drain interval; the published
+`sensors` list carries the entry.
 
 **Scope (in):** the picker and its validation, the signed split, the formula
 (README, glossary), the waterfall and the slot timer and history path seeing

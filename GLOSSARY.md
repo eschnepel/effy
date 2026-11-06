@@ -23,8 +23,8 @@ grid import. Only a BMS input can be a drain source.
 battery's charge counter, the grid-export counter, or the EPS output. Every
 output except the EPS output is a BMS reading. _Avoid_: Sink, consumer
 
-**EPS port**: The inverter's emergency power supply (UPS) port. Energy leaves the
-system through it to the backup loads and, when another inverter feeds it,
+**EPS port**: The inverter's emergency power supply (UPS) port. Energy leaves
+the system through it to the backup loads and, when another inverter feeds it,
 enters the system through it. _Avoid_: Backup port
 
 **EPS sensor**: The one signed power sensor of the EPS port: positive when
