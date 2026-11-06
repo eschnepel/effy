@@ -52,6 +52,7 @@
 | TASK-0042-eps-activity-in-standby-and-efficiency | An active EPS sensor, in either sign, makes a slot impure and breaks a drain interval; tests first, change only if one fails (CAP-12, ADR-026 decision 5) | todo | TASK-0041-eps-split-in-slot-loop | — |
 | TASK-0043-eps-sensors-and-published-entries | The two EPS Effy sensors exist and are published with role/function `eps` and direction `both` for the signed series; `effy_exports.py` (CAP-12, ADR-026 decision 6) | todo | TASK-0041-eps-split-in-slot-loop | — |
 | TASK-0044-eps-acceptance-and-readme-formula | CAP-12 acceptance test; README formula, ADR index (CAP-12) | todo | TASK-0042-eps-activity-in-standby-and-efficiency, TASK-0043-eps-sensors-and-published-entries | — |
+| TASK-0045-effective-pv-sum-sensors | Three sensors: Effective PV Sum now, today (integral), total (integral) | todo | — | — |
 
 CAP-12 tasks (TASK-0039 to TASK-0044, proposed 2026-11-06, Gate 2 pending; Draft
 ADR-026): strictly sequential, in the order of the numbering. Shared files force
