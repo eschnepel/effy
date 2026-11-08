@@ -144,6 +144,7 @@ from .inputs import (
     capacity_id,
     charge_id,
     discharge_id,
+    eps_id,
     grid_export_id,
     grid_import_id,
     output_ids,
@@ -253,6 +254,7 @@ class EffyCoordinator:
         self._discharge_id: str | None = discharge_id(entry.options)
         self._charge_id: str | None = charge_id(entry.options)
         self._grid_export_id: str | None = grid_export_id(entry.options)
+        self._eps_id: str | None = eps_id(entry.options)
 
         # Subscriber registry: entity_id → callback
         self._subscribers: dict[str, SubscriberCallback] = {}
@@ -374,6 +376,11 @@ class EffyCoordinator:
     def grid_export_id(self) -> str | None:
         """The grid export counter's entity ID, or ``None`` (ADR-023)."""
         return self._grid_export_id
+
+    @property
+    def eps_id(self) -> str | None:
+        """The EPS/UPS sensor (ADR-026), or ``None``; the catalog describes its series by it."""
+        return self._eps_id
 
     @property
     def efficiency_enabled(self) -> bool:

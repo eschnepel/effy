@@ -1,6 +1,6 @@
 # Task: An active EPS sensor, in either direction, makes a slot impure and breaks a drain interval
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-12
 - **Related ADRs:** \[ADR-026 decision 5, ADR-018 decisions 2 and 3, ADR-023
   decisions 3 and 4 and Amendments 2026-11-04, 2026-11-06\]
@@ -66,11 +66,40 @@ change only if a test fails), `tests/test_standby_glue.py`,
 - Pre-existing, `calculation.py`: `classify_slot(active, roles)`,
   `_significant_flow(slot, roles)`, `EffRoles`, `EffSlot`, `drain_step`,
   `drain_feed`.
-- To be filled by the Lead at Phase 3 from the Delivered Artifacts of
-  TASK-0041-eps-split-in-slot-loop.
+- From TASK-0041-eps-split-in-slot-loop: `inputs.all_input_ids(options)` ends
+  with the EPS sensor (`inputs.eps_id`), so `history.async_read_drain_activity`
+  reads it as a power-family input, from `effy_*_smoothed`
+  (`history._effy_smoothed_entity_id(eps)`), which holds the *signed*,
+  gap-interpolated series; `history._compute_effective_slots` writes that series
+  and the effective series (`history._effy_entity_id(eps)`).
 
 ## Delivered Artifacts
 
 <!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
 
-- _(open)_
+- **No production code changed.** The tests came first and all passed: the
+  activity reading of `history.async_read_drain_activity` already takes a
+  power-family input from its smoothed series and tests `value != 0.0`, which
+  holds for a negative value; the EPS sensor is not one of the four counters, so
+  `classify_slot` and `_significant_flow` treat it as an "other sensor", like a
+  PV input.
+- `tests/test_eps_activity.py` (new, 18 tests) → `TestPureRules`
+  (`classify_slot` and `_significant_flow` with an EPS sensor),
+  `TestActivityReading` (activity names the EPS sensor for +120 W and -80 W and
+  not for 0; read from its smoothed statistic; the efficiency energy read never
+  reads it), `TestStandbyMachine` (end to end on the simulation of
+  `test_standby_glue`: idle EPS leaves 12 W; +5 W and -5 W in every slot break
+  every drain interval; a one-hour stretch costs only the intervals it touches;
+  the EPS sensor is never a drain source), `TestEpsSensorIsNoBmsInput` (without
+  a BMS input standby stays disabled and nothing is read),
+  `TestEfficiencyMachine` (end to end on the simulation of
+  `test_efficiency_feed`: idle EPS changes neither estimate; an active EPS
+  sensor, either sign, leaves no pure slot during its stretch and the other run
+  is untouched). The module serves a power-family source from `power_means` and
+  the statistics Effy wrote from `store`.
+- Negative control run once and not kept: changing the activity test to
+  `value > 0.0` made exactly the four negative-sign tests fail.
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+- Verification: 1725 tests pass (1707 before, 18 new); `ruff check` and
+  `mypy --strict` clean; `ruff format --check` flags only `tests/test_cache.py`
+  (already flagged before CAP-12, not touched).

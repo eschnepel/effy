@@ -80,9 +80,9 @@ def capacity_id(options: Mapping[str, Any]) -> str | None:
 def eps_id(options: Mapping[str, Any]) -> str | None:
     """The EPS/UPS sensor (ADR-026), a signed power sensor, or ``None``.
 
-    Neither a PV input nor a BMS counter, so it is in none of ``pv_input_ids``,
-    ``bms_input_ids``, ``output_ids`` and ``all_input_ids`` (TASK-0041 puts it into the
-    input list when the waterfall learns to split it).
+    Neither a PV input nor a BMS counter: it is in none of ``pv_input_ids``,
+    ``bms_input_ids`` and ``output_ids``. It is the last member of ``all_input_ids``; the slot
+    loop splits its signed value into an EPS input and an EPS output.
     """
     return _role_id(options, CONF_EPS_SENSOR)
 
@@ -122,12 +122,16 @@ def output_ids(options: Mapping[str, Any]) -> list[str]:
 
 
 def all_input_ids(options: Mapping[str, Any]) -> list[str]:
-    """Every input, PV first: the mixed pool the waterfall works on (ADR-019).
+    """Every input, PV first, the EPS sensor last: the mixed pool the waterfall works on.
 
     The result of the calculation does not depend on this order (equal values
-    get equal shares, ADR-001); it only fixes the order entities are created in.
+    get equal shares, ADR-001); it only fixes the order entities are created in. The EPS
+    sensor (ADR-026) is a member because it is an input half of the time and must be fetched,
+    smoothed and published like any power-family input; it is *not* in ``output_ids``, since
+    the slot loop turns its signed value into the two halves (``split_eps_readings``).
     """
-    return pv_input_ids(options) + bms_input_ids(options)
+    eps = eps_id(options)
+    return pv_input_ids(options) + bms_input_ids(options) + ([eps] if eps else [])
 
 
 def legacy_inputs_were_moved(options: Mapping[str, Any]) -> bool:

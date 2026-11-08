@@ -1,6 +1,6 @@
 # Task: The two EPS Effy sensors exist and are published with role and function `eps`
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-12
 - **Related ADRs:** \[ADR-026 decision 6, ADR-021 and Amendment 2026-11-06,
   ADR-023 decision 11, ADR-013 decision 2\]
@@ -70,11 +70,46 @@ the entity building), `README.md`, `tests/test_effy_exports.py`,
   `_add_late_derived_entities`, `EffySensor`, `EffySmoothedSensor`.
 - Pre-existing, `effy_exports.py`: the `EFFY_ROLE_*`, `EFFY_FUNCTION_*`,
   `EFFY_DIRECTION_*` symbols and the `Effy*` literals.
-- To be filled by the Lead at Phase 3 from the Delivered Artifacts of
-  TASK-0041-eps-split-in-slot-loop.
+- From TASK-0041-eps-split-in-slot-loop: `inputs.all_input_ids(options)` ends
+  with the EPS sensor (`inputs.eps_id`), so `sensor.async_setup_entry` builds
+  `EffySensor` and, through `_build_derived_entities` (late binding included),
+  `EffySmoothedSensor` for it; `history._effy_entity_id(eps)` is the effective
+  series (the input half, >= 0), `history._effy_smoothed_entity_id(eps)` the
+  signed one.
 
 ## Delivered Artifacts
 
 <!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
 
-- _(open)_
+- `custom_components/effy/effy_exports.py` → new `EFFY_DIRECTION_BOTH = "both"`,
+  `EFFY_ROLE_EPS = "eps"`, `EFFY_FUNCTION_EPS = "eps"`; the literals
+  `EffyDirection` (`input`, `output`, `both`), `EffyRole` (`pv`, `bms`, `eps`)
+  and `EffyFunction` (`grid_import`, `discharge`, `charge`, `grid_export`,
+  `eps`) carry them; the sign convention of `both` and the meaning of the two
+  `eps` series are in the file's comments. `EFFY_PUBLISHED_SCHEMA_VERSION` stays
+  1; the file is still standard library only and imports nothing from Effy.
+- `custom_components/effy/catalog.py` →
+  `describe_source_series(..., grid_export_id, eps_id: str | None = None)`: a
+  source equal to `eps_id` has role and function `eps`, direction `input` for
+  series `effective` and `both` for every other series; everything else is
+  unchanged; an unconfigured source is still a `ValueError`.
+- `custom_components/effy/coordinator.py` → property `eps_id -> str | None`
+  (`self._eps_id`, from `inputs.eps_id(entry.options)`).
+- `custom_components/effy/sensor.py` → `_source_descriptor` passes
+  `eps_id=coordinator.eps_id`. Without it every EPS entity would have raised
+  `ValueError` at setup after TASK-0041. No other code change: the two entities
+  come from the existing code for a power-family input.
+- `README.md` → "For other integrations": EPS example entries, the three new
+  values in the key table, a paragraph on the EPS entries.
+- Tests: `tests/test_effy_exports.py` (the pin table, the literal types and the
+  second-copy list extended with `eps` and `both`, one test that the new values
+  are additive); `tests/test_catalog.py` (`TestDescribeEps`, the `_describe`
+  helper gets `eps`); `tests/test_published_sensors.py`
+  (`TestEpsSensorsArePublished`; the `_Coordinator` double gets `eps_id`);
+  `tests/test_sensor_setup.py` (`TestEpsSensorSetup`; `_SetupCoordinator` gets
+  `eps_id`); `tests/test_coordinator_slot.py`
+  (`test_exposes_the_eps_sensor_and_it_is_the_last_input_only`).
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+- Verification: 1742 tests pass (1725 before, 17 new); `ruff check` and
+  `mypy --strict` clean; `ruff format --check` flags only `tests/test_cache.py`
+  (already flagged before CAP-12, not touched).

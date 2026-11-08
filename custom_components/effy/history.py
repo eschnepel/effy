@@ -210,6 +210,7 @@ from .calculation import (
     recent_trigger_from,
     run_feed,
     run_learn_resolution,
+    split_eps_readings,
     trapezoidal_jump_windows,
     trapezoidal_slot_contributions,
     valley_feed,
@@ -230,6 +231,7 @@ from .inputs import (
     capacity_id,
     charge_id,
     discharge_id,
+    eps_id,
     grid_export_id,
     grid_import_id,
     soc_id,
@@ -1518,7 +1520,10 @@ async def _compute_effective_slots(
     # recorder row for a slot is never overwritten, only genuinely missing
     # slots get a synthetic one. This runs *before* `slots`/distribute_loss
     # below, so the waterfall calculation itself sees the smoothed series.
-    # Output sensors are deliberately left untouched (out of scope).
+    # Output sensors are deliberately left untouched (out of scope). The one exception is the
+    # EPS sensor (ADR-026 decision 3): it is a member of ``input_ids``, so its *signed* series
+    # is interpolated here, before the slot loop splits it into an EPS input and an EPS output,
+    # and both halves see the same filled value.
     smoothed_series: dict[str, dict[datetime, float]] = {}
     for eid in input_ids:
         if eid not in power_ids:
@@ -1555,6 +1560,7 @@ async def _compute_effective_slots(
     readings_for_slot = phases.wrap("readings", _readings_for_slot)
     waterfall = phases.wrap("waterfall", distribute_loss)
     to_original_unit = phases.wrap("conversion", effective_in_original_unit)
+    eps = eps_id(entry_options)
     with phases.stage("slot loop", items=len(slots)):
         for slot in slots:
             input_readings = readings_for_slot(
@@ -1563,6 +1569,12 @@ async def _compute_effective_slots(
             output_readings = readings_for_slot(
                 slot, SLOT_MINUTES, output_ids, indexed, state_classes, units
             )
+            if eps is not None:
+                # ADR-026: the signed EPS value becomes an input half (in the waterfall's
+                # pool) and an output half; total_loss = max(0, in + eps_in - out - eps_out)
+                input_readings, output_readings = split_eps_readings(
+                    eps, input_readings, output_readings
+                )
 
             for reading in input_readings + output_readings:
                 if reading.entity_id in power_results:

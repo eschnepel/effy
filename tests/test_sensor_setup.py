@@ -42,6 +42,7 @@ class _SetupCoordinator(_Coordinator):
         self.charge_id = None
         self.discharge_id = None
         self.grid_export_id = None
+        self.eps_id: str | None = None
         self.refreshes = 0
 
     def force_refresh(self) -> None:
@@ -173,6 +174,82 @@ class TestSetupEntry:
         assert entry.unloads != [] and len(entry.unloads) == 1  # the listener ends with the entry
         assert platform.coordinator.refreshes == 1
         assert callable(callback)
+
+
+class TestEpsSensorSetup:
+    """ADR-026: the EPS sensor is a power-family input, so it gets an effective and a smoothed
+    sensor by the code that builds them for any power-family input."""
+
+    EPS = "sensor.eps_port"
+
+    def _platform(self, states: dict[str, Any]) -> _Platform:
+        entry = _SetupEntry([PV_W], [OUT_W])
+        entry.options["eps_sensor"] = self.EPS
+        platform = _Platform(entry, states)
+        platform.coordinator.eps_id = self.EPS
+        return platform
+
+    async def test_the_eps_sensor_gets_an_effective_and_a_smoothed_sensor_and_no_derived_power(
+        self, tracker: _Tracker
+    ) -> None:
+        platform = self._platform(
+            {PV_W: _state(POWER), OUT_W: _state(POWER), self.EPS: _state(POWER)}
+        )
+
+        await platform.setup()
+
+        assert _kinds(platform.added[0]) == [
+            ("EffySensor", PV_W),
+            ("EffySensor", self.EPS),  # the last input: the order of all_input_ids
+            ("EffySmoothedSensor", PV_W),
+            ("EffySmoothedSensor", self.EPS),
+            ("EffyRecalculatedFromSensor", None),
+        ]
+        assert tracker.calls == []
+
+    async def test_an_eps_sensor_without_a_state_is_waited_for_and_then_smoothed(
+        self, tracker: _Tracker
+    ) -> None:
+        platform = self._platform({PV_W: _state(POWER), OUT_W: _state(POWER)})  # no EPS state yet
+
+        await platform.setup()
+
+        assert ("EffySensor", self.EPS) in _kinds(platform.added[0])  # exists at once
+        assert ("EffySmoothedSensor", self.EPS) not in _kinds(platform.added[0])
+        ((_hass, waiting_for, on_event),) = tracker.calls
+        assert waiting_for == [self.EPS]
+
+        platform.added.clear()
+        platform.states[self.EPS] = _state(POWER)
+        on_event(_event(self.EPS, platform.states[self.EPS]))
+        assert [_kinds(batch) for batch in platform.added] == [[("EffySmoothedSensor", self.EPS)]]
+        assert tracker.unsubscribed == 1
+
+    async def test_without_an_eps_sensor_the_entities_are_what_they_were(
+        self, tracker: _Tracker
+    ) -> None:
+        entry = _SetupEntry([PV_W], [OUT_W])
+        platform = _Platform(entry, {PV_W: _state(POWER), OUT_W: _state(POWER)})
+        await platform.setup()
+        assert _kinds(platform.added[0]) == [
+            ("EffySensor", PV_W),
+            ("EffySmoothedSensor", PV_W),
+            ("EffyRecalculatedFromSensor", None),
+        ]
+
+    def test_the_names_follow_the_other_series_sensors(self) -> None:
+        states = {self.EPS: _state({"friendly_name": "Backup port"})}
+        hass = SimpleNamespace(states=SimpleNamespace(get=states.get))
+        coordinator = _SetupCoordinator()
+        coordinator.eps_id = self.EPS
+        entry = _SetupEntry([PV_W], [])
+        effective = _sensor.EffySensor(hass, entry, coordinator, self.EPS)
+        smoothed = _sensor.EffySmoothedSensor(hass, entry, coordinator, self.EPS)
+        assert effective.entity_id == "sensor.effy_eps_port"
+        assert smoothed.entity_id == "sensor.effy_eps_port_smoothed"
+        assert effective.unique_id != smoothed.unique_id
+        assert effective.name == "Backup port (effective)"
+        assert smoothed.name == "Backup port (smoothed)"
 
 
 # ---------------------------------------------------------------------------

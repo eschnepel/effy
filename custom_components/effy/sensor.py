@@ -159,6 +159,7 @@ def _source_descriptor(
         discharge_id=coordinator.discharge_id,
         charge_id=coordinator.charge_id,
         grid_export_id=coordinator.grid_export_id,
+        eps_id=coordinator.eps_id,
     )
 
 

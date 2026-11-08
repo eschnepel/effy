@@ -39,6 +39,7 @@ if not TYPE_CHECKING:
     SensorReading = _calculation.SensorReading
 distribute_loss = _calculation.distribute_loss
 split_signed_reading = _calculation.split_signed_reading
+split_eps_readings = _calculation.split_eps_readings
 effective_in_original_unit = _calculation.effective_in_original_unit
 trapezoidal_slot_contributions = _calculation.trapezoidal_slot_contributions
 trapezoidal_jump_windows = _calculation.trapezoidal_jump_windows
@@ -218,6 +219,48 @@ class TestSplitSignedReading:
         split_signed_reading(reading)
         assert reading.raw_value == -40
         assert reading.original_unit == "W"
+
+
+class TestSplitEpsReadings:
+    """One slot's readings with the signed EPS reading among the inputs (ADR-026 decision 2)."""
+
+    def test_a_negative_eps_reading_becomes_an_input_half_in_place(self) -> None:
+        inputs = [_r("pv", 500), _r("eps", -150), _r("grid", 1000)]
+        outputs = [_r("charge", 1300)]
+        new_inputs, new_outputs = split_eps_readings("eps", inputs, outputs)
+        assert [r.entity_id for r in new_inputs] == ["pv", "eps", "grid"]  # same place
+        assert [r.raw_value for r in new_inputs] == [500, 150, 1000]
+        assert new_outputs == outputs  # no output half
+
+    def test_a_positive_eps_reading_is_an_input_of_zero_and_an_appended_output(self) -> None:
+        inputs = [_r("pv", 500), _r("eps", 200)]
+        outputs = [_r("charge", 600)]
+        new_inputs, new_outputs = split_eps_readings("eps", inputs, outputs)
+        assert [r.raw_value for r in new_inputs] == [500, 0.0]  # the sensor keeps its row
+        assert [(r.entity_id, r.raw_value) for r in new_outputs] == [("charge", 600), ("eps", 200)]
+
+    def test_a_zero_eps_reading_adds_no_output(self) -> None:
+        new_inputs, new_outputs = split_eps_readings("eps", [_r("eps", 0.0)], [_r("charge", 1)])
+        assert [r.raw_value for r in new_inputs] == [0.0]
+        assert [r.entity_id for r in new_outputs] == ["charge"]
+
+    def test_a_slot_without_an_eps_reading_is_unchanged(self) -> None:
+        inputs, outputs = [_r("pv", 500)], [_r("charge", 400)]
+        new_inputs, new_outputs = split_eps_readings("eps", inputs, outputs)
+        assert new_inputs == inputs and new_outputs == outputs
+
+    def test_the_given_lists_are_not_mutated_and_the_unit_is_kept(self) -> None:
+        inputs, outputs = [_r("eps", 0.2, "kW")], [_r("charge", 1.0, "kW")]
+        new_inputs, new_outputs = split_eps_readings("eps", inputs, outputs)
+        assert inputs[0].raw_value == 0.2 and len(outputs) == 1
+        assert new_outputs[-1].original_unit == "kW" and new_outputs[-1].raw_value == 0.2
+        assert new_inputs is not inputs and new_outputs is not outputs
+
+    def test_the_result_feeds_distribute_loss_as_the_formula_says(self) -> None:
+        # 1000 W + 500 W in, 1300 W out, 150 W fed in through the port: loss 350 W
+        inputs = [_r("grid", 1000), _r("pv", 500), _r("eps", -150)]
+        new_inputs, new_outputs = split_eps_readings("eps", inputs, [_r("charge", 1300)])
+        assert distribute_loss(new_inputs, new_outputs).total_loss_w == pytest.approx(350.0)
 
 
 class TestEpsFormula:

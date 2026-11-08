@@ -160,6 +160,34 @@ def split_signed_reading(reading: SensorReading) -> tuple[SensorReading, SensorR
     )
 
 
+def split_eps_readings(
+    eps_entity_id: str,
+    input_readings: list[SensorReading],
+    output_readings: list[SensorReading],
+) -> tuple[list[SensorReading], list[SensorReading]]:
+    """
+    Apply ``split_signed_reading`` to one slot's readings (ADR-026 decision 2).
+
+    The EPS sensor sits in the *input* readings with its signed value (it is a member of the
+    input list, so it is fetched and smoothed once). Its input half replaces that reading
+    in place, even when 0, so that the sensor keeps a row in the effective series; its output
+    half is appended to the output readings when it is not zero. Nothing else is touched, and
+    when the slot has no reading of the EPS sensor neither half exists (as for any sensor
+    without a reading). The given lists are not mutated.
+    """
+    split_inputs: list[SensorReading] = []
+    split_outputs = list(output_readings)
+    for reading in input_readings:
+        if reading.entity_id != eps_entity_id:
+            split_inputs.append(reading)
+            continue
+        input_half, output_half = split_signed_reading(reading)
+        split_inputs.append(input_half)
+        if output_half.raw_value > 0.0:
+            split_outputs.append(output_half)
+    return split_inputs, split_outputs
+
+
 # Maximum distribution window for a normal (non-offline) counter jump — see
 # trapezoidal_slot_contributions. Not user-configurable: unlike ADR-009's
 # smoothing, which this replaces, the window width here isn't a tunable

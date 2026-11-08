@@ -231,6 +231,20 @@ sensors:
     role: bms
     function: discharge
     aggregations: [mean, state]
+  - entity_id: sensor.effy_eps_port
+    series: effective
+    source_entity_id: sensor.eps_port
+    direction: input
+    role: eps
+    function: eps
+    aggregations: [mean, state]
+  - entity_id: sensor.effy_eps_port_smoothed
+    series: smoothed
+    source_entity_id: sensor.eps_port
+    direction: both
+    role: eps
+    function: eps
+    aggregations: [mean, state]
   - entity_id: sensor.effy_standby_power
     series: standby_power
     source_entity_id:
@@ -247,15 +261,20 @@ sensors:
 
 | Key | Meaning |
 | -- | -- |
-| `schema_version` | Raised only when an existing key or its meaning changes; new keys do not raise it |
+| `schema_version` | Raised only when an existing key or its meaning changes; new keys and new values (`eps`, `both`) do not raise it |
 | `max_history_days` | The configured number of history days |
 | `series` | `effective`, `derived_power`, `smoothed`, `standby_power`, `charge_efficiency`, `battery_efficiency`, `discharge_efficiency` or `roundtrip_efficiency` |
 | `source_entity_id` | The configured source sensor; `null` for the standby and the efficiency sensors |
-| `direction` | `input` or `output`; the standby and efficiency sensors are `output` |
-| `role` | `pv` or `bms`; every output is `bms` |
-| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input. The standby and efficiency entries have no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
+| `direction` | `input` or `output`; the standby and efficiency sensors are `output`. `both` is the signed smoothed series of the EPS/UPS sensor: positive while energy leaves the system through the port, negative while it enters |
+| `role` | `pv`, `bms` or `eps`; every output is `bms`. `eps` is the EPS/UPS sensor, neither a PV string nor a BMS counter |
+| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input, `eps` for the EPS/UPS sensor. The standby and efficiency entries have no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
 | `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's written series have `mean` and `state` (never `sum`), while standby and efficiency sensors have `mean`, `min` and `max` |
 
+- **The EPS/UPS sensor** (ADR-026) has two entries, both with role and function
+  `eps`. Its `effective` series (`direction` `input`) is the effective value of
+  the input half, never negative and 0 while the port exports; its `smoothed`
+  series (`direction` `both`) is the signed value with short gaps bridged. A
+  reader that does not know the values `eps` and `both` ignores these entries.
 - **Which sensors are listed:** every Effy sensor that exists, except
   `sensor.effy_recalculated_from` itself. A sensor that is created late (its
   source had no state at startup) is listed from the next recalculation on.
@@ -367,10 +386,32 @@ published value means your copy is stale and should be copied again.
 ### 1 – Total loss
 
 ```
-total_loss = max(0, Σ inputs − Σ outputs)
+total_loss = max(0, Σ inputs + eps_in − Σ outputs − eps_out)
 ```
 
 The cap at zero prevents measurement noise from producing negative losses.
+
+`eps_in` and `eps_out` are the two halves of the optional **EPS/UPS sensor**
+(ADR-026), which is one signed power sensor. In every slot Effy splits its value
+`v`:
+
+```
+eps_out = max(v, 0)     → counts with the outputs
+eps_in  = max(−v, 0)    → counts with the inputs and takes a loss share
+```
+
+At most one of them is not zero. Without an EPS/UPS sensor both are 0 and the
+formula is the plain `max(0, Σ inputs − Σ outputs)`.
+
+Two limits of the signed sensor:
+
+- **Smoothing.** A gap of up to two slots in the sensor's values is bridged by
+  linear interpolation on the signed series, before the split, so both halves
+  see the same filled value. A gap that spans a change of sign passes through
+  zero. A longer gap stays a gap.
+- **Net per slot.** Effy reads the sensor's 5-minute mean, which is net. If the
+  flow reverses inside one slot only the net shows, and the conversion loss of
+  the larger gross flows stays inside the loss.
 
 ### 2 – Waterfall distribution
 
@@ -392,7 +433,8 @@ else:
 effective_value = sensor_value − loss_share    (≥ 0)
 ```
 
-The invariant `Σ effective_inputs = Σ outputs` always holds.
+The invariant `Σ effective_inputs = Σ outputs` always holds, with `eps_in`
+counted among the inputs and `eps_out` among the outputs.
 
 ---
 
@@ -460,6 +502,18 @@ sensors.
 | `sensor.effy_bms_grid_import` | 0 Wh | 0.00 Wh | **0.00 Wh** |
 
 **Verification:** `144 + 51 + 0 + 0 + 0 + 0 = 195 = Σ outputs ✓`
+
+### With an EPS/UPS sensor
+
+The same slot, if an EPS/UPS sensor reads the port as well:
+
+- **+20 W** (energy leaves through the port): `eps_out = 20`, so
+  `total_loss = max(0, 225 − 195 − 20) = 10`, and the effective values add up to
+  `215 = 195 + 20`.
+- **−15 W** (another inverter feeds the port): `eps_in = 15` is a fifth active
+  input, so `total_loss = max(0, 225 + 15 − 195) = 45`. The EPS input takes 11 W
+  of its 15 W (effective value 4 W), and the effective values add up to
+  `195 = Σ outputs`.
 
 ---
 
@@ -722,3 +776,8 @@ test suite runs against.
 | [019](adr/019-input-sensors-split-by-role.md) | Input sensors split by role (PV / BMS) |
 | [020](adr/020-effy-entities-recorded-without-exclusion.md) | Effy entities are recorded; the exclusion requirement of ADR-017 is retired |
 | [021](adr/021-config-attributes-on-recalculated-from.md) | Effy's configuration published as attributes of the recalculated-from sensor |
+| [022](adr/022-measure-then-array-native-history-compute.md) | Measure the history recalculation, then an array-native compute path (draft) |
+| [023](adr/023-battery-system-efficiency-sensors.md) | Efficiency sensors for the battery system |
+| [024](adr/024-history-recalculation-write-phase.md) | The write phase of the history recalculation |
+| [025](adr/025-recorder-read-cache.md) | A cache for what Effy reads from the recorder |
+| [026](adr/026-eps-port-sensor.md) | The EPS/UPS port as a signed power sensor |

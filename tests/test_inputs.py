@@ -203,15 +203,21 @@ class TestEpsAccessor:
         assert _inputs.eps_id({EPS: None}) is None
         assert _inputs.eps_id({}) is None
 
-    def test_the_eps_sensor_is_in_no_pool_yet(self) -> None:
-        # TASK-0041 adds it to the input list; here the option is only stored and validated
+    def test_the_eps_sensor_is_the_last_input_and_in_no_other_pool(self) -> None:
+        # ADR-026: a member of the input list (fetched, smoothed and published like any
+        # power-family input), never of the output list: the slot loop splits its value
         plain = {PV: ["sensor.pv"], **ALL_FOUR}
         with_eps = {**plain, EPS: "sensor.eps"}
-        assert _inputs.all_input_ids(with_eps) == _inputs.all_input_ids(plain)
+        assert _inputs.all_input_ids(plain) == ["sensor.pv", "sensor.grid_in", "sensor.discharge"]
+        assert _inputs.all_input_ids(with_eps) == [*_inputs.all_input_ids(plain), "sensor.eps"]
         assert _inputs.bms_input_ids(with_eps) == _inputs.bms_input_ids(plain)
         assert _inputs.output_ids(with_eps) == _inputs.output_ids(plain)
         assert _inputs.pv_input_ids(with_eps) == ["sensor.pv"]
-        assert "sensor.eps" not in _inputs.all_input_ids(with_eps) + _inputs.output_ids(with_eps)
+        assert "sensor.eps" not in _inputs.output_ids(with_eps)
+
+    def test_an_eps_sensor_alone_is_the_only_input(self) -> None:
+        assert _inputs.all_input_ids({EPS: "sensor.eps"}) == ["sensor.eps"]
+        assert _inputs.all_input_ids({EPS: ""}) == []
 
     def test_an_entry_without_the_option_has_none(self) -> None:
         assert _inputs.eps_id({PV: ["sensor.pv"], **ALL_FOUR}) is None

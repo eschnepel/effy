@@ -1,6 +1,6 @@
 # Task: The EPS sensor in the waterfall path: input list, smoothing on the signed series, split in the slot loop
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-12
 - **Related ADRs:** \[ADR-026 decisions 2, 3, 8, ADR-013 decision 2 and
   Amendment 2026-11-06, ADR-012, ADR-014, ADR-001, ADR-005\]
@@ -78,12 +78,67 @@ slot loop), possibly `coordinator.py` and `sensor.py` (verification first),
   `_effy_smoothed_entity_id`.
 - Pre-existing, `calculation.py`: `INTERPOLATION_MAX_GAP_SLOTS` (2),
   `interpolate_slot_gaps`.
-- To be filled by the Lead at Phase 3 from the Delivered Artifacts of
-  TASK-0039-eps-signed-split-pure (the split function: name, signature) and
-  TASK-0040-eps-picker-in-config (`CONF_EPS_SENSOR`, `inputs.eps_id`).
+- From TASK-0039-eps-signed-split-pure:
+  `calculation.split_signed_reading(reading: SensorReading) -> tuple[SensorReading, SensorReading]`
+  from `custom_components/effy/calculation.py`; returns
+  `(input_half, output_half)`, both keep `entity_id` and `original_unit`, no
+  unit conversion, the input half is returned even when 0.
+- From TASK-0040-eps-picker-in-config: `const.CONF_EPS_SENSOR` (`"eps_sensor"`)
+  and `inputs.eps_id(options) -> str | None` from
+  `custom_components/effy/inputs.py`; until this task `all_input_ids`,
+  `bms_input_ids`, `output_ids` and `pv_input_ids` do not contain the EPS
+  sensor, and a test (`TestEpsAccessor.test_the_eps_sensor_is_in_no_pool_yet`)
+  pins that; this task changes the pin on purpose.
 
 ## Delivered Artifacts
 
 <!-- Filled by the Worker AFTER implementation. Be exact: downstream tasks depend on this. -->
 
-- _(open)_
+- `custom_components/effy/calculation.py` → function
+  `split_eps_readings(eps_entity_id: str, input_readings: list[SensorReading], output_readings: list[SensorReading]) -> tuple[list[SensorReading], list[SensorReading]]`
+  (new, not in the footprint hint; pure, so the list-level rule is tested with
+  no mocking): the EPS reading among the inputs is replaced in place by its
+  input half (even when 0), its output half is appended to the outputs when not
+  zero; a slot without an EPS reading, or the other readings, are untouched; the
+  given lists are not mutated. Module-level use of `split_signed_reading` from
+  TASK-0039.
+- `custom_components/effy/inputs.py` → `all_input_ids(options)` now returns PV,
+  then BMS, then the EPS sensor last (if set); `eps_id` docstring updated;
+  `bms_input_ids`, `output_ids`, `pv_input_ids` unchanged.
+- `custom_components/effy/history.py` → `_compute_effective_slots`: imports
+  `eps_id` and `split_eps_readings`; after the readings of a slot are built, if
+  an EPS sensor is configured the two reading lists go through
+  `split_eps_readings`; a comment on the smoothing loop records that the EPS
+  sensor is the one output-side exception (its signed series is interpolated
+  before the split). No other function in `history.py` changed: the EPS sensor,
+  being in `input_ids`, is fetched once, interpolated by the existing loop, gets
+  an effective series (`_effy_entity_id(eps)`, the effective value of the input
+  half,
+  > = 0, unit W/kW) and a smoothed series (`_effy_smoothed_entity_id(eps)`,
+  > signed).
+- Verified, no code change needed: `coordinator._input_ids` is assigned and
+  never read (the live path is disabled); no code in `sensor.py`,
+  `coordinator.py`, `sensor_utils.py` or `recorder_storage.py` clamps or
+  reinterprets a negative power; `EffySensor` and `EffySmoothedSensor` are
+  created for every member of `all_input_ids` by `sensor.async_setup_entry` and
+  `_build_derived_entities`, so the EPS sensor gets both (TASK-0043 pins that
+  and the published entries). The other readers of `all_input_ids` in
+  `history.py` (`async_probe_last_slot_ready`, `async_read_drain_activity`, the
+  efficiency energy read) behave as follows: the probe includes the EPS sensor;
+  the efficiency energy read only looks at the four counters and is unaffected;
+  `async_read_drain_activity` now sees the EPS sensor through its smoothed
+  series (`mean != 0`), which TASK-0042 pins.
+- Not yet done by design (TASK-0043): `describe_source_series` does not know the
+  EPS sensor, so until then its published entry carries the classification a
+  source that is neither PV nor a counter gets today.
+- `tests/test_eps_waterfall.py` (new) → `TestTheEpsSensorInTheWaterfall`,
+  `TestSmoothingTheSignedSeries`,
+  `TestSlotTimerEqualsFullRecalcWithTheEpsSensor` (built on the recorder world
+  of `test_history_recent_equivalence`); `tests/test_calculation.py` →
+  `TestSplitEpsReadings`; `tests/test_inputs.py` → the pin of TASK-0040 replaced
+  by `test_the_eps_sensor_is_the_last_input_and_in_no_other_pool` and
+  `test_an_eps_sensor_alone_is_the_only_input`.
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+- Verification: 1707 tests pass (1686 before, 21 new); `ruff check` and
+  `mypy --strict` clean; `ruff format --check` flags only `tests/test_cache.py`
+  (already flagged before CAP-12, not touched).

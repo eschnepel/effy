@@ -17,11 +17,13 @@ from .effy_exports import (
     EFFY_ATTR_MAX_HISTORY_DAYS,
     EFFY_ATTR_SCHEMA_VERSION,
     EFFY_ATTR_SENSORS,
+    EFFY_DIRECTION_BOTH,
     EFFY_DIRECTION_INPUT,
     EFFY_DIRECTION_OUTPUT,
     EFFY_EFFICIENCY_AGGREGATIONS,
     EFFY_FUNCTION_CHARGE,
     EFFY_FUNCTION_DISCHARGE,
+    EFFY_FUNCTION_EPS,
     EFFY_FUNCTION_GRID_EXPORT,
     EFFY_FUNCTION_GRID_IMPORT,
     EFFY_KEY_AGGREGATIONS,
@@ -33,7 +35,9 @@ from .effy_exports import (
     EFFY_KEY_SOURCE_ENTITY_ID,
     EFFY_PUBLISHED_SCHEMA_VERSION,
     EFFY_ROLE_BMS,
+    EFFY_ROLE_EPS,
     EFFY_ROLE_PV,
+    EFFY_SERIES_EFFECTIVE,
     EFFY_SERIES_STANDBY_POWER,
     EFFY_STANDBY_AGGREGATIONS,
     EffyDirection,
@@ -54,14 +58,18 @@ def describe_source_series(
     discharge_id: str | None,
     charge_id: str | None,
     grid_export_id: str | None,
+    eps_id: str | None = None,
 ) -> EffyPublishedSensor:
     """Describe an Effy sensor that is a series of one configured source sensor.
 
     Direction, role and function follow the source's role: a PV input is
     ``input``/``pv`` with function ``None``; the grid import and discharge counters
     are ``input``/``bms``, the charge and grid export counters ``output``/``bms``
-    (every output is a BMS reading, ADR-021), each with its own function
-    (ADR-023 decision 11). A source that is not configured is a programming error:
+    (every output but the EPS output is a BMS reading, ADR-021), each with its own
+    function (ADR-023 decision 11). The EPS sensor (ADR-026) has role and function
+    ``eps``; its ``effective`` series, the effective value of the input half, is an
+    ``input``, every other series of it (the ``smoothed`` one) is the signed value and
+    has direction ``both``. A source that is not configured is a programming error:
     the entities are only ever built from the same options.
     """
     direction: EffyDirection
@@ -77,6 +85,9 @@ def describe_source_series(
         direction, role, function = EFFY_DIRECTION_OUTPUT, EFFY_ROLE_BMS, EFFY_FUNCTION_CHARGE
     elif source_entity_id == grid_export_id:
         direction, role, function = EFFY_DIRECTION_OUTPUT, EFFY_ROLE_BMS, EFFY_FUNCTION_GRID_EXPORT
+    elif source_entity_id == eps_id:
+        direction = EFFY_DIRECTION_INPUT if series == EFFY_SERIES_EFFECTIVE else EFFY_DIRECTION_BOTH
+        role, function = EFFY_ROLE_EPS, EFFY_FUNCTION_EPS
     else:
         raise ValueError(f"{source_entity_id} is not a configured input or output sensor")
     return {

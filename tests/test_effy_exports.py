@@ -67,12 +67,15 @@ PINNED: dict[str, object] = {
     "EFFY_SERIES_ROUNDTRIP_EFFICIENCY": "roundtrip_efficiency",
     "EFFY_DIRECTION_INPUT": "input",
     "EFFY_DIRECTION_OUTPUT": "output",
+    "EFFY_DIRECTION_BOTH": "both",
     "EFFY_ROLE_PV": "pv",
     "EFFY_ROLE_BMS": "bms",
+    "EFFY_ROLE_EPS": "eps",
     "EFFY_FUNCTION_GRID_IMPORT": "grid_import",
     "EFFY_FUNCTION_DISCHARGE": "discharge",
     "EFFY_FUNCTION_CHARGE": "charge",
     "EFFY_FUNCTION_GRID_EXPORT": "grid_export",
+    "EFFY_FUNCTION_EPS": "eps",
     "EFFY_AGGREGATION_MEAN": "mean",
     "EFFY_AGGREGATION_MIN": "min",
     "EFFY_AGGREGATION_MAX": "max",
@@ -205,20 +208,30 @@ class TestTheTypesMatchTheConstants:
         assert set(typing.get_args(exports.EffyDirection)) == {
             exports.EFFY_DIRECTION_INPUT,
             exports.EFFY_DIRECTION_OUTPUT,
+            exports.EFFY_DIRECTION_BOTH,
         }
         assert set(typing.get_args(exports.EffyRole)) == {
             exports.EFFY_ROLE_PV,
             exports.EFFY_ROLE_BMS,
+            exports.EFFY_ROLE_EPS,
         }
         assert set(typing.get_args(exports.EffyFunction)) == {
             exports.EFFY_FUNCTION_GRID_IMPORT,
             exports.EFFY_FUNCTION_DISCHARGE,
             exports.EFFY_FUNCTION_CHARGE,
             exports.EFFY_FUNCTION_GRID_EXPORT,
+            exports.EFFY_FUNCTION_EPS,
         }
 
     def test_the_schema_version_is_still_one_because_function_is_additive(self) -> None:
         assert exports.EFFY_PUBLISHED_SCHEMA_VERSION == 1
+
+    def test_the_eps_values_are_additive_and_the_old_values_keep_their_meaning(self) -> None:
+        # ADR-021 Amendment 2026-11-06: a reader that does not know eps or both ignores them
+        assert exports.EFFY_ROLE_PV == "pv" and exports.EFFY_ROLE_BMS == "bms"
+        assert exports.EFFY_DIRECTION_INPUT == "input" and exports.EFFY_DIRECTION_OUTPUT == "output"
+        assert exports.EFFY_ROLE_EPS == exports.EFFY_FUNCTION_EPS == "eps"
+        assert exports.EFFY_DIRECTION_BOTH == "both"
 
 
 class TestEffyHasNoSecondCopy:
@@ -244,6 +257,8 @@ class TestEffyHasNoSecondCopy:
             "discharge",
             "charge",
             "grid_export",
+            "eps",
+            "both",
         ],
     )
     def test_the_literal_is_spelled_out_only_in_effy_exports(self, literal: str) -> None:

@@ -1,10 +1,10 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-11-06 (ADR-026 accepted: the EPS/UPS port; TASK-0025: the
-battery feed; TASK-0024: the valley and span machine; TASK-0023: SoC, capacity
-and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019 amendment is in
-force: four counter pickers, no update listener; `effy_exports.py` added). Keep
-this concise; ADRs in `adr/` are authoritative.
+Last updated: 2026-11-07 (CAP-12 delivered: the EPS/UPS port, ADR-026;
+TASK-0025: the battery feed; TASK-0024: the valley and span machine; TASK-0023:
+SoC, capacity and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019
+amendment is in force: four counter pickers, no update listener;
+`effy_exports.py` added). Keep this concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -152,8 +152,9 @@ this concise; ADRs in `adr/` are authoritative.
   published as `sensor.effy_<slug>_smoothed` (direction `both`, signed), next to
   the effective series of the input half; it is also the source of the EPS
   activity for standby and efficiency (`mean != 0`). Amendments on ADR-013,
-  ADR-019, ADR-021, ADR-023 are in force. Not yet implemented; CAP-12, TASK-0039
-  to TASK-0044 (Gate 2 approved).
+  ADR-019, ADR-021, ADR-023 are in force. Implemented by CAP-12, TASK-0039 to
+  TASK-0044 (acceptance test `tests/test_eps_capability.py`; README formula and
+  ADR table updated).
 - **ADR-023 (Accepted, 2026-10-27):** four efficiency sensors (charge, battery,
   discharge, roundtrip) from the BMS counters configured by function (four
   single pickers replace the BMS-input and output lists, no migration), SoC and

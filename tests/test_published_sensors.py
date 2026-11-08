@@ -42,6 +42,7 @@ class _Coordinator:
     discharge_id: str | None = BMS
     charge_id: str | None = OUT
     grid_export_id: str | None = None
+    eps_id: str | None = None
 
     def __init__(self) -> None:
         self.recalculated_from: datetime | None = None
@@ -203,6 +204,74 @@ class TestRegistration:
         }
         await entity.async_will_remove_from_hass()
         assert coordinator.registry == {}
+
+
+class TestEpsSensorsArePublished:
+    """ADR-026 decision 6: the EPS sensor's two Effy sensors register their descriptors."""
+
+    EPS = "sensor.eps_port"
+
+    @staticmethod
+    def _coordinator() -> _Coordinator:
+        coordinator = _Coordinator()
+        coordinator.eps_id = TestEpsSensorsArePublished.EPS
+        return coordinator
+
+    @pytest.mark.asyncio
+    async def test_the_effective_and_the_smoothed_sensor_register_with_role_and_function_eps(
+        self,
+    ) -> None:
+        coordinator = self._coordinator()
+        for cls in ("EffySensor", "EffySmoothedSensor"):
+            await _series(cls, self.EPS, coordinator).async_added_to_hass()
+        assert coordinator.registry == {
+            "sensor.effy_eps_port": {
+                "entity_id": "sensor.effy_eps_port",
+                "series": "effective",
+                "source_entity_id": self.EPS,
+                "direction": "input",
+                "role": "eps",
+                "function": "eps",
+                "aggregations": ["mean", "state"],
+            },
+            "sensor.effy_eps_port_smoothed": {
+                "entity_id": "sensor.effy_eps_port_smoothed",
+                "series": "smoothed",
+                "source_entity_id": self.EPS,
+                "direction": "both",
+                "role": "eps",
+                "function": "eps",
+                "aggregations": ["mean", "state"],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_published_list_carries_both_entries_and_the_schema_is_still_one(
+        self,
+    ) -> None:
+        coordinator = self._coordinator()
+        for cls, source in (
+            ("EffySensor", PV),
+            ("EffySensor", self.EPS),
+            ("EffySmoothedSensor", self.EPS),
+        ):
+            await _series(cls, source, coordinator).async_added_to_hass()
+        recalculated = _recalculated(coordinator)
+        await recalculated.async_added_to_hass()
+        coordinator.close(datetime(2026, 11, 6, 9, 0, tzinfo=UTC))
+        attributes = recalculated.extra_state_attributes
+        assert attributes["schema_version"] == 1
+        by_id = {entry["entity_id"]: entry for entry in attributes["sensors"]}
+        assert [e["entity_id"] for e in attributes["sensors"]] == sorted(by_id)
+        assert by_id["sensor.effy_eps_port"]["direction"] == "input"
+        assert by_id["sensor.effy_eps_port_smoothed"]["direction"] == "both"
+        assert by_id["sensor.effy_pv_south"]["role"] == "pv"  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_without_an_eps_sensor_the_list_is_what_it_was(self) -> None:
+        coordinator = _Coordinator()
+        await _series("EffySensor", PV, coordinator).async_added_to_hass()
+        assert [d["role"] for d in coordinator.published_descriptors()] == ["pv"]
 
 
 class _StandbyCoordinator:

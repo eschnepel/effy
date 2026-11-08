@@ -553,6 +553,17 @@ class TestEffyCoordinatorShell:
         assert coord._output_ids == ["sensor.charge", "sensor.export"]
         assert coord._input_ids == ["sensor.pv", "sensor.grid_in", "sensor.discharge"]
 
+    def test_exposes_the_eps_sensor_and_it_is_the_last_input_only(self) -> None:
+        entry = _FakeEntry(["sensor.pv"], ["sensor.charge"], ["sensor.grid_in"])
+        assert EffyCoordinator(_FakeHass(), entry).eps_id is None  # unset: nothing changes
+        entry.options["eps_sensor"] = "sensor.eps"
+        coord = EffyCoordinator(_FakeHass(), entry)
+        assert coord.eps_id == "sensor.eps"
+        assert coord._input_ids == ["sensor.pv", "sensor.grid_in", "sensor.eps"]
+        assert coord._output_ids == ["sensor.charge"]
+        assert coord.bms_input_ids == ["sensor.grid_in"]  # no BMS input: the standby is unaffected
+        assert coord.pv_input_ids == ["sensor.pv"]
+
     def test_an_unset_role_has_no_entity_and_the_standby_sensor_follows_the_bms_inputs(
         self,
     ) -> None:

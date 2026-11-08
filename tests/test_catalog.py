@@ -39,6 +39,7 @@ GRID_IN = "sensor.bms_grid_in"
 DISCHARGE = "sensor.bms_discharge"
 CHARGE = "sensor.bms_charge"
 GRID_OUT = "sensor.bms_grid_out"
+EPS = "sensor.eps_port"
 
 
 def _describe(
@@ -50,6 +51,7 @@ def _describe(
     discharge: str | None = DISCHARGE,
     charge: str | None = CHARGE,
     grid_export: str | None = GRID_OUT,
+    eps: str | None = None,
 ) -> dict[str, object]:
     entry: dict[str, object] = catalog.describe_source_series(
         entity_id,
@@ -60,6 +62,7 @@ def _describe(
         discharge_id=discharge,
         charge_id=charge,
         grid_export_id=grid_export,
+        eps_id=eps,
     )
     return entry
 
@@ -162,6 +165,56 @@ class TestDescribeSourceSeries:
             "mean",
             "state",
         ]
+
+
+class TestDescribeEps:
+    """The EPS/UPS sensor (ADR-026): role and function ``eps``; the effective series is the
+    input half, the smoothed series the signed value (direction ``both``)."""
+
+    def test_the_effective_series_is_an_input_with_role_and_function_eps(self) -> None:
+        entry = _describe("sensor.effy_eps_port", "effective", EPS, eps=EPS)
+        assert entry["direction"] == exports.EFFY_DIRECTION_INPUT == "input"
+        assert entry["role"] == exports.EFFY_ROLE_EPS == "eps"
+        assert entry["function"] == exports.EFFY_FUNCTION_EPS == "eps"
+        assert entry["series"] == "effective" and entry["source_entity_id"] == EPS
+
+    def test_the_smoothed_series_is_the_signed_value_with_direction_both(self) -> None:
+        entry = _describe("sensor.effy_eps_port_smoothed", "smoothed", EPS, eps=EPS)
+        assert entry["direction"] == exports.EFFY_DIRECTION_BOTH == "both"
+        assert entry["role"] == "eps" and entry["function"] == "eps"
+        assert entry["series"] == "smoothed"
+
+    def test_the_entries_have_the_contract_keys_in_the_published_order(self) -> None:
+        reference = _describe("sensor.effy_bms_discharge", "effective", DISCHARGE)
+        for series in ("effective", "smoothed"):
+            entry = _describe("sensor.effy_x", series, EPS, eps=EPS)
+            assert list(entry) == list(reference)
+            assert entry["aggregations"] == list(exports.EFFY_AGGREGATIONS)
+
+    def test_the_other_roles_are_unchanged_when_an_eps_sensor_is_configured(self) -> None:
+        pv = _describe("sensor.effy_pv_south", "effective", PV[0], eps=EPS)
+        assert (pv["direction"], pv["role"], pv["function"]) == ("input", "pv", None)
+        for source, direction, function in (
+            (GRID_IN, "input", "grid_import"),
+            (DISCHARGE, "input", "discharge"),
+            (CHARGE, "output", "charge"),
+            (GRID_OUT, "output", "grid_export"),
+        ):
+            entry = _describe("sensor.effy_x", "effective", source, eps=EPS)
+            assert (entry["direction"], entry["role"], entry["function"]) == (
+                direction,
+                "bms",
+                function,
+            )
+
+    def test_an_eps_source_without_the_option_is_not_configured(self) -> None:
+        with pytest.raises(ValueError):
+            _describe("sensor.effy_eps_port", "effective", EPS)  # eps_id left out
+
+    def test_the_eps_source_is_the_sensor_not_its_name(self) -> None:
+        # a sensor named like the EPS port but not configured as it is an error too
+        with pytest.raises(ValueError):
+            _describe("sensor.effy_other", "effective", "sensor.eps_port_2", eps=EPS)
 
 
 class TestDescribeStandby:
