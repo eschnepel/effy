@@ -79,7 +79,8 @@ class TestEntityMap:
 
 class TestAnonymize:
     def _run(self, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-        return tool.anonymize(_document(), **kwargs)
+        result: tuple[dict[str, Any], dict[str, Any]] = tool.anonymize(_document(), **kwargs)
+        return result
 
     def test_no_original_name_is_left_anywhere(self) -> None:
         out, _report = self._run()
