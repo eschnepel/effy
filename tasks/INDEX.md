@@ -52,7 +52,13 @@
 | TASK-0042-eps-activity-in-standby-and-efficiency | An active EPS sensor, in either sign, makes a slot impure and breaks a drain interval; tests first, change only if one fails (CAP-12, ADR-026 decision 5) | done | TASK-0041-eps-split-in-slot-loop | inline (Lead) |
 | TASK-0043-eps-sensors-and-published-entries | The two EPS Effy sensors exist and are published with role/function `eps` and direction `both` for the signed series; `effy_exports.py` (CAP-12, ADR-026 decision 6) | done | TASK-0041-eps-split-in-slot-loop | inline (Lead) |
 | TASK-0044-eps-acceptance-and-readme-formula | CAP-12 acceptance test; README formula, ADR index (CAP-12) | done | TASK-0042-eps-activity-in-standby-and-efficiency, TASK-0043-eps-sensors-and-published-entries | inline (Lead) |
-| TASK-0045-effective-pv-sum-sensors | Three sensors: Effective PV Sum now, today (integral), total (integral) | todo | — | — |
+| TASK-0045a-pv-combined-series | PV combined series and the sensor Effective PV Sum now (CAP-13) | todo | — | — |
+| TASK-0045b-pv-delta-values | PV delta of every run, from the stored values (CAP-13) | todo | TASK-0045a-pv-combined-series | — |
+| TASK-0045c-delta-derivation | Delta derivation: history of the PV delta integrals, first has_sum writer (CAP-13) | todo | TASK-0045b-pv-delta-values | — |
+| TASK-0045d-pv-delta-integral-sensors | PV delta integral sensors: booking, midnight reset, base handover (CAP-13) | todo | TASK-0045b-pv-delta-values, TASK-0045c-delta-derivation | — |
+| TASK-0045e-formula-signature-and-implicit-recalc | Formula signature, implicit full recalculation and derivation (CAP-13; decision 9 / Q27 open) | todo | TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors | — |
+| TASK-0045f-pv-published-entries | The PV sensors in the published list, effy_exports.py (CAP-13) | todo | TASK-0045a-pv-combined-series, TASK-0045d-pv-delta-integral-sensors | — |
+| TASK-0045g-cap13-acceptance-and-docs | CAP-13 acceptance test and README | todo | TASK-0045a-pv-combined-series, TASK-0045b-pv-delta-values, TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors, TASK-0045e-formula-signature-and-implicit-recalc, TASK-0045f-pv-published-entries | — |
 
 CAP-12 tasks (TASK-0039 to TASK-0044, approved at Gate 2 on 2026-11-06; ADR-026
 accepted): strictly sequential, in the order of the numbering. Shared files
@@ -64,6 +70,17 @@ in parallel: 0039 beside 0040 (calculation.py against config), and 0042 beside
 evaluate-then-fix: its tests come first and the code is changed only if one
 fails. The three CAP-12 sensors of the existing machines (standby, efficiency,
 battery) are read, never changed, by this set.
+
+`TASK-0045-effective-pv-sum-sensors` → split into
+\[`TASK-0045a-pv-combined-series`, `TASK-0045b-pv-delta-values`,
+`TASK-0045c-delta-derivation`, `TASK-0045d-pv-delta-integral-sensors`,
+`TASK-0045e-formula-signature-and-implicit-recalc`,
+`TASK-0045f-pv-published-entries`, `TASK-0045g-cap13-acceptance-and-docs`\]; the
+original slug is not reused. CAP-13 tasks (ADR-027 accepted, except decision 9):
+strictly sequential in the order of the letters. They share `history.py` (a, b,
+c, e), `coordinator.py` (a, b, d, e), `sensor.py` (a, d, f), `catalog.py` and
+`effy_exports.py` (f) and `README.md` (g, last). Gate 2 pending; decision 9
+(Q27) is to be closed by the human before `TASK-0045e` starts.
 
 ADR-023 tasks (TASK-0017 to TASK-0027, proposed 2026-10-23; ADR-023 accepted
 2026-10-27 by the human's instruction to work on them, one after the other, a
@@ -216,6 +233,8 @@ changed.
 | 2026-11-06 | — | added Draft ADR-026 and the CAP-12 proposal (the EPS/UPS port as one signed power sensor); draft amendments on ADR-019, ADR-021, ADR-023; glossary terms EPS port, EPS sensor, EPS output, EPS input; no task yet (Gate 1 pending) | human request: an output sensor option for the EPS/UPS, which can also take energy in from another inverter, formulas adjusted. Human decisions: one signed power sensor; EPS flow disqualifies a pure slot; the EPS input takes a loss share |
 | 2026-11-06 | — | Gate 1 (CAP-12) approved by the human with smoothing option A: ADR-026 rewired in its text (smoothing on the signed series before the split; a second published series, the signed smoothed one, direction `both`), draft amendment added to ADR-013 and extended on ADR-021; generated TASK-0039 to TASK-0044 (pure split · picker · waterfall path · activity pins · sensors and contract · acceptance). Gate 2 pending, no code | human: "With smoothing. Option A. Proceed.". Found while planning: the activity reading tests `mean != 0` on a power-family input's smoothed series, so option A also makes the signed EPS series the source of the EPS activity (TASK-0042 pins it, a negative value in particular) |
 | 2026-11-06 | — | Gate 2 approved by the human with the pull (mdformat applied, TASK-0039 to TASK-0044 included, TASK-0045 added by the human): ADR-026 set to Accepted, its amendments on ADR-013, ADR-019, ADR-021, ADR-023 in force; the new value `direction` `both` confirmed. Assigned TASK-0045 to CAP-13 and ordered it after CAP-12 (shared files). Baseline before any code: 1635 tests pass, `ruff check` and `mypy` clean, `ruff format --check` flags `tests/test_cache.py` (not touched by CAP-12) | human: "all approved now. proceed." |
+| 2026-11-07 | TASK-0045 | held before any code; added Draft ADR-027 (the statistics of a `total` / `total_increasing` sensor, where the sum starts, a proposed split into TASK-0045a and TASK-0045b); no structural change to the task set yet | Effy has never written a `sum` (`has_sum=False` in every metadata, rows are `mean`/`state` only; the stored-rows check of ADR-024 and the hourly row assume it); the recorder compiles `has_sum` rows itself for such sensors and a live state cannot be backdated (ADR-011), so the choice cannot be left to a worker. TASK-0044 done the same day |
+| 2026-11-07 | TASK-0045 | Scenario A split into TASK-0045a to TASK-0045g after a design interview with the human; CAP-13 re-scoped (adr-capability.md); ADR-027 rewritten and accepted except decision 9; amendments added to ADR-019, ADR-021, ADR-024; GLOSSARY.md gets running total, change, PV combined series, PV delta, PV delta integral, delta derivation, delta base, formula signature. Gate 2 pending, no code | The held draft's questions Q1 to Q3 were settled differently by the human: Home Assistant compiles the statistics of the energy sensors from live states, the delta is booked at write time, the history is derived once (has_sum writer), and a change of the formula-relevant options recalculates by itself. Open: decision 9 (Q27, how the combined integrals follow a change of the PV inputs; built as A, the human may choose B). Notable: every existing entry runs one full recalculation after the upgrade |
 
 ## Audit Groups
 

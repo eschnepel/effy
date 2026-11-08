@@ -332,3 +332,20 @@ values: `schema_version` stays 1, a reader ignores a value it does not know.
 
 **Decided by:** Lead Agent (formalization ◇), confirmed by the human at Gate 2
 with ADR-026
+
+## Amendment — 2026-11-07 (PV combined series and PV delta integrals; in force with ADR-027)
+
+**Reason:** ADR-027 adds four Effy sensors that are neither a per-input
+effective series nor a battery series.
+
+**Decision:** `series` gains `pv_sum`, `pv_delta_integral`,
+`pv_delta_integral_today` and `pv_delta_integral_total`; the entries have `role`
+`pv`, `direction` `input` and no `function` key. `source_entity_id` is the PV
+input for `pv_delta_integral` and null for the others. `aggregations` gains the
+value `change` (a statistic type, not a column) for the three integral entries,
+next to `state` and `sum`. All are additive: `schema_version` stays 1, a reader
+ignores a value it does not know. `effy_exports.py` gets the four series values
+and the aggregation.
+
+**Decided by:** human (design interview 2026-11-07), formalized by the Lead
+Agent

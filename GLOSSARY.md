@@ -159,6 +159,45 @@ interpolation (`effy_*_smoothed`). _Avoid_: Smoothing (for redistribution)
 **Redistribution**: Spreading one jump's energy over the time it took to
 accumulate, so a low-resolution counter yields a smooth power instead of spikes.
 
+**Running total**: The value a `total` sensor's statistic accumulates over all
+its cycles; Home Assistant's `sum` column. _Avoid_: sum (for this), cumulative
+sum
+
+**Change**: The difference of a running total between two points in time (Home
+Assistant's statistic type `change`): the amount booked in a period. The change
+of an hour is the change of its slots added up.
+
+**PV combined series**: The effective values of all PV inputs added up per slot,
+in W. Effy writes it like any effective series (the sensor "Effective PV Sum
+now", published as `pv_sum`). The EPS sensor and the BMS inputs are not in it.
+_Avoid_: PV total
+
+**PV delta**: For one PV input and one run, the energy by which the run changed
+the stored rows of its effective series: the added-up `(new − stored) × 5/60 h`
+over the rows the run wrote, the new value alone where there was no row. In Wh
+or kWh by the input's effective unit; positive or negative; booked at the time
+of the write, not at the time of the slot. _Avoid_: undistributed series,
+correction series
+
+**PV delta integral**: A `total` sensor that accumulates PV deltas; Home
+Assistant compiles its statistics. There is one per PV input and one combined
+for all PV inputs, both with a `last_reset` at local midnight that Effy resets
+at wall-clock midnight (_today_), and one combined without `last_reset`
+(_total_). The delta of any period is its change. _Avoid_: PV delta sum
+
+**Delta derivation**: The one-time computation of the history of the PV delta
+integrals from the stored effective rows, after a full history recalculation
+(ADR-027). It writes running-total rows, the only ones Effy writes. _Avoid_:
+clone, migration, derived power series
+
+**Delta base**: The last derived row of a PV delta integral: its `state`,
+`last_reset` and running total, from which the live bookings continue.
+
+**Formula signature**: The set of configured sensors that influence the
+effective values (PV inputs, grid import, discharge, charge, grid export, EPS),
+kept in the entry's data; a difference at setup triggers a full history
+recalculation (ADR-027).
+
 **Statistic**: A 5-minute value Effy writes into the recorder for an Effy
 sensor. _Avoid_: History value
 

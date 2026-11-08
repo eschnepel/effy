@@ -781,3 +781,4 @@ test suite runs against.
 | [024](adr/024-history-recalculation-write-phase.md) | The write phase of the history recalculation |
 | [025](adr/025-recorder-read-cache.md) | A cache for what Effy reads from the recorder |
 | [026](adr/026-eps-port-sensor.md) | The EPS/UPS port as a signed power sensor |
+| [027](adr/027-effective-pv-sum-sensors.md) | The Effective PV Sum and the PV delta integrals |

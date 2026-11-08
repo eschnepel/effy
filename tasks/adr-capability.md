@@ -280,25 +280,31 @@ and their published entries (`effy_exports.py`), translations (en, de), tests.
 flows; an EPS efficiency or standby sensor; more than one EPS port; a tolerance
 for small idle readings; any change in Shady or Chargy.
 
-## CAP-13 — Effective PV sum *(assigned by the Lead 2026-11-06 for the human's TASK-0045; Gate 1 and Gate 2 approved by the human 2026-11-06 with the pull)*
+## CAP-13 — Effective PV sum and PV delta integrals *(assigned by the Lead 2026-11-06 for the human's TASK-0045; re-scoped by the human in a design interview 2026-11-07, agreed in chat; ADR-027)*
 
-**What the user sees:** three sensors that add up the effective values of all PV
-inputs: `Effective PV Sum now` (power), `Effective PV Sum today (integral)`
-(energy, resets at the Home Assistant local midnight) and
-`Effective PV Sum total (integral)` (energy, from the first processed slot of
-the history, never reset). They are rebuilt with the history and published with
-a role and function of their own. The EPS sensor of CAP-12 is not a PV input and
-is not in the sum.
+**What the user sees:** one sensor that adds up the effective values of all PV
+inputs, `Effective PV Sum now` (power, rewritten for changed slots like every
+effective series), and the energy those inputs delivered, as PV delta integrals:
+per PV input `<name> delta integral today`, and combined
+`PV delta integral today` and `PV delta integral total` (energy, Home Assistant
+compiles their statistics; the delta of any period is the `change` query). They
+are derived once from the history, follow every correction Effy makes, and are
+published with role `pv`. A change of the configured sensors that influence the
+formula runs a full history recalculation by itself. The EPS sensor of CAP-12 is
+not a PV input and is not in any of them.
 
-**End-to-end demonstration:** with two PV inputs in mixed units, the three
-sensors show the sum, the day's integral and the total; after the
-recalculate-history button the integrals are rebuilt and the sum of the
-per-input integrals equals the integral of the sum; an entry without a PV input
-has none of them.
+**End-to-end demonstration:** with two PV inputs in mixed units, a full
+recalculation and the derivation give both inputs and the combined integrals a
+history; the next slot books its energy; a formula-relevant option change
+recalculates by itself; a button run after a correction books it in today and
+total, and the combined integrals equal the per-input ones added up; an entry
+without a PV input has none of them.
 
-**Scope (in):** see `TASK-0045-effective-pv-sum-sensors.md`. **Scope (out):** a
-sum over anything but the PV inputs; any change of the per-input sensors.
+**Scope (in):** the tasks `TASK-0045a` to `TASK-0045g`. **Scope (out):** any
+addition over anything but the PV inputs; any change of the per-input effective
+sensors.
 
 **Order:** after CAP-12; both touch `sensor.py`, `catalog.py`,
 `effy_exports.py`, `coordinator.py`, `README.md` and the translations, so they
-run strictly one after the other.
+run strictly one after the other. Inside CAP-13 the tasks also share
+`history.py`, so they run in the order of their dependencies, one at a time.

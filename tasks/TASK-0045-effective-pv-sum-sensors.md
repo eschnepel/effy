@@ -1,6 +1,6 @@
 # Task: Add three Effective PV Sum sensors
 
-- **Status:** todo
+- **Status:** superseeded by Tasks 0045a-0045g
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-019, ADR-007, ADR-013]
 - **Dependencies:** none

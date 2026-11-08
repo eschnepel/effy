@@ -161,3 +161,18 @@ the Amendment 2026-10-26 is untouched. Its consequence is in ADR-020's known
 limits and awaits the human.
 
 **Decided by:** Lead Agent (not yet confirmed by the human)
+
+## Amendment — 2026-11-07 (the delta derivation writes running totals; in force with ADR-027)
+
+**Reason:** ADR-027 has Effy write `has_sum` rows once, which the write phase
+never did.
+
+**Decision:** the write phase stays as it is for `mean`/`state` rows. The delta
+derivation is a second, separate write mode: metadata `has_sum=True`,
+`has_mean=False`, rows `{start, state, sum, last_reset}`, both tables, hourly
+rows only for closed hours, 5-minute rows only up to the last completed slot. It
+is not subject to the stored-rows check (it skips a series that already has
+statistics) and runs only after a full history recalculation.
+
+**Decided by:** human (design interview 2026-11-07), formalized by the Lead
+Agent

@@ -103,3 +103,19 @@ halves are plain members of the output list and the input pool, so decision 2
 and never a drain source. Details: ADR-026.
 
 **Decided by:** human (chat 2026-11-06), confirmed by ADR-026's acceptance
+
+## Amendment — 2026-11-07 (formula signature; in force with ADR-027)
+
+**Reason:** ADR-027 derives the history of the PV delta integrals after a full
+history recalculation, and wants a change of the configured sensors to trigger
+it. Today saving the options only reloads the entry.
+
+**Decision:** the PV inputs, grid import, discharge, charge, grid export and EPS
+sensors form the *formula signature*, kept in the entry's **data** (storing it
+reloads nothing; no update listener is added, the amendment of 2026-10-23
+stays). At setup a signature that is absent or differs from the options starts
+the full history recalculation in the background (ADR-027 decision 6). No other
+option triggers it.
+
+**Decided by:** human (design interview 2026-11-07), formalized by the Lead
+Agent
