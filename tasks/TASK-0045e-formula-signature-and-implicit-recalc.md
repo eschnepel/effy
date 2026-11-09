@@ -56,6 +56,9 @@ derivation by itself, then hands the bases to the sensors.
   as a one-time rewrite while the sensors are `unavailable`, and a removed input
   leaves the combined history. If the human chooses B, the combined series are
   left untouched and this paragraph and its tests change; nothing else does.
+- **TASK-0047 (2026-11-09):** the list of additional sensors (CAP-14) is part of
+  the formula signature, so adding or removing one starts the full
+  recalculation. Whichever of the two tasks is done second makes that change.
 
 ## Estimated File / Module Footprint (hint, not a commitment)
 

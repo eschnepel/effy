@@ -2,8 +2,8 @@
 
 - **Status:** todo
 - **Capability:** CAP-13 (added 2026-11-09)
-- **Related ADRs:** [ADR-027 (amendment 2026-11-09), ADR-026, ADR-001, ADR-016,
-  ADR-021, ADR-024]
+- **Related ADRs:** \[ADR-027 (amendment 2026-11-09), ADR-026, ADR-001, ADR-016,
+  ADR-021, ADR-024\]
 - **Dependencies:** [TASK-0045a-pv-combined-series]
 - **Needed by:** TASK-0045f (publishes the sensor), TASK-0045g (acceptance and
   README)
@@ -53,10 +53,10 @@ inputs (grid import, battery discharge), as one percentage.
   the hour's slots / Σ denominator over the hour's slots, and 0 if the
   denominator is 0. It is **not** the mean of the slot shares.
 
-- Given the sensor, then it is `sensor.effy_pv_share_now` ("PV share now", unique
-  ID `<entry_id>_pv_share_now`): unit `%`, state class `measurement`, no device
-  class, its live value the last completed slot's share, pushed with the other
-  effective sensors (ADR-016) and restored after a restart like them.
+- Given the sensor, then it is `sensor.effy_pv_share_now` ("PV share now",
+  unique ID `<entry_id>_pv_share_now`): unit `%`, state class `measurement`, no
+  device class, its live value the last completed slot's share, pushed with the
+  other effective sensors (ADR-016) and restored after a restart like them.
 
 - Given the sensor names, then the translations en and de name it.
 

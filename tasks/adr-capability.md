@@ -310,3 +310,28 @@ except that share; any change of the per-input effective sensors.
 `effy_exports.py`, `coordinator.py`, `README.md` and the translations, so they
 run strictly one after the other. Inside CAP-13 the tasks also share
 `history.py`, so they run in the order of their dependencies, one at a time.
+
+## CAP-14 — Additional sensors with derived power and smoothed series *(proposed 2026-11-09 by the human's request; Gate 1 pending; Draft ADR-028; independent of CAP-13)*
+
+**What the user sees:** an optional **Additional sensors** list in the options.
+For each sensor in it Effy writes the series an input gets before the loss is
+distributed, and nothing else: `sensor.effy_<slug>_power` (redistributed power
+of an energy counter, idle stretches as 0) or `sensor.effy_<slug>_smoothed` (a
+power sensor with short gaps bridged). They are in no loss, effective value,
+standby, efficiency or battery calculation. Use case: Effy's counter and gap
+logic on the house grid import sensor. They are published with role `other` for
+dependent projects.
+
+**End-to-end demonstration:** add a low-resolution grid import counter and a
+power sensor with gaps to the list, press the history button; both series have a
+history, the counter's idle days read 0, the gaps of up to two slots are filled,
+the effective rows of the entry equal those of the entry without the list;
+remove a sensor and its Effy sensor leaves the registry; a sensor that is
+already an input is refused.
+
+**Scope (in):** `TASK-0047`. **Scope (out):** an effective, loss or share series
+for these sensors; any influence on the loss; a role other than `other`.
+
+**Order:** after CAP-13 (shared files `sensor.py`, `catalog.py`, `history.py`,
+`effy_exports.py`, `coordinator.py`, `config_flow.py`, `README.md`, the
+translations), one task at a time.
