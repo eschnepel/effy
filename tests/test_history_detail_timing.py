@@ -403,9 +403,10 @@ class TestWriteCalls:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         msg, recorder = await self._run(monkeypatch, caplog)
-        # effective: PV and PW; derived power: PV and OUT; smoothed: PW. Two imports each
-        # (short-term, hourly) -> 4, 4 and 2 imports in call order.
-        segments = [recorder.imports[0:4], recorder.imports[4:8], recorder.imports[8:10]]
+        # effective: PV, PW and the PV combined series (TASK-0045a); derived power: PV and
+        # OUT; smoothed: PW. Two imports each (short-term, hourly) -> 6, 4 and 2 imports in
+        # call order.
+        segments = [recorder.imports[0:6], recorder.imports[6:10], recorder.imports[10:12]]
         for name, segment in zip(("effective", "derived power", "smoothed"), segments, strict=True):
             call = _line(msg, f"{name}:")
             short = sum(n for table, n in segment if table == "_StatisticsShortTerm")
@@ -423,7 +424,7 @@ class TestWriteCalls:
         calls = [_line(msg, f"{name}:") for name in ("effective", "derived power", "smoothed")]
         total = sum(_seconds(c, "build") + _seconds(c, "recorder") for c in calls)
         assert total == pytest.approx(_figure(msg.splitlines()[0], "write"))
-        assert total == pytest.approx(IMPORT_S * 10 + BLOCK_S * 3)
+        assert total == pytest.approx(IMPORT_S * 12 + BLOCK_S * 3)
 
     async def test_the_real_writer_stops_reporting_once_the_write_is_over(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

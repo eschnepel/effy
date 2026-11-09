@@ -1,8 +1,8 @@
 # ADR-028 – Additional Sensors with Derived Power and Smoothed Series
 
 **Date:** 2026-11-09 **Status:** Draft (Gate 1 pending). The decisions are the
-human's answers of 2026-11-09 to the questions of TASK-0047; the text was written
-by the Lead Agent and has not been read by the human. Terms follow
+human's answers of 2026-11-09 to the questions of TASK-0047; the text was
+written by the Lead Agent and has not been read by the human. Terms follow
 `GLOSSARY.md`.
 
 ---
@@ -27,17 +27,17 @@ effective, standby, efficiency or battery calculation.
    late-bound sensor is created when its state appears, the slot job, the recent
    recalculation and the button write them, the live value is the last completed
    slot's. The series are not passed to the waterfall.
-1. **No role twice.** A sensor that already is a PV input, a BMS counter, the EPS
-   sensor, the state of charge sensor or the capacity entity is refused, as is
-   one listed twice (ADR-019's rule that a sensor has one role). The unit must be
-   W, kW, Wh or kWh.
+1. **No role twice.** A sensor that already is a PV input, a BMS counter, the
+   EPS sensor, the state of charge sensor or the capacity entity is refused, as
+   is one listed twice (ADR-019's rule that a sensor has one role). The unit
+   must be W, kW, Wh or kWh.
 1. **History.** The button writes it; saving the options starts no
    recalculation. When the formula signature of ADR-027 decision 6 exists, the
    list is part of it, so a change then recalculates by itself.
 1. **Published contract** (ADR-021, additive, `schema_version` stays 1): `role`
    `other`, `direction` `unknown`, `function` `unknown` (the role of the sensor
-   is not known to Effy), `series` `derived_power` or
-   `smoothed`, `source_entity_id` the sensor.
+   is not known to Effy), `series` `derived_power` or `smoothed`,
+   `source_entity_id` the sensor.
 
 ## Alternatives considered
 
@@ -45,8 +45,8 @@ effective, standby, efficiency or battery calculation.
   family decides, as for inputs.
 - **Allow a role and an additional entry for one sensor**: rejected; two Effy
   entities would share one unique ID.
-- **Leave gaps for an idle counter**: rejected; the zero-fill is the point of the
-  use case.
+- **Leave gaps for an idle counter**: rejected; the zero-fill is the point of
+  the use case.
 
 ## Consequences
 

@@ -43,5 +43,13 @@ CAPACITY_UNITS = ("Wh", "kWh")
 # The EPS sensor reports power in one of these units, any other is an error (ADR-026 decision 1).
 EPS_UNITS = ("W", "kW")
 
+# The PV combined series (ADR-027 decision 1, TASK-0045a): the effective values of all PV
+# inputs added up per slot, in W. Its statistic ID is the entity ID of the sensor "Effective PV
+# Sum now"; the series is written into ``per_sensor`` like any effective series. Not yet in the
+# published contract: TASK-0045f moves these literals into ``effy_exports.py``.
+PV_SUM_ENTITY_ID = "sensor.effy_effective_pv_sum_now"
+PV_SUM_UNIQUE_ID_SUFFIX = "effective_pv_sum_now"
+PV_SUM_TRANSLATION_KEY = "effective_pv_sum_now"
+
 # The published contract (schema version, aggregations, entity IDs, keys) lives in
 # effy_exports.py, a standalone file other projects copy (ADR-021 Amendment 2026-10-23).

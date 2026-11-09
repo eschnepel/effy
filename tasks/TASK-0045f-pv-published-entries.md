@@ -5,8 +5,8 @@
 - **Related ADRs:** [ADR-027, ADR-021]
 - **Dependencies:** \[TASK-0045a-pv-combined-series,
   TASK-0045d-pv-delta-integral-sensors, TASK-0046-pv-share-sensor\]
-- **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
-  2026-11-07; split from the held TASK-0045). No code before approval.
+- **Gate:** Gate 2 approved by the human (2026-11-09, with Q27 = A); re-scoped
+  in a design interview on 2026-11-07, split from the held TASK-0045.
 
 ## Goal
 
@@ -55,7 +55,7 @@ tests for each (`test_catalog`, `test_effy_exports`, `test_published_sensors`).
   `ruff format` clean · `mypy --strict` and `ruff check` show no finding the
   repository did not already have
 - Docs updated where this task changes text (translations en and de for sensor
-  names) · no open ADR conflicts (ADR-027, decision 9, is the only open point)
+  names) · no open ADR conflicts (ADR-027 decision 9 decided: Q27 = A)
 - `Delivered Artifacts` block completed and accurate
 - No new external dependencies (standard library only); `tasks/DEPENDENCIES.md`
   unchanged
@@ -71,8 +71,12 @@ tests for each (`test_catalog`, `test_effy_exports`, `test_published_sensors`).
 - `effy_exports.EffySeries`, `EFFY_AGGREGATIONS`,
   `EFFY_EFFICIENCY_AGGREGATIONS`, `EFFY_PUBLISHED_SCHEMA_VERSION`.
 - `coordinator.register_published`, `coordinator.published_descriptors`.
-- The sensors (→ task: TASK-0045a-pv-combined-series and
-  TASK-0045d-pv-delta-integral-sensors).
+- The sensor `sensor.EffyPvSumSensor` (`const.PV_SUM_ENTITY_ID`, unique ID
+  `sensor.pv_sum_unique_id(entry)`, W, `measurement`; not registered with
+  `register_published` yet) (→ task: TASK-0045a-pv-combined-series, done).
+  Replace the literal in `const.py` by an import from `effy_exports.py`.
+- The sensors of TASK-0045d-pv-delta-integral-sensors (→ task:
+  TASK-0045d-pv-delta-integral-sensors, open).
 
 ## Delivered Artifacts
 

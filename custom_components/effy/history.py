@@ -218,6 +218,7 @@ from .calculation import (
 from .const import (
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
+    PV_SUM_ENTITY_ID,
 )
 from .cache import Cache
 from .debug_export import ExportOutcome, ExportRecord
@@ -234,6 +235,7 @@ from .inputs import (
     eps_id,
     grid_export_id,
     grid_import_id,
+    pv_input_ids,
     soc_id,
 )
 from .inputs import output_ids as configured_output_ids
@@ -1382,6 +1384,15 @@ async def _compute_effective_slots(
         visible, not just an invisible internal correction.
     All three are ready for _write_recorder_statistics. Nothing is written here.
 
+    The PV combined series (ADR-027 decision 1, TASK-0045a) is one more member of
+    ``per_sensor``, under the statistic ID ``const.PV_SUM_ENTITY_ID``: per slot the
+    addition of the effective values of all PV inputs, in W whatever their units are.
+    A PV input without a value in a slot adds nothing, a slot in which no PV input has
+    a value has no row, and neither the EPS sensor nor a BMS input is in it. It is
+    computed in the same slot loop as the effective series, so the slot job, the
+    recent recalculation and the button write it the same way, and a full
+    recalculation and the recent recalculation give identical rows.
+
     ``phases`` (TASK-0010) books the time of this call to the fetch and compute
     phases; the default does nothing.
     """
@@ -1556,6 +1567,10 @@ async def _compute_effective_slots(
     results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in input_ids}
     # power_results: raw (pre-waterfall) derived power per slot, energy-family only
     power_results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in energy_ids}
+    # pv_sum_results: the PV combined series (ADR-027 decision 1): per slot the effective
+    # values of all PV inputs added up, in W (``effective_values_w`` is W for every input)
+    pv_ids: set[str] = set(pv_input_ids(entry_options))
+    pv_sum_results: list[tuple[datetime, float]] = []
 
     readings_for_slot = phases.wrap("readings", _readings_for_slot)
     waterfall = phases.wrap("waterfall", distribute_loss)
@@ -1589,6 +1604,14 @@ async def _compute_effective_slots(
                 eff = to_original_unit(reading.entity_id, distribution, reading.original_unit)
                 results[reading.entity_id].append((slot, eff))
 
+            pv_values = [
+                distribution.effective_values_w[reading.entity_id]
+                for reading in input_readings
+                if reading.entity_id in pv_ids
+            ]
+            if pv_values:
+                pv_sum_results.append((slot, sum(pv_values)))
+
     per_sensor: dict[str, dict[str, Any]] = {}
     for eid in input_ids:
         if not results[eid]:
@@ -1604,6 +1627,9 @@ async def _compute_effective_slots(
             "unit": effective_unit_for(units[eid]),
             "slot_values": results[eid],
         }
+
+    if pv_sum_results:
+        per_sensor[PV_SUM_ENTITY_ID] = {"unit": "W", "slot_values": pv_sum_results}
 
     per_sensor_power: dict[str, dict[str, Any]] = {}
     for eid in energy_ids:

@@ -33,6 +33,7 @@ OUT = "sensor.out"  # energy-family output, kWh
 PW = "sensor.pw"  # power-family input, W
 PW2 = "sensor.pw2"  # power-family input, W
 NOTHING = "sensor.nothing"  # energy-family, no state ever recorded
+PV_SUM = "sensor.effy_effective_pv_sum_now"  # the PV combined series (TASK-0045a)
 
 START = _ts(10, 0, day=10)
 END = _ts(12, 0, day=10)
@@ -198,9 +199,15 @@ class TestWhichSeriesAHistoryRecalculationWrites:
         _add_power(world, PW)
         written, _start, touched, _last = await self._recalc(monkeypatch, world, _options([PW]))
 
+        # The PV combined series (TASK-0045a) is written with the effective series; a PV
+        # input is all this world has, so it is the series of PW alone.
         assert [set(series) for _lt, _st, series in world.write_calls] == [
-            {_history._effy_entity_id(PW)},
+            {_history._effy_entity_id(PW), PV_SUM},
             {_history._effy_smoothed_entity_id(PW)},
         ]
-        assert touched == {_history._effy_entity_id(PW), _history._effy_smoothed_entity_id(PW)}
+        assert touched == {
+            _history._effy_entity_id(PW),
+            PV_SUM,
+            _history._effy_smoothed_entity_id(PW),
+        }
         assert written > 0

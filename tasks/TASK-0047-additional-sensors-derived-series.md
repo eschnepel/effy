@@ -2,8 +2,8 @@
 
 - **Status:** todo
 - **Capability:** CAP-14
-- **Related ADRs:** [ADR-028 (Draft), ADR-012, ADR-013, ADR-019, ADR-021,
-  ADR-024, ADR-027]
+- **Related ADRs:** \[ADR-028 (Draft), ADR-012, ADR-013, ADR-019, ADR-021,
+  ADR-024, ADR-027\]
 - **Dependencies:** []. It shares `sensor.py`, `catalog.py`, `history.py`,
   `coordinator.py`, `config_flow.py`, `README.md` and the translations with
   CAP-13, so it runs after the CAP-13 task that last touches them, one task at a
@@ -14,11 +14,11 @@
 ## Goal
 
 The user can name sensors that are **not** an input, an output, the EPS sensor,
-the state of charge or the capacity of Effy, and Effy gives each of them the same
-series treatment an input gets before the loss is distributed: a derived power
-series for an energy-family sensor, a smoothed series for a power-family sensor.
-They take no part in any loss, effective value, standby, efficiency or battery
-calculation. The use case: part of Effy's logic (the redistribution of a
+the state of charge or the capacity of Effy, and Effy gives each of them the
+same series treatment an input gets before the loss is distributed: a derived
+power series for an energy-family sensor, a smoothed series for a power-family
+sensor. They take no part in any loss, effective value, standby, efficiency or
+battery calculation. The use case: part of Effy's logic (the redistribution of a
 low-resolution counter, the gap smoothing, the idle zero-fill) applied to the
 house's grid import sensor, which Effy does not otherwise use.
 
@@ -40,15 +40,15 @@ house's grid import sensor, which Effy does not otherwise use.
 
 - Given a power-family sensor in the list (W or kW, `measurement`), then Effy
   creates `sensor.effy_<slug>_smoothed` and writes its statistics like the
-  smoothed series of an input: a gap of up to two slots is interpolated, a longer
-  gap stays a gap (ADR-013 decision 2, `INTERPOLATION_MAX_GAP_SLOTS`).
+  smoothed series of an input: a gap of up to two slots is interpolated, a
+  longer gap stays a gap (ADR-013 decision 2, `INTERPOLATION_MAX_GAP_SLOTS`).
 
-- Given either kind, then **no effective sensor** is created for it, and it is in
-  no formula: the inputs' loss, the waterfall, the loss and share attributes, the
-  activity reading of standby and efficiency, the PV sums and the PV share
-  (CAP-13) are the same with or without the additional sensors. A test pins this:
-  the effective rows of an entry are identical with and without a grid-import
-  sensor in the additional list.
+- Given either kind, then **no effective sensor** is created for it, and it is
+  in no formula: the inputs' loss, the waterfall, the loss and share attributes,
+  the activity reading of standby and efficiency, the PV sums and the PV share
+  (CAP-13) are the same with or without the additional sensors. A test pins
+  this: the effective rows of an entry are identical with and without a
+  grid-import sensor in the additional list.
 
 - Given a sensor whose family is not known yet at startup, then the derived or
   smoothed entity is created late like for an input (ADR-013 decision 1, the
@@ -73,19 +73,20 @@ house's grid import sensor, which Effy does not otherwise use.
   entity registry; its statistics stay.
 
 - Given the history of a newly added sensor, then it is empty until the history
-  button runs (saving the options reloads the entry and starts no recalculation).
-  The README says so. **When TASK-0045e's formula signature exists, the list of
-  additional sensors is part of it**, so adding or removing one then starts the
-  full recalculation by itself (human, 2026-11-09); whichever of the two tasks is
-  done second makes that change, and the signature's other content is unchanged.
+  button runs (saving the options reloads the entry and starts no
+  recalculation). The README says so. **When TASK-0045e's formula signature
+  exists, the list of additional sensors is part of it**, so adding or removing
+  one then starts the full recalculation by itself (human, 2026-11-09);
+  whichever of the two tasks is done second makes that change, and the
+  signature's other content is unchanged.
 
 - Given the published list, then each additional sensor appears with `role`
   `other`, `direction` `unknown`, `function` `unknown` (the key is present, with
   the value `unknown`; human, 2026-11-09: the role of the sensor is not known to
-  Effy), `series` `derived_power` or `smoothed`,
-  `source_entity_id` the sensor, unit and aggregations as for an input's series.
-  `schema_version` stays 1 (additive: a new `role` value and the value `unknown`
-  for `direction` and `function`); `effy_exports.py` gets `EFFY_DIRECTION_UNKNOWN`,
+  Effy), `series` `derived_power` or `smoothed`, `source_entity_id` the sensor,
+  unit and aggregations as for an input's series. `schema_version` stays 1
+  (additive: a new `role` value and the value `unknown` for `direction` and
+  `function`); `effy_exports.py` gets `EFFY_DIRECTION_UNKNOWN`,
   `EFFY_FUNCTION_UNKNOWN` and the `role` value, and a copy of it still works
   without Effy installed. Existing contract tests pass unchanged.
 
@@ -104,9 +105,9 @@ Human, 2026-11-09, in answer to the questions of this task:
 1. The history comes from the button; with TASK-0045e the change recalculates by
    itself.
 1. Option name "Additional sensors"; published with `role` `other`, `direction`
-   `unknown`, `function` `unknown`, series `derived_power` / `smoothed`
-   (first answered as `null`; the human changed both to `unknown` on
-   2026-11-09, "as this all is unknown").
+   `unknown`, `function` `unknown`, series `derived_power` / `smoothed` (first
+   answered as `null`; the human changed both to `unknown` on 2026-11-09, "as
+   this all is unknown").
 1. New capability CAP-14 with its own ADR-028, independent of CAP-13.
 
 ## Open points for Gate 1 (the Lead resolves them with the human)
@@ -159,8 +160,8 @@ listener, registry removal), `catalog.py`, `effy_exports.py`, `coordinator.py`,
   `effy_exports.EffySeries`, `coordinator.register_published`.
 - `tests/test_history_recent_equivalence.py` (`_World`, `_install`,
   `_run_full_recalc`, `_equivalent`).
-- The formula signature (→ task: TASK-0045e-formula-signature-and-implicit-recalc,
-  only if it is done first).
+- The formula signature (→ task:
+  TASK-0045e-formula-signature-and-implicit-recalc, only if it is done first).
 
 ## Delivered Artifacts
 

@@ -1,11 +1,11 @@
 # Task: PV combined series and the sensor Effective PV Sum now
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-027, ADR-002, ADR-008, ADR-024]
 - **Dependencies:** []
-- **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
-  2026-11-07; split from the held TASK-0045). No code before approval.
+- **Gate:** Gate 2 approved by the human (2026-11-09, with Q27 = A); re-scoped
+  in a design interview on 2026-11-07, split from the held TASK-0045.
 
 ## Goal
 
@@ -54,7 +54,7 @@ PV Sum now".
   `ruff format` clean · `mypy --strict` and `ruff check` show no finding the
   repository did not already have
 - Docs updated where this task changes text (translations en and de for sensor
-  names) · no open ADR conflicts (ADR-027, decision 9, is the only open point)
+  names) · no open ADR conflicts (ADR-027 decision 9 decided: Q27 = A)
 - `Delivered Artifacts` block completed and accurate
 - No new external dependencies (standard library only); `tasks/DEPENDENCIES.md`
   unchanged
@@ -83,4 +83,43 @@ PV Sum now".
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/const.py` → constants `PV_SUM_ENTITY_ID`
+  (`"sensor.effy_effective_pv_sum_now"`, the statistic ID of the series and the
+  entity ID of the sensor), `PV_SUM_UNIQUE_ID_SUFFIX` and
+  `PV_SUM_TRANSLATION_KEY` (both `"effective_pv_sum_now"`). TASK-0045f moves the
+  literal into `effy_exports.py` and must then import it from there.
+- `custom_components/effy/history.py` → no new function.
+  `_compute_effective_slots` returns the series as
+  `per_sensor[const.PV_SUM_ENTITY_ID] = {"unit": "W", "slot_values": [(slot, value_in_W), ...]}`,
+  computed in the slot loop as the sum of `distribution.effective_values_w` of
+  the inputs of `inputs.pv_input_ids`; a slot without a PV reading has no row,
+  no PV input means no key. It therefore reaches the writer, the stored-rows
+  check, the hourly rows, `touched` and `last_values` (`(value, "W")`) of
+  `async_recalculate_history` and `async_recalculate_recent` without any other
+  change. New imports: `PV_SUM_ENTITY_ID`, `pv_input_ids`.
+- `custom_components/effy/sensor.py` →
+  `class EffyPvSumSensor(RestoreEntity, SensorEntity)` (entity ID
+  `PV_SUM_ENTITY_ID`, unique ID `pv_sum_unique_id(entry)`, power in W, state
+  class `measurement`, `translation_key` `effective_pv_sum_now`, live push
+  through `coordinator.subscribe_updates`, `_async_restore_measurement` on
+  start), `pv_sum_unique_id(entry)`,
+  `_pv_sum_entities(hass, entry, coordinator)` (exists only with
+  `coordinator.pv_input_ids`, removes the registered entity otherwise), wired in
+  `async_setup_entry` right after `EffyRecalculatedFromSensor`. Not registered
+  with `coordinator.register_published` (TASK-0045f).
+- `custom_components/effy/translations/en.json`, `de.json` →
+  `entity.sensor.effective_pv_sum_now.name` ("Effective PV Sum now" / "Effektive
+  PV-Summe jetzt").
+- `coordinator.py` → unchanged: `notify_updated` routes by entity ID.
+- Tests: new `tests/test_pv_combined_series.py` (26 tests). Existing tests
+  adjusted because the new series is one more member of the sets they pin, with
+  no assertion weakened: `test_history_recorder_rollup.py` (`EFFY`, `FULL`),
+  `test_history_compute_edges.py`, `test_history_detail_timing.py`,
+  `test_history_write_only_changed.py` (series and import counts),
+  `test_sensor_setup.py` (entity lists), `test_history_recent_equivalence.py`
+  (touched set; the split tests compare every series except the PV combined
+  series exactly, which gets its own exact assertion because it depends on which
+  inputs are PV by definition).
+- External dependencies added: none; `tasks/DEPENDENCIES.md` unchanged.
+- Reviewer (inline, no sub-agent available): PASS. Residual note: no test drives
+  the real coordinator through this series' push; the routing is generic.

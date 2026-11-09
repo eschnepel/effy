@@ -34,6 +34,7 @@ from tests.test_history_write_only_changed import (
 REAL_FETCH = _history._fetch_statistics  # before any test replaces it with the world's
 SLOT = timedelta(minutes=5)
 EFFY = [
+    "sensor.effy_effective_pv_sum_now",  # the PV combined series (TASK-0045a), a recorded sensor
     "sensor.effy_out_power",
     "sensor.effy_pv",
     "sensor.effy_pv_power",
@@ -42,7 +43,12 @@ EFFY = [
 ]
 # The series for which Effy has a value in every slot of the world's last hour (the world
 # has no power-family data after 11:45, so the others keep the recorder's native row there).
-FULL = ["sensor.effy_out_power", "sensor.effy_pv", "sensor.effy_pv_power"]
+FULL = [
+    "sensor.effy_effective_pv_sum_now",  # PV (energy family) has a value in every slot
+    "sensor.effy_out_power",
+    "sensor.effy_pv",
+    "sensor.effy_pv_power",
+]
 SOURCES = ["sensor.pv", "sensor.out", "sensor.pv_w"]
 OTHER = "sensor.house_energy"  # an entity of another integration, recorded natively
 NATIVE = 99.0  # what the recorder compiles for a slot; an Effy row never has this value

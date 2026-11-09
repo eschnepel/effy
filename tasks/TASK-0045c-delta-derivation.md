@@ -4,8 +4,8 @@
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-027, ADR-024, ADR-011]
 - **Dependencies:** [TASK-0045b-pv-delta-values]
-- **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
-  2026-11-07; split from the held TASK-0045). No code before approval.
+- **Gate:** Gate 2 approved by the human (2026-11-09, with Q27 = A); re-scoped
+  in a design interview on 2026-11-07, split from the held TASK-0045.
 
 ## Goal
 
@@ -45,8 +45,8 @@ base from which the live sensors continue. Nothing calls it yet.
 ## Decisions
 
 - ADR-027 decision 5 (human, 2026-11-07). How the combined integrals are derived
-  again when the PV inputs change is TASK-0045e (decision 9, open, recommended
-  A); this task only provides the pure functions and the writer.
+  again when the PV inputs change is TASK-0045e (decision 9, decided: A); this
+  task only provides the pure functions and the writer.
 
 ## Estimated File / Module Footprint (hint, not a commitment)
 
@@ -61,7 +61,7 @@ it, and tests.
   `ruff format` clean · `mypy --strict` and `ruff check` show no finding the
   repository did not already have
 - Docs updated where this task changes text (translations en and de for sensor
-  names) · no open ADR conflicts (ADR-027, decision 9, is the only open point)
+  names) · no open ADR conflicts (ADR-027 decision 9 decided: Q27 = A)
 - `Delivered Artifacts` block completed and accurate
 - No new external dependencies (standard library only); `tasks/DEPENDENCIES.md`
   unchanged

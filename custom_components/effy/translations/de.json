@@ -88,6 +88,9 @@
       },
       "roundtrip_efficiency": {
         "name": "Gesamtwirkungsgrad"
+      },
+      "effective_pv_sum_now": {
+        "name": "Effektive PV-Summe jetzt"
       }
     }
   },

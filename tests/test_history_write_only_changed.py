@@ -654,7 +654,9 @@ class TestTheTimingRecord:
         unchanged = int(first.split("rows unchanged ")[1].split(";")[0].split(",")[0])
         assert unchanged == sum(len(recorder.short(s)) for s in {k[1] for k in recorder.rows})
         jobs = [line.strip() for line in msg.splitlines() if "stored rows sensor." in line]
-        assert len(jobs) == 5  # one per series: 2 effective, 2 derived power, 1 smoothed
+        # one per series: 2 effective and the PV combined series (TASK-0045a), 2 derived
+        # power, 1 smoothed
+        assert len(jobs) == 6
         assert all("calls 1" in job for job in jobs)
 
     async def test_the_old_first_line_figures_are_still_there(
@@ -766,7 +768,7 @@ class TestTheCheckExplainsItself:
         lines = [line.strip() for line in msg.splitlines()]
         start = next(i for i, line in enumerate(lines) if line.startswith("stored rows check"))
         checks = [line for line in lines[start + 1 :] if line.startswith("sensor.")]
-        assert len(checks) == 5  # one per series
+        assert len(checks) == 6  # one per series, the PV combined series (TASK-0045a) among them
         assert all("5minute: read " in c and "equal " in c for c in checks)
         assert not any("hour: read" in c for c in checks)  # a history run reads no hours
         assert "state is not returned by Home Assistant" in msg

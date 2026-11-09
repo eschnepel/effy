@@ -1085,7 +1085,13 @@ class TestAuditCoverageGaps:
         effective = timer[effective_id]  # single input, no output: all loss, i.e. 0
         assert cycle.last_values[effective_id] == (cycle.last_values[effective_id][0], "kW")
         assert cycle.last_values[effective_id][0] == pytest.approx(effective[max(effective)])
-        assert cycle.touched == {power_id, effective_id}
+        # the single input is a PV input: the PV combined series (TASK-0045a) is touched too,
+        # in W, and is that input's effective value (single input, no output: 0)
+        pv_sum_id = _const.PV_SUM_ENTITY_ID
+        assert cycle.touched == {power_id, effective_id, pv_sum_id}
+        pv_sum_value, pv_sum_unit = cycle.last_values[pv_sum_id]
+        assert pv_sum_value == pytest.approx(0.0)
+        assert pv_sum_unit == "W"
 
 
 # ---------------------------------------------------------------------------
@@ -1198,6 +1204,39 @@ class TestSplitInputsAreOnePool:
             slot += timedelta(minutes=5)
         return world
 
+    # The unit factor that turns an input's effective series into W: the energy-family A is
+    # written in kW, the power-family C in W (ADR-008).
+    _TO_W = {A: 1000.0, C: 1.0}
+
+    @staticmethod
+    def _without_pv_sum(
+        result: dict[str, dict[datetime, float]],
+    ) -> dict[str, dict[datetime, float]]:
+        """Every series but the PV combined series: the split changes which inputs are PV, and
+        so by definition (ADR-027 decision 1) what that one series adds up."""
+        return {eid: slots for eid, slots in result.items() if eid != _const.PV_SUM_ENTITY_ID}
+
+    def _assert_pv_sum_adds_the_pv_inputs(
+        self, result: dict[str, dict[datetime, float]], pv: list[str], label: str
+    ) -> None:
+        """The PV combined series is the effective values of exactly the PV inputs, in W; it
+        has a row in every slot in which one of them has one, and no series without PV."""
+        if not pv:
+            assert _const.PV_SUM_ENTITY_ID not in result, label
+            return
+        effective = {eid: result[_history._effy_entity_id(eid)] for eid in pv}
+        slots = {slot for series in effective.values() for slot in series}
+        expected = {
+            slot: sum(
+                self._TO_W[eid] * series[slot]
+                for eid, series in effective.items()
+                if slot in series
+            )
+            for slot in slots
+        }
+        assert result[_const.PV_SUM_ENTITY_ID].keys() == expected.keys(), label
+        assert result[_const.PV_SUM_ENTITY_ID] == pytest.approx(expected), label
+
     async def test_full_recalculation_is_identical_for_every_split(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1206,16 +1245,19 @@ class TestSplitInputsAreOnePool:
         _install(monkeypatch, world)
         unsplit = await _run_full_recalc(world, _options([a, c], [b]), _ts(13, 5, 5))
         assert len(unsplit) >= 3
+        self._assert_pv_sum_adds_the_pv_inputs(unsplit, [a, c], "unsplit")
         splits = {
-            "pv a / bms c": _options([a], [b], bms=[c]),
-            "pv c / bms a": _options([c], [b], bms=[a]),
-            "all bms": _options([], [b], bms=[a, c]),
-            "all bms, reversed": _options([], [b], bms=[c, a]),
-            "pv reversed": _options([c, a], [b]),
+            "pv a / bms c": (_options([a], [b], bms=[c]), [a]),
+            "pv c / bms a": (_options([c], [b], bms=[a]), [c]),
+            "all bms": (_options([], [b], bms=[a, c]), []),
+            "all bms, reversed": (_options([], [b], bms=[c, a]), []),
+            "pv reversed": (_options([c, a], [b]), [c, a]),
         }
-        for label, options in splits.items():
+        for label, (options, pv) in splits.items():
             result = await _run_full_recalc(world, options, _ts(13, 5, 5))
-            assert result == unsplit, label
+            # everything the roles must not change is still exactly identical
+            assert self._without_pv_sum(result) == self._without_pv_sum(unsplit), label
+            self._assert_pv_sum_adds_the_pv_inputs(result, pv, label)
 
     async def test_slot_timer_path_is_identical_for_a_split(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1229,7 +1271,9 @@ class TestSplitInputsAreOnePool:
         split = await _run_timer_cycles(
             world, _options([a], [b], bms=[c]), _ts(10, 0, 5), _ts(13, 5, 5)
         )
-        assert split == unsplit
+        assert self._without_pv_sum(split) == self._without_pv_sum(unsplit)
+        self._assert_pv_sum_adds_the_pv_inputs(unsplit, [a, c], "unsplit")
+        self._assert_pv_sum_adds_the_pv_inputs(split, [a], "split")
 
     async def test_the_probe_sees_a_bms_only_power_sensor(
         self, monkeypatch: pytest.MonkeyPatch

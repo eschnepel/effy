@@ -1,12 +1,12 @@
 # ADR-027 – The Effective PV Sum and the PV Delta Integrals
 
-**Date:** 2026-11-07 **Status:** Accepted, except decision 9 (open, question
-Q27). Decisions 1 to 8 were confirmed by the human in a design interview on
-2026-11-07 ("Agreed."); this text was written by the Lead Agent from that
-interview and has not been re-read by the human line by line. It replaces the
-draft of the same number, which asked questions Q1 to Q3 that the interview
-settled differently. Terms follow `GLOSSARY.md`; "sum" is avoided for addition
-(see decision 8).
+**Date:** 2026-11-07 **Status:** Accepted (decision 9 decided by the human on
+2026-11-09: Q27 = A). Decisions 1 to 8 were confirmed by the human in a design
+interview on 2026-11-07 ("Agreed."); this text was written by the Lead Agent
+from that interview and has not been re-read by the human line by line. It
+replaces the draft of the same number, which asked questions Q1 to Q3 that the
+interview settled differently. Terms follow `GLOSSARY.md`; "sum" is avoided for
+addition (see decision 8).
 
 ---
 
@@ -123,15 +123,14 @@ does.
    column, change for its difference over a period, and combined for the
    addition across inputs. The human-facing sensor names keep "Sum".
 
-1. **OPEN (Q27, recommended A, built as A until the human decides):** when the
-   set of PV inputs changes after the integrals exist, how do the combined
-   integrals follow? **A.** They are derived again, as the per-slot addition of
-   the per-input statistics of the configured inputs (one-time rewrite, the
-   sensors `unavailable` meanwhile, then the new base); an input that is removed
-   leaves the combined history, so the combined is always the addition of the
-   configured inputs. **B.** The combined statistics stay untouched: an input
-   counts in them from the moment it was added, and the equality of the combined
-   and the per-input integrals holds from then on only.
+1. **Decided by the human, 2026-11-09 (Q27 = A):** when the set of PV inputs
+   changes after the integrals exist, the combined integrals are derived again,
+   as the per-slot addition of the per-input statistics of the configured inputs
+   (one-time rewrite, the sensors `unavailable` meanwhile, then the new base);
+   an input that is removed leaves the combined history, so the combined is
+   always the addition of the configured inputs. (Option B, leaving the combined
+   statistics untouched so an input counts only from the moment it was added,
+   was not chosen.)
 
 ## Alternatives considered
 

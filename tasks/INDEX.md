@@ -52,11 +52,11 @@
 | TASK-0042-eps-activity-in-standby-and-efficiency | An active EPS sensor, in either sign, makes a slot impure and breaks a drain interval; tests first, change only if one fails (CAP-12, ADR-026 decision 5) | done | TASK-0041-eps-split-in-slot-loop | inline (Lead) |
 | TASK-0043-eps-sensors-and-published-entries | The two EPS Effy sensors exist and are published with role/function `eps` and direction `both` for the signed series; `effy_exports.py` (CAP-12, ADR-026 decision 6) | done | TASK-0041-eps-split-in-slot-loop | inline (Lead) |
 | TASK-0044-eps-acceptance-and-readme-formula | CAP-12 acceptance test; README formula, ADR index (CAP-12) | done | TASK-0042-eps-activity-in-standby-and-efficiency, TASK-0043-eps-sensors-and-published-entries | inline (Lead) |
-| TASK-0045a-pv-combined-series | PV combined series and the sensor Effective PV Sum now (CAP-13) | todo | — | — |
+| TASK-0045a-pv-combined-series | PV combined series and the sensor Effective PV Sum now (CAP-13) | done | — | inline |
 | TASK-0045b-pv-delta-values | PV delta of every run, from the stored values (CAP-13) | todo | TASK-0045a-pv-combined-series | — |
 | TASK-0045c-delta-derivation | Delta derivation: history of the PV delta integrals, first has_sum writer (CAP-13) | todo | TASK-0045b-pv-delta-values | — |
 | TASK-0045d-pv-delta-integral-sensors | PV delta integral sensors: booking, midnight reset, base handover (CAP-13) | todo | TASK-0045b-pv-delta-values, TASK-0045c-delta-derivation | — |
-| TASK-0045e-formula-signature-and-implicit-recalc | Formula signature, implicit full recalculation and derivation (CAP-13; decision 9 / Q27 open) | todo | TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors | — |
+| TASK-0045e-formula-signature-and-implicit-recalc | Formula signature, implicit full recalculation and derivation (CAP-13; decision 9 / Q27 decided: A) | todo | TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors | — |
 | TASK-0046-pv-share-sensor | PV share now: 100 × (effective PV + EPS input) / all effective inputs per slot, hourly energy-weighted, in % (CAP-13; human request 2026-11-09) | todo | TASK-0045a-pv-combined-series | — |
 | TASK-0045f-pv-published-entries | The PV sensors in the published list, effy_exports.py (CAP-13) | todo | TASK-0045a-pv-combined-series, TASK-0045d-pv-delta-integral-sensors, TASK-0046-pv-share-sensor | — |
 | TASK-0045g-cap13-acceptance-and-docs | CAP-13 acceptance test and README | todo | TASK-0045a-pv-combined-series, TASK-0045b-pv-delta-values, TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors, TASK-0045e-formula-signature-and-implicit-recalc, TASK-0045f-pv-published-entries, TASK-0046-pv-share-sensor | — |
@@ -81,8 +81,8 @@ battery) are read, never changed, by this set.
 original slug is not reused. CAP-13 tasks (ADR-027 accepted, except decision 9):
 strictly sequential in the order of the letters. They share `history.py` (a, b,
 c, e), `coordinator.py` (a, b, d, e), `sensor.py` (a, d, f), `catalog.py` and
-`effy_exports.py` (f) and `README.md` (g, last). Gate 2 pending; decision 9
-(Q27) is to be closed by the human before `TASK-0045e` starts.
+`effy_exports.py` (f) and `README.md` (g, last). Gate 2 approved by the human on
+2026-11-09; decision 9 (Q27) decided: A.
 
 ADR-023 tasks (TASK-0017 to TASK-0027, proposed 2026-10-23; ADR-023 accepted
 2026-10-27 by the human's instruction to work on them, one after the other, a
@@ -240,6 +240,7 @@ changed.
 | 2026-11-09 | TASK-0035, TASK-0036, TASK-0037, TASK-0038 | closed as done by the human (they were in review, each waiting for the human's check on the Pi or the instance) | human request |
 | 2026-11-09 | — | added TASK-0046-pv-share-sensor (CAP-13, depends on TASK-0045a; TASK-0045f and TASK-0045g now depend on it); ADR-027 amendment, CAP-13 text and glossary term added. Gate 2 pending, no code | human request: a sensor for how much PV and EPS fed any output in the last slot compared with the other inputs. Human answers: PV + EPS input over all effective inputs; one overall sensor; battery cycle not traced; empty slot gives 0; hourly energy-weighted; percent 0..100 (first said 0..1); in `effy_exports.py` |
 | 2026-11-09 | — | added TASK-0047-additional-sensors-derived-series (CAP-14, Draft ADR-028; no dependency, runs after CAP-13 for shared files); TASK-0045e notes that the additional-sensors list joins the formula signature. Gate 1 and Gate 2 pending, no code | human request: a config option for sensors that are not inputs or outputs, with derived power and smoothed series and no effective calculation, to apply part of Effy's logic to the house grid import sensor. Human answers: one list, family decides; a sensor with a role is refused; idle zero-fill applies; history from the button, with TASK-0045e's automatic recalculation on change; option "Additional sensors", role `other`, direction and function `unknown`; own CAP-14 and ADR-028 |
+| 2026-11-09 | TASK-0045a to TASK-0045g, TASK-0046 | Gate 2 approved by the human with Q27 = A; ADR-027 decision 9 wired into its text (Accepted); worked strictly sequential inline: 0045a, 0045b, 0045c, 0045d, 0046, 0045e, 0045f, 0045g | human: "Approve Gate 2, Q27 = A". 0046 is placed after 0045d only because it depends on 0045a alone and 0045f needs it; all share `history.py`/`coordinator.py`/`sensor.py` |
 
 ## Audit Groups
 

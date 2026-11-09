@@ -7,8 +7,8 @@
   TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors,
   TASK-0045e-formula-signature-and-implicit-recalc,
   TASK-0045f-pv-published-entries, TASK-0046-pv-share-sensor\]
-- **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
-  2026-11-07; split from the held TASK-0045). No code before approval.
+- **Gate:** Gate 2 approved by the human (2026-11-09, with Q27 = A); re-scoped
+  in a design interview on 2026-11-07, split from the held TASK-0045.
 
 ## Goal
 
@@ -59,7 +59,7 @@ and the README describes the sensors and what to expect from them.
   `ruff format` clean · `mypy --strict` and `ruff check` show no finding the
   repository did not already have
 - Docs updated where this task changes text (translations en and de for sensor
-  names) · no open ADR conflicts (ADR-027, decision 9, is the only open point)
+  names) · no open ADR conflicts (ADR-027 decision 9 decided: Q27 = A)
 - `Delivered Artifacts` block completed and accurate
 - No new external dependencies (standard library only); `tasks/DEPENDENCIES.md`
   unchanged

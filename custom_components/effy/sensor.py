@@ -17,6 +17,10 @@ an acceptable tradeoff (the next recalculation of that slot corrects it).
 EffyRecalculatedFromSensor is the one sensor whose live value has always
 reflected a real timestamp even with the live path off: it subscribes to
 the coordinator's separate recalculated-from channel.
+EffyPvSumSensor (TASK-0045a, ADR-027 decision 1) is the effective series' sibling for the
+PV combined series: the effective values of all PV inputs added up, in W. Like the
+effective sensors it only receives the live push after a recalculation and restores its state;
+it exists only while a PV input is configured.
 EffyStandbyPowerSensor (TASK-0005 Stage 2, ADR-018) is the one sensor with a real
 live state of its own: the battery system's standby power, estimated by the
 coordinator's standby machine after every slot job. It exists only when at
@@ -61,6 +65,9 @@ from .const import (
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
+    PV_SUM_ENTITY_ID,
+    PV_SUM_TRANSLATION_KEY,
+    PV_SUM_UNIQUE_ID_SUFFIX,
 )
 from .coordinator import EffyCoordinator
 from .effy_exports import (
@@ -93,6 +100,11 @@ from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
 def standby_unique_id(entry: ConfigEntry) -> str:
     """Unique ID of the standby power sensor of one config entry."""
     return f"{entry.entry_id}_standby_power"
+
+
+def pv_sum_unique_id(entry: ConfigEntry) -> str:
+    """Unique ID of the Effective PV Sum now sensor of one config entry."""
+    return f"{entry.entry_id}_{PV_SUM_UNIQUE_ID_SUFFIX}"
 
 
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
@@ -204,6 +216,7 @@ async def async_setup_entry(
         )
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
+    entities.extend(_pv_sum_entities(hass, entry, coordinator))
     entities.extend(_standby_entities(hass, entry, coordinator))
     entities.extend(_efficiency_entities(hass, entry, coordinator))
     entities.extend(_battery_efficiency_entities(hass, entry, coordinator))
@@ -217,6 +230,24 @@ async def async_setup_entry(
 
     # Trigger one immediate recalculation so sensors have values on first load
     coordinator.force_refresh()
+
+
+def _pv_sum_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """The Effective PV Sum now sensor, only with a PV input (ADR-027 decision 1).
+
+    Without one an entity registered earlier (the PV inputs were removed in the options)
+    is removed from the registry, so the sensor does not linger as an orphan; its
+    statistics stay.
+    """
+    if coordinator.pv_input_ids:
+        return [EffyPvSumSensor(hass, entry, coordinator)]
+    registry = er.async_get(hass)
+    stale = registry.async_get_entity_id("sensor", DOMAIN, pv_sum_unique_id(entry))
+    if stale is not None:
+        registry.async_remove(stale)
+    return []
 
 
 def _standby_entities(
@@ -783,6 +814,77 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._attr_native_value = round(value, 3) if value is not None else None
         if unit is not None:
             self._attr_native_unit_of_measurement = unit
+        self.async_write_ha_state()
+
+
+class EffyPvSumSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """Effective PV Sum now: the effective values of all PV inputs added up (ADR-027).
+
+    The series itself (``history._compute_effective_slots``, statistic ID
+    ``const.PV_SUM_ENTITY_ID``) is written by history.py like any effective series; this
+    entity only gives it a place to attach to and a live state. After every recalculation
+    that wrote it, the coordinator pushes the last slot's value in W (ADR-016, see
+    ``EffySensor._on_updated`` for the tradeoff), and the last state is restored after a
+    restart (ADR-021 section 6). Always W: the series adds the effective values in W
+    whatever the units of the PV inputs are. Not yet in the published list (TASK-0045f).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_translation_key = PV_SUM_TRANSLATION_KEY
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_native_value: float | None = None
+        self._unsub_updates: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return pv_sum_unique_id(self._entry)
+
+    @property
+    def entity_id(self) -> str:
+        return PV_SUM_ENTITY_ID
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last state, then subscribe to the push after a recalculation.
+
+        The restored value is provisional like the live state ADR-016 pushes; the first
+        ``_on_updated`` replaces it. Restoring comes first, so a push is never overwritten.
+        """
+        await super().async_added_to_hass()
+        value, _unit, _attrs = await _async_restore_measurement(self)
+        if value is not None:
+            self._attr_native_value = value
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as the live state (ADR-016)."""
+        self._attr_native_value = round(value, 3) if value is not None else None
         self.async_write_ha_state()
 
 

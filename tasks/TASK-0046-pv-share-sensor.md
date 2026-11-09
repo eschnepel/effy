@@ -2,13 +2,13 @@
 
 - **Status:** todo
 - **Capability:** CAP-13 (added 2026-11-09)
-- **Related ADRs:** \[ADR-027 (amendment 2026-11-09), ADR-026, ADR-001, ADR-016,
-  ADR-021, ADR-024\]
+- **Related ADRs:** [ADR-027 (amendment 2026-11-09), ADR-026, ADR-001, ADR-016,
+  ADR-021, ADR-024]
 - **Dependencies:** [TASK-0045a-pv-combined-series]
 - **Needed by:** TASK-0045f (publishes the sensor), TASK-0045g (acceptance and
   README)
-- **Gate:** Gate 2 pending (human request 2026-11-09, design questions answered
-  the same day). No code before approval.
+- **Gate:** Gate 2 approved by the human (2026-11-09); human request 2026-11-09,
+  design questions answered the same day.
 
 ## Goal
 
@@ -120,7 +120,12 @@ A pure function for the ratio (zero-mock tests).
 - `history._compute_effective_slots`, `history.async_recalculate_history`,
   `history.async_recalculate_recent`, `history._unchanged_slots` in
   `custom_components/effy/history.py`.
-- The PV combined series (→ task: TASK-0045a-pv-combined-series).
+- The PV combined series (→ task: TASK-0045a-pv-combined-series, done:
+  `per_sensor[const.PV_SUM_ENTITY_ID]` = `{"unit": "W", "slot_values": [...]}`
+  from `history._compute_effective_slots`; `const.PV_SUM_ENTITY_ID`,
+  `const.PV_SUM_UNIQUE_ID_SUFFIX`, `const.PV_SUM_TRANSLATION_KEY`;
+  `sensor.EffyPvSumSensor`, `sensor.pv_sum_unique_id`,
+  `sensor._pv_sum_entities`).
 - The EPS split and the effective EPS input series (TASK-0041, TASK-0043).
 - `sensor.EffySensor`, `sensor._standby_entities` (a sensor that exists only
   under a condition), `sensor._async_restore_measurement`.

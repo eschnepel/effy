@@ -135,21 +135,22 @@ amendment is in force: four counter pickers, no update listener;
 
 ## Recent ADRs
 
-- **ADR-027 (Accepted 2026-11-07, except decision 9; not yet implemented,
-  CAP-13, TASK-0045a to TASK-0045g, Gate 2 pending):** the PV combined series
-  (the effective values of all PV inputs added up per slot, written like any
-  effective series, sensor "Effective PV Sum now") and the PV delta integrals
-  (`total` energy sensors per PV input and combined, today and total; Home
-  Assistant compiles their statistics from live states). Each run computes the
-  PV delta from the stored values (`_unchanged_slots` returns them) and books it
-  after the write succeeded, at write time; a period's delta is the `change` of
-  the statistic. Effy writes `has_sum` rows once, the delta derivation, after a
-  full history recalculation. A formula signature of six options in the entry's
-  data triggers that recalculation at setup (every existing entry once after the
-  upgrade). Published additively: `pv_sum`, `pv_delta_integral`,
+- **ADR-027 (Accepted 2026-11-07, decision 9 decided 2026-11-09: Q27 = A; being
+  implemented, CAP-13, TASK-0045a to TASK-0045g and TASK-0046, Gate 2 approved
+  2026-11-09):** the PV combined series (the effective values of all PV inputs
+  added up per slot, written like any effective series, sensor "Effective PV Sum
+  now") and the PV delta integrals (`total` energy sensors per PV input and
+  combined, today and total; Home Assistant compiles their statistics from live
+  states). Each run computes the PV delta from the stored values
+  (`_unchanged_slots` returns them) and books it after the write succeeded, at
+  write time; a period's delta is the `change` of the statistic. Effy writes
+  `has_sum` rows once, the delta derivation, after a full history recalculation.
+  A formula signature of six options in the entry's data triggers that
+  recalculation at setup (every existing entry once after the upgrade).
+  Published additively: `pv_sum`, `pv_delta_integral`,
   `pv_delta_integral_today`, `pv_delta_integral_total` (role `pv`, direction
-  `input`). Open: decision 9 (Q27), the combined integrals when the PV inputs
-  change (built as A: derived again as the addition of the configured inputs).
+  `input`). Decision 9 (Q27 = A): when the PV inputs change, the combined
+  integrals are derived again as the addition of the configured inputs.
 - **ADR-026 (Accepted, 2026-11-06):** the EPS/UPS port as one optional signed
   power sensor (`eps_sensor`, domain sensor, device class power, state class
   `measurement`, W or kW). Per slot its `mean` is split: positive = EPS output

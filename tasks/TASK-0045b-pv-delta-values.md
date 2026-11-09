@@ -4,8 +4,8 @@
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-027, ADR-024, ADR-002]
 - **Dependencies:** [TASK-0045a-pv-combined-series]
-- **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
-  2026-11-07; split from the held TASK-0045). No code before approval.
+- **Gate:** Gate 2 approved by the human (2026-11-09, with Q27 = A); re-scoped
+  in a design interview on 2026-11-07, split from the held TASK-0045.
 
 ## Goal
 
@@ -54,7 +54,7 @@ values that were stored before. No sensor uses it yet.
   `ruff format` clean · `mypy --strict` and `ruff check` show no finding the
   repository did not already have
 - Docs updated where this task changes text (translations en and de for sensor
-  names) · no open ADR conflicts (ADR-027, decision 9, is the only open point)
+  names) · no open ADR conflicts (ADR-027 decision 9 decided: Q27 = A)
 - `Delivered Artifacts` block completed and accurate
 - No new external dependencies (standard library only); `tasks/DEPENDENCIES.md`
   unchanged
@@ -73,8 +73,13 @@ values that were stored before. No sensor uses it yet.
 - `history._unchanged_slots`, `history._write_recorder_statistics` and the call
   site in `async_recalculate_recent` / `async_recalculate_history` that reads
   the stored rows (ADR-024).
-- The PV combined series of TASK-0045a (→ task: TASK-0045a-pv-combined-series),
-  for the shape of the slot loop's result.
+- The PV combined series of TASK-0045a (→ task: TASK-0045a-pv-combined-series,
+  done: `per_sensor[const.PV_SUM_ENTITY_ID]` =
+  `{"unit": "W", "slot_values": [...]}` from `history._compute_effective_slots`;
+  `const.PV_SUM_ENTITY_ID`, `const.PV_SUM_UNIQUE_ID_SUFFIX`,
+  `const.PV_SUM_TRANSLATION_KEY`; `sensor.EffyPvSumSensor`,
+  `sensor.pv_sum_unique_id`, `sensor._pv_sum_entities`), for the shape of the
+  slot loop's result.
 - `coordinator._async_recalculate_recent_and_report`,
   `coordinator.async_recalculate_history_and_report`,
   `coordinator._recorder_job_lock`.

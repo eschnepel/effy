@@ -88,6 +88,9 @@
       },
       "roundtrip_efficiency": {
         "name": "Roundtrip efficiency"
+      },
+      "effective_pv_sum_now": {
+        "name": "Effective PV Sum now"
       }
     }
   },

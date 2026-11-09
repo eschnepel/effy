@@ -147,6 +147,7 @@ class TestSetupEntry:
             ("EffySmoothedSensor", PV_W),
             ("EffyDerivedPowerSensor", OUT_E),
             ("EffyRecalculatedFromSensor", None),
+            ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
         ]
         assert tracker.calls == [] and entry.unloads == []  # nothing is waiting
         assert platform.coordinator.refreshes == 1  # one recalculation on first load
@@ -167,6 +168,7 @@ class TestSetupEntry:
             ("EffySensor", PV_W),
             ("EffySmoothedSensor", PV_W),
             ("EffyRecalculatedFromSensor", None),
+            ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
         ]
         ((hass, waiting_for, callback),) = tracker.calls
         assert hass is platform.hass
@@ -204,6 +206,7 @@ class TestEpsSensorSetup:
             ("EffySmoothedSensor", PV_W),
             ("EffySmoothedSensor", self.EPS),
             ("EffyRecalculatedFromSensor", None),
+            ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
         ]
         assert tracker.calls == []
 
@@ -235,6 +238,7 @@ class TestEpsSensorSetup:
             ("EffySensor", PV_W),
             ("EffySmoothedSensor", PV_W),
             ("EffyRecalculatedFromSensor", None),
+            ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
         ]
 
     def test_the_names_follow_the_other_series_sensors(self) -> None:

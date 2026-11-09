@@ -5,8 +5,8 @@
 - **Related ADRs:** [ADR-027, ADR-019, ADR-024, ADR-012]
 - **Dependencies:** \[TASK-0045c-delta-derivation,
   TASK-0045d-pv-delta-integral-sensors\]
-- **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
-  2026-11-07; split from the held TASK-0045). No code before approval.
+- **Gate:** Gate 2 approved by the human (2026-11-09, with Q27 = A); re-scoped
+  in a design interview on 2026-11-07, split from the held TASK-0045.
 
 ## Goal
 
@@ -48,14 +48,13 @@ derivation by itself, then hands the bases to the sensors.
 ## Decisions
 
 - ADR-027 decision 6 (human, 2026-11-07).
-- **Decision 9 / Q27 is open and recommended A; this task builds A until the
-  human decides:** when the PV inputs change after the integrals exist, the
-  combined integrals are derived again as the per-slot addition of the per-input
-  statistics of the configured inputs (the per-slot energy of an input is the
-  change of its running total; a new input's comes from its derivation), written
-  as a one-time rewrite while the sensors are `unavailable`, and a removed input
-  leaves the combined history. If the human chooses B, the combined series are
-  left untouched and this paragraph and its tests change; nothing else does.
+- **Decision 9 / Q27 decided by the human, 2026-11-09: A.** When the PV inputs
+  change after the integrals exist, the combined integrals are derived again as
+  the per-slot addition of the per-input statistics of the configured inputs
+  (the per-slot energy of an input is the change of its running total; a new
+  input's comes from its derivation), written as a one-time rewrite while the
+  sensors are `unavailable`, and a removed input leaves the combined history. B
+  (combined series left untouched) was not chosen.
 - **TASK-0047 (2026-11-09):** the list of additional sensors (CAP-14) is part of
   the formula signature, so adding or removing one starts the full
   recalculation. Whichever of the two tasks is done second makes that change.
@@ -72,7 +71,7 @@ orchestration and the reader of per-input statistics), and tests for each.
   `ruff format` clean · `mypy --strict` and `ruff check` show no finding the
   repository did not already have
 - Docs updated where this task changes text (translations en and de for sensor
-  names) · no open ADR conflicts (ADR-027, decision 9, is the only open point)
+  names) · no open ADR conflicts (ADR-027 decision 9 decided: Q27 = A)
 - `Delivered Artifacts` block completed and accurate
 - No new external dependencies (standard library only); `tasks/DEPENDENCIES.md`
   unchanged
