@@ -1,11 +1,9 @@
 # Task: Find and fix the duplicate hourly statistic the recorder's roll-up hits
 
-- **Status:** review (2026-10-31) — Stage 1 done from the code, the Home
-  Assistant 2026.10.4 source and a test rig; **the timeline and the writer of
-  the existing row still need the human's evidence** (see Findings, open). Stage
-  2 built and reviewed inline; **the human's live check over a full hour is
-  outstanding, so the task cannot be `done`** (human report 2026-10-30, after
-  TASK-0033's finding)
+- **Status:** done — closed by the human 2026-11-09 (was review since
+  2026-10-31: Stage 1 done from the code, the Home Assistant 2026.10.4 source
+  and a test rig; Stage 2 built and reviewed inline; the live check was
+  outstanding) (human report 2026-10-30, after TASK-0033's finding)
 - **Capability:** CAP-3 (Effy writes after the recorder)
 - **Related ADRs:** \[ADR-020 (Effy only ever updates a row the recorder
   inserted), ADR-017 (superseded; this is the failure it described), ADR-011

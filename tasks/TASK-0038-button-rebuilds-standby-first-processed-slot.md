@@ -1,9 +1,8 @@
 # Task: The history button also rebuilds the standby machine, and every machine shows its first processed slot
 
-- **Status:** review (2026-11-01; built and checked inline; no separate Stage 1:
-  the human decided the behaviour). **The human's check on the instance is
-  outstanding**: press the button and read `first_processed_slot` and the counts
-  (see Findings)
+- **Status:** done — closed by the human 2026-11-09 (was review since
+  2026-11-01; built and checked inline; no separate Stage 1: the human decided
+  the behaviour; the check on the instance was outstanding, see Findings)
 - **Capability:** CAP-2 (standby), CAP-8 (efficiency), CAP-9 (battery)
 - **Related ADRs:** \[ADR-018 §5 (the standby machine's replay; **amended by
   this task, the human's decision**), ADR-023 decision 9 (the efficiency and

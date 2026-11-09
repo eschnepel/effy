@@ -4,7 +4,7 @@
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-027, ADR-021]
 - **Dependencies:** \[TASK-0045a-pv-combined-series,
-  TASK-0045d-pv-delta-integral-sensors\]
+  TASK-0045d-pv-delta-integral-sensors, TASK-0046-pv-share-sensor\]
 - **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
   2026-11-07; split from the held TASK-0045). No code before approval.
 
@@ -25,6 +25,10 @@ the new literals.
   | per PV input | `pv_delta_integral` | the PV input | Wh or kWh | `state`, `sum`, `change` |
   | combined today | `pv_delta_integral_today` | none | kWh | `state`, `sum`, `change` |
   | combined total | `pv_delta_integral_total` | none | kWh | `state`, `sum`, `change` |
+  | PV share now (TASK-0046) | `pv_share` | none | % | `mean`, `state` |
+
+  (`direction` of the PV share entry is decided here with the contract: `input`
+  like the others, or `both`.)
 
 - Given the entries, then `schema_version` stays 1, the list is sorted like
   before and the existing contract tests pass unchanged.

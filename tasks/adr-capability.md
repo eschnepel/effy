@@ -300,9 +300,11 @@ recalculates by itself; a button run after a correction books it in today and
 total, and the combined integrals equal the per-input ones added up; an entry
 without a PV input has none of them.
 
-**Scope (in):** the tasks `TASK-0045a` to `TASK-0045g`. **Scope (out):** any
-addition over anything but the PV inputs; any change of the per-input effective
-sensors.
+**Scope (in):** the tasks `TASK-0045a` to `TASK-0045g` and `TASK-0046` (added
+2026-11-09: `PV share now`, the percentage of the effective inputs that came
+from PV and the EPS input in the last completed slot; the EPS input is on the PV
+side there only). **Scope (out):** any addition over anything but the PV inputs,
+except that share; any change of the per-input effective sensors.
 
 **Order:** after CAP-12; both touch `sensor.py`, `catalog.py`,
 `effy_exports.py`, `coordinator.py`, `README.md` and the translations, so they

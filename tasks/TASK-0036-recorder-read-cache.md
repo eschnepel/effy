@@ -1,11 +1,11 @@
 # Task: A cache for what Effy reads from the recorder (after Shady's `cache.py`)
 
-- **Status:** review (2026-10-31) — Stage 1 done; gate passed (the human's
-  "Proceed" on Draft ADR-025, read as confirmation with every recommendation;
-  ADR-025 Accepted); **Stage 2 built and checked inline; the human's record from
-  the Pi is outstanding**, so the task cannot be `done`. Deviations from the
-  acceptance text are listed under Findings, "Stage 2 — built" (human request
-  2026-10-31)
+- **Status:** done — closed by the human 2026-11-09 (was review since
+  2026-10-31). Stage 1 done; gate passed (the human's "Proceed" on Draft
+  ADR-025, read as confirmation with every recommendation; ADR-025 Accepted);
+  Stage 2 built and checked inline; the Pi record was outstanding when closed.
+  Deviations from the acceptance text are listed under Findings, "Stage 2 —
+  built" (human request 2026-10-31)
 - **Capability:** CAP-11
 - **Related ADRs:** \[ADR-014 (recalculation range, offline anchor), ADR-015
   (the volatile last-valid-reading cache), ADR-011 (slot job, the recorder-job

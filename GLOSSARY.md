@@ -172,6 +172,11 @@ in W. Effy writes it like any effective series (the sensor "Effective PV Sum
 now", published as `pv_sum`). The EPS sensor and the BMS inputs are not in it.
 _Avoid_: PV total
 
+**PV share**: For a slot, 100 times the effective PV values plus the effective
+EPS input, divided by all effective inputs; the part of the outputs that PV and
+the EPS input fed. 0 when no input is active. An hour's share is
+energy-weighted. The sensor "PV share now", in %.
+
 **PV delta**: For one PV input and one run, the energy by which the run changed
 the stored rows of its effective series: the added-up `(new − stored) × 5/60 h`
 over the rows the run wrote, the new value alone where there was no row. In Wh

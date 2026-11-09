@@ -1,8 +1,8 @@
 # Task: A debug export for the history recalculation button
 
-- **Status:** review (2026-11-03) — Stage 1 done with the human's three choices,
-  Stage 2 built; the human's run on the Pi is outstanding (human request
-  2026-10-31)
+- **Status:** done — closed by the human 2026-11-09 (was review since
+  2026-11-03: Stage 1 done with the human's three choices, Stage 2 built; the
+  run on the Pi was outstanding) (human request 2026-10-31)
 - **Capability:** CAP-11
 - **Related ADRs:** \[ADR-025 (Draft, the recorder-read cache of TASK-0036),
   ADR-012 (the button and `sensor.effy_recalculated_from`), ADR-021 (what Effy

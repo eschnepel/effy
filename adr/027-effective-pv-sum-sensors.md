@@ -157,6 +157,24 @@ does.
 - Corrections of earlier days appear in "today" and in the `change` of the
   period in which Effy learned them.
 
+## Amendment 2026-11-09 (TASK-0046): the PV share
+
+**Decision.** One more series, the sensor `sensor.effy_pv_share_now` ("PV share
+now"): per slot
+`100 × (Σ effective PV + effective EPS input) / Σ effective inputs` (all PV
+inputs, the EPS input, grid import, discharge), in `%`, state class
+`measurement`, no device class. Because Σ effective inputs = Σ outputs (ADR-001,
+ADR-026), it is the part of the outputs PV and the EPS input fed. A slot with no
+effective input is 0. The hourly row is energy-weighted (Σ numerator over Σ
+denominator of its slots), not the mean of the slot shares. It exists while the
+entry has a PV input or an EPS sensor. It is published (`series` `pv_share`,
+unit `%`, `mean` and `state`, TASK-0045f).
+
+**Reason.** Human request 2026-11-09. Slot-local by choice: PV that charged the
+battery and comes back as discharge counts as "discharge" later; the README
+states this limit. One overall sensor, because Effy cannot observe which input
+fed which output.
+
 ## Amendments in other ADRs (written with this ADR, in force with it)
 
 ADR-019 (the signature in the entry's data and the implicit recalculation at

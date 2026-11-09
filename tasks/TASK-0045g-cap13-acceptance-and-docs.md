@@ -6,7 +6,7 @@
 - **Dependencies:** \[TASK-0045a-pv-combined-series, TASK-0045b-pv-delta-values,
   TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors,
   TASK-0045e-formula-signature-and-implicit-recalc,
-  TASK-0045f-pv-published-entries\]
+  TASK-0045f-pv-published-entries, TASK-0046-pv-share-sensor\]
 - **Gate:** Gate 2 pending (re-scoped by the human in a design interview on
   2026-11-07; split from the held TASK-0045). No code before approval.
 
