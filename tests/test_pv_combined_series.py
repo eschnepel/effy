@@ -250,7 +250,9 @@ class TestAllPathsProduceTheSeries:
     ) -> None:
         world = _energy_pv_world()
         _install(monkeypatch, world)
-        _written, _earliest, touched, last_values = await _call_history(_energy_options(), END)
+        _written, _earliest, touched, last_values, _deltas = await _call_history(
+            _energy_options(), END
+        )
         assert PV_SUM in touched
         value, unit = last_values[PV_SUM]
         assert unit == "W"
@@ -261,9 +263,9 @@ class TestAllPathsProduceTheSeries:
 
 async def _call_history(
     options: dict[str, Any], at: datetime
-) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]], Any]:
     _FrozenDatetime.frozen = at
-    result: tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]
+    result: tuple[int, datetime | None, set[str], dict[str, tuple[float, str]], Any]
     result = await _history.async_recalculate_history(object(), options)
     return result
 

@@ -82,11 +82,13 @@ def _rig(
     return recorder, sources
 
 
-async def _press(when: datetime) -> tuple[int, datetime | None, set[str], dict[str, Any]]:
+async def _press(
+    when: datetime,
+) -> tuple[int, datetime | None, set[str], dict[str, Any], Any]:
     """The history button, pressed at ``when`` (the writes are queued, then drained)."""
     _FrozenDatetime.frozen = when
     result: tuple[
-        int, datetime | None, set[str], dict[str, Any]
+        int, datetime | None, set[str], dict[str, Any], Any
     ] = await _history.async_recalculate_history(object(), _opts())
     return result
 
@@ -272,9 +274,9 @@ class TestWhatTheRunReports:
         """A rerun that changes nothing reports nothing, though the open hour has no row."""
         recorder, _ = _rig(monkeypatch, effy_recorded=False)
         _compiled_through(recorder, _at(11, 25))
-        _written, first, _touched, _last = await _press(_at(11, 32))
+        _written, first, _touched, _last, _deltas = await _press(_at(11, 32))
         assert first == _at(10, 0)
-        written, second, _touched, _last = await _press(_at(11, 33))
+        written, second, _touched, _last, _deltas = await _press(_at(11, 33))
         assert (written, second) == (0, None)
 
     @pytest.mark.asyncio
@@ -286,7 +288,7 @@ class TestWhatTheRunReports:
         _compiled_through(recorder, _at(11, 25))
         await _press(_at(11, 32))
         _tick(recorder, _at(11, 30))
-        written, earliest, _touched, _last = await _press(_at(11, 36))
+        written, earliest, _touched, _last, _deltas = await _press(_at(11, 36))
         assert written > 0
         assert earliest == _at(11, 30)
 
@@ -298,7 +300,7 @@ class TestWhatTheRunReports:
         recorder, _ = _rig(monkeypatch, effy_recorded=False)
         _compiled_through(recorder, _at(11, 25))
         await _press(_at(11, 34))
-        written, earliest, touched, _last = await _press(_at(11, 35, 3))
+        written, earliest, touched, _last, _deltas = await _press(_at(11, 35, 3))
         assert (written, earliest) == (0, None)
         assert _effy_rows(recorder, "5minute", _at(11, 30)) == []
         assert touched  # the live states still go out for every computed entity
@@ -311,7 +313,7 @@ class TestWhatTheRunReports:
         _compiled_through(recorder, _at(11, 25))
         await _press(_at(11, 32))
         _tick_through(recorder, _at(11, 30), _at(11, 55))
-        _written, earliest, _touched, _last = await _press(_at(12, 1))
+        _written, earliest, _touched, _last, _deltas = await _press(_at(12, 1))
         assert earliest == _at(11, 0)  # the hourly row of the hour it had left
 
     @pytest.mark.asyncio
@@ -340,7 +342,7 @@ class TestWhatTheRunReports:
         """The slot left to the recorder is still computed: ADR-016's push is unchanged."""
         _recorder, _ = _rig(monkeypatch)
         _compiled_through(_recorder, _at(11, 20))
-        _written, _earliest, touched, last_values = await _press(_at(11, 30, 3))
+        _written, _earliest, touched, last_values, _deltas = await _press(_at(11, 30, 3))
         assert touched
         assert all(sid in last_values for sid in touched)
 
@@ -360,9 +362,13 @@ class TestTheSlotJobsHourlyRewriteSucceedsAfterTheRollUp:
             slot = _at(11, m)
             _FrozenDatetime.frozen = slot + SLOT + timedelta(seconds=11)
             _tick(recorder, slot)
-            _written, _first, _touched, last_values = await _history.async_recalculate_recent(
-                object(), _opts(), _FrozenDatetime.frozen
-            )
+            (
+                _written,
+                _first,
+                _touched,
+                last_values,
+                _deltas,
+            ) = await _history.async_recalculate_recent(object(), _opts(), _FrozenDatetime.frozen)
             if m == 55:
                 units = {sid: unit for sid, (_value, unit) in last_values.items()}
                 # the rewrite reads the recorder's own 5-minute rows, not the world's sources

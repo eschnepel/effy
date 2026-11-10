@@ -51,8 +51,10 @@ does.
 
 1. **PV delta.** Each run computes, per PV input, the PV delta (glossary) from
    the old values of the rows it writes. `_unchanged_slots` therefore returns
-   the stored values, not only the unchanged starts; no new recorder read. A
-   stored value is converted to the new unit by the unit in its metadata; with
+   the stored values, not only the unchanged starts, of the PV inputs' effective
+   series, which cross to the event loop where the delta is computed with the
+   rest of the calculation (ADR-024 Amendment 2026-11-09); no new recorder read.
+   A stored value is converted to the new unit by the unit in its metadata; with
    no metadata it counts as 0. If the stored rows cannot be read, the run books
    no delta and logs a warning (it writes every row, ADR-024). An input that has
    no delta base yet books no delta (the derivation provides its base). The

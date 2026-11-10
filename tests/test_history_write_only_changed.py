@@ -413,7 +413,7 @@ class TestTheHistoryRecalculation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _world_, recorder = _rig(monkeypatch)
-        written, earliest, _touched, _last = await _recalculate()
+        written, earliest, _touched, _last, _deltas = await _recalculate()
         with_marks = _snapshot(recorder)
 
         # the same run with the read made impossible: the fail-safe is the old behaviour
@@ -433,7 +433,7 @@ class TestTheHistoryRecalculation:
         imports_after_first = len(recorder.imports)
         stored = _snapshot(recorder)
 
-        written, earliest, touched, last_values = await _recalculate()
+        written, earliest, touched, last_values, _deltas = await _recalculate()
 
         assert len(recorder.imports) == imports_after_first  # not one import task
         assert (written, earliest) == (0, None)
@@ -453,7 +453,7 @@ class TestTheHistoryRecalculation:
         ts, state = world.energy[PV][8]
         world.energy[PV][8] = (ts, f"{float(state) + 0.5:.3f}")
         imports_before = len(recorder.imports)
-        written, earliest, _touched, _last = await _recalculate()
+        written, earliest, _touched, _last, _deltas = await _recalculate()
 
         changed_short = {
             (sid, ts_)
@@ -482,7 +482,7 @@ class TestTheHistoryRecalculation:
         slot = sorted(recorder.short(sid))[3]
         recorder.rows[("5minute", sid, slot)].update(min=0.1, max=9.9)
 
-        written, earliest, _t, _l = await _recalculate()
+        written, earliest, _t, _l, _deltas = await _recalculate()
 
         # its hour had a change written in it, so the hour is rewritten too and the
         # change counts from the first slot of that hour
@@ -499,7 +499,7 @@ class TestTheHistoryRecalculation:
         rows = len(recorder.short(sid))
         recorder.units[sid] = "Wh"
 
-        written, _earliest, _t, _l = await _recalculate()
+        written, _earliest, _t, _l, _deltas = await _recalculate()
 
         assert written == rows
         assert recorder.units[sid] != "Wh"  # the import restored the right unit
@@ -513,7 +513,7 @@ class TestTheHistoryRecalculation:
         cutoff = NOW - timedelta(days=1)
         assert all(ts >= cutoff for (t, _s, ts) in recorder.rows if t == "5minute")
         imports = len(recorder.imports)
-        written, _earliest, _t, _l = await _recalculate()  # second run: it reads
+        written, _earliest, _t, _l, _deltas = await _recalculate()  # second run: it reads
         assert written == 0 and len(recorder.imports) == imports
         short_reads = [r for r in recorder.reads if r[0] == "5minute"]
         assert short_reads and all(start >= cutoff for _p, _i, start, _e in short_reads)
@@ -614,7 +614,7 @@ class TestTheFailSafe:
         recorder.read_error = RuntimeError("database is locked")
 
         with caplog.at_level(logging.WARNING, logger=_history.__name__):
-            written, earliest, _t, _l = await _recalculate()
+            written, earliest, _t, _l, _deltas = await _recalculate()
 
         assert written > 0 and earliest is not None  # as before this task: all of it
         assert len(recorder.imports) > imports_before
@@ -633,7 +633,7 @@ class TestTheFailSafe:
         await _recalculate()  # a stored first run, so the reads would happen
         monkeypatch.setattr(_history, "_unchanged_slots", not_importable)
         with caplog.at_level(logging.WARNING, logger=_history.__name__):
-            written, _earliest, _t, _l = await _recalculate()
+            written, _earliest, _t, _l, _deltas = await _recalculate()
         assert written > 0
         assert recorder.rows  # the run completed and wrote
 

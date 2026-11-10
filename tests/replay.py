@@ -48,7 +48,13 @@ Key = tuple[str, str, datetime]
 
 @dataclass
 class Replayed:
-    result: tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]
+    result: tuple[
+        int,
+        datetime | None,
+        set[str],
+        dict[str, tuple[float, str]],
+        dict[str, tuple[float, str]] | None,
+    ]
     recorder: StoredRecorder
     expected: dict[Key, dict[str, float]]
     actual: dict[Key, dict[str, float]]
@@ -114,7 +120,7 @@ def assert_same(replayed: Replayed, *, require_rows: bool = True) -> None:
     for key, row in replayed.expected.items():
         assert replayed.actual[key]["mean"] == pytest.approx(row["mean"], rel=1e-9, abs=1e-9), key
         assert replayed.actual[key]["state"] == pytest.approx(row["state"], rel=1e-9, abs=1e-9), key
-    written, earliest, _touched, _last = replayed.result
+    written, earliest, _touched, _last, _deltas = replayed.result
     assert written == replayed.recorded_result["rows_written"]
     recorded_from = replayed.recorded_result["recalculated_from"]
     assert (earliest.isoformat() if earliest is not None else None) == recorded_from

@@ -73,10 +73,15 @@ class Storage(Protocol):
         short: list[tuple[datetime, float]],
         hourly: dict[datetime, tuple[float, float]],
         notes: dict[str, str] | None = None,
-    ) -> dict[str, frozenset[datetime]]:
+        values: bool = False,
+    ) -> dict[str, Any]:
         """Which of the rows to write are already stored as they are (ADR-024).
 
         Effy's own rows: **observed, never reused**: every call reads the recorder.
+        The result has the unchanged starts, ``"short"`` and ``"hourly"``. With ``values``
+        (only for the PV inputs' effective series, ADR-024 Amendment 2026-11-09) it also
+        has ``"stored"``, the stored 5-minute value of each row to write, in ``unit``; a
+        storage that cannot say leaves it out, and the run then has no PV delta.
         """
         ...
 

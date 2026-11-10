@@ -176,3 +176,20 @@ statistics) and runs only after a full history recalculation.
 
 **Decided by:** human (design interview 2026-11-07), formalized by the Lead
 Agent
+
+## Amendment — 2026-11-09 (the stored values of the PV input series cross to the event loop; in force with ADR-027)
+
+**Reason:** `_unchanged_rows` (TASK-0030) returns only the starts of the
+unchanged rows, so the stored rows never leave the executor job. The PV delta
+(ADR-027 decision 2) needs the stored *values* of the PV inputs' effective
+series, and the rest of the calculation runs on the event loop.
+
+**Decision:** for the effective series of the PV inputs (and only those) the
+stored 5-minute values come back to the event loop together with the unchanged
+starts, converted to the new unit by the unit in the series' metadata, and the
+PV delta is computed there, next to the rest of the calculation. Every other
+series still returns only its unchanged starts. No additional recorder read. The
+limit of TASK-0030 stays: the event loop is held at most 1 s.
+
+**Decided by:** human (2026-11-09: "If the rest of the calculation is inside the
+main thread or main loop, then the delta processing should be aligned here")

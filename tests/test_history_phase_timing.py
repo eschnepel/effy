@@ -147,9 +147,9 @@ def _rig(monkeypatch: pytest.MonkeyPatch, world: _World, clock: _Clock) -> _Coun
 
 async def _history_recalc(
     world: _World, options: dict[str, Any] | None = None
-) -> tuple[int, Any, Any, Any]:
+) -> tuple[int, Any, Any, Any, Any]:
     _FrozenDatetime.frozen = NOW
-    result: tuple[int, Any, Any, Any] = await _history.async_recalculate_history(
+    result: tuple[int, Any, Any, Any, Any] = await _history.async_recalculate_history(
         object(), options or _opts()
     )
     return result
@@ -240,7 +240,7 @@ class TestHistoryRecalculationRecord:
         clock, world = _Clock(), _world()
         counts = _rig(monkeypatch, world, clock)
         with caplog.at_level(logging.INFO, logger=_history.__name__):
-            written, _from, _touched, _last = await _history_recalc(world)
+            written, _from, _touched, _last, _deltas = await _history_recalc(world)
 
         records = _timing_records(caplog, "history")
         assert len(records) == 1
@@ -303,7 +303,9 @@ class TestHistoryRecalculationRecord:
         world = _energy_world(**{PV: [], OUT: []})
         _rig(monkeypatch, world, clock)
         with caplog.at_level(logging.INFO, logger=_history.__name__):
-            written, _from, _touched, _last = await _history_recalc(world, _options([PV], [OUT]))
+            written, _from, _touched, _last, _deltas = await _history_recalc(
+                world, _options([PV], [OUT])
+            )
         records = _timing_records(caplog, "history")
         assert written == 0
         assert len(records) == 1
@@ -343,7 +345,7 @@ class TestParseProbe:
 
         monkeypatch.setattr(_FrozenDatetime, "timestamp", broken_epoch)
         with caplog.at_level(logging.INFO, logger=_history.__name__):
-            written, _from, _touched, _last = await _history_recalc(world)
+            written, _from, _touched, _last, _deltas = await _history_recalc(world)
         records = _timing_records(caplog, "history")
         assert written > 0
         assert len(records) == 1

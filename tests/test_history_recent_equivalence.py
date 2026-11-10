@@ -344,7 +344,7 @@ async def _run_timer_cycles(
             continue
         anchors_before = len(world.anchor_calls)
         flags_before = len(world.write_flags)
-        _written, earliest, touched, last_values = await _history.async_recalculate_recent(
+        _written, earliest, touched, last_values, _deltas = await _history.async_recalculate_recent(
             object(),
             options,
             now,
@@ -554,7 +554,7 @@ class TestRewriteRangeBehaviour:
         _install(monkeypatch, world)
         now = _ts(12, 0, 5)
 
-        written, earliest, _touched, _last = await _history.async_recalculate_recent(
+        written, earliest, _touched, _last, _deltas = await _history.async_recalculate_recent(
             object(), _options([SENSOR]), now
         )
 
@@ -574,7 +574,7 @@ class TestRewriteRangeBehaviour:
         _install(monkeypatch, world)
         now = _ts(10, 55, 5)
 
-        _written, earliest, _touched, _last = await _history.async_recalculate_recent(
+        _written, earliest, _touched, _last, _deltas = await _history.async_recalculate_recent(
             object(), _options([SENSOR, c]), now
         )
 
@@ -602,7 +602,7 @@ class TestRewriteRangeBehaviour:
         _install(monkeypatch, world)
         now = _ts(12, 0, 5, day=4)
 
-        _written, earliest, _touched, _last = await _history.async_recalculate_recent(
+        _written, earliest, _touched, _last, _deltas = await _history.async_recalculate_recent(
             object(), _options([SENSOR]), now
         )
 
@@ -677,7 +677,7 @@ class TestCatchUpAfterPause:
         _install(monkeypatch, world)
         now = _ts(12, 0, 5)
 
-        _w, earliest, _t, _l = await _history.async_recalculate_recent(
+        _w, earliest, _t, _l, _deltas = await _history.async_recalculate_recent(
             object(),
             _options([SENSOR]),
             now,
@@ -698,7 +698,7 @@ class TestCatchUpAfterPause:
         _install(monkeypatch, world)
         now = _ts(12, 0, 5, day=2)
 
-        _w, earliest, _t, _l = await _history.async_recalculate_recent(
+        _w, earliest, _t, _l, _deltas = await _history.async_recalculate_recent(
             object(),
             _options([SENSOR]),
             now,
@@ -721,7 +721,7 @@ class TestCatchUpAfterPause:
         _install(monkeypatch, world)
         now = _ts(12, 0, 5, day=4)
 
-        _w, earliest, _t, _l = await _history.async_recalculate_recent(
+        _w, earliest, _t, _l, _deltas = await _history.async_recalculate_recent(
             object(), _options([SENSOR]), now, trigger_since=_ts(9, 5, day=1)
         )
 
@@ -817,7 +817,7 @@ class TestNoOpenSlotStatistic:
         power_id = _history._effy_power_entity_id(SENSOR)
         _FrozenDatetime.frozen = _ts(12, 0, 10)
 
-        _written, _start, touched, last_values = await _history.async_recalculate_history(
+        _written, _start, touched, last_values, _deltas = await _history.async_recalculate_history(
             object(), _options([SENSOR], [OUT])
         )
 

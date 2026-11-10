@@ -101,14 +101,16 @@ class RecorderStorage:
         short: list[tuple[datetime, float]],
         hourly: dict[datetime, tuple[float, float]],
         notes: dict[str, str] | None = None,
-    ) -> dict[str, frozenset[datetime]]:
-        result: dict[str, frozenset[datetime]] = await self._job(
+        values: bool = False,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = await self._job(
             "_unchanged_rows",
             statistic_id,
             unit,
             short,
             hourly,
             notes,
+            values,
             label="stored rows",
             source=statistic_id,
         )

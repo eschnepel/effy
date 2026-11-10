@@ -64,6 +64,35 @@ def _from_w(value_w: float, unit: str) -> float:
     return value_w
 
 
+def convert_unit(value: float, from_unit: str, to_unit: str) -> float:
+    """Convert a power value between W and kW (the units of the effective series).
+
+    The same unit returns the value untouched: a multiplication and a division by 1000
+    would change the last digit of a stored value that is equal to the new one, and an
+    unchanged row must add no delta (ADR-027 decision 2).
+    """
+    if from_unit == to_unit:
+        return value
+    return _from_w(_to_w(value, from_unit), to_unit)
+
+
+def pv_delta(
+    new_rows: Iterable[tuple[datetime, float]],
+    stored: Mapping[datetime, float],
+    slot_minutes: int = 5,
+) -> float:
+    """The energy a run changed in the stored rows of one series (ADR-027 decision 2).
+
+    ``sum((new - stored) * slot_minutes / 60)`` over the rows the run wrote, with
+    ``stored`` the value of the row before the run in the same unit as ``new_rows``;
+    a slot without a stored row counts with its new value alone. The result is in Wh
+    for rows in W and in kWh for rows in kW. A stored row that is not among the new
+    rows is not counted, and an unchanged row adds exactly 0.
+    """
+    hours = slot_minutes / 60
+    return sum((value - stored.get(start, 0.0)) * hours for start, value in new_rows)
+
+
 def distribute_loss(
     inputs: list[SensorReading],
     outputs: list[SensorReading],

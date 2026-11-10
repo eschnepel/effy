@@ -43,7 +43,7 @@ class TestTheSlotJob:
         assert first[0] > 0  # the first cycle wrote its rows
         stored, imports = _snapshot(recorder), len(recorder.imports)
 
-        written, earliest, touched, last_values = await _cycle()
+        written, earliest, touched, last_values, _deltas = await _cycle()
 
         assert (written, earliest) == (0, None)  # the coordinator pushes nothing for None
         assert len(recorder.imports) == imports
@@ -63,7 +63,7 @@ class TestTheSlotJob:
             min=0.0, max=5.0
         )  # as the recorder compiles it
 
-        written, earliest, _touched, _last = await _cycle()
+        written, earliest, _touched, _last, _deltas = await _cycle()
 
         assert (written, earliest) == (1, slot)
         assert recorder.rows[("5minute", sid, slot)]["min"] is None
@@ -77,7 +77,7 @@ class TestTheSlotJob:
         slot = sorted(recorder.short(sid))[-1]
         del recorder.rows[("5minute", sid, slot)]  # not readable (yet)
 
-        written, earliest, _touched, _last = await _cycle()
+        written, earliest, _touched, _last, _deltas = await _cycle()
 
         assert (written, earliest) == (1, slot)  # an extra write, never a missed one
         assert ("5minute", sid, slot) in recorder.rows
@@ -92,7 +92,7 @@ class TestTheSlotJob:
 
         ts, state = world.energy[PV][-1]
         world.energy[PV][-1] = (ts, f"{float(state) + 0.5:.3f}")
-        written, earliest, _touched, _last = await _cycle()
+        written, earliest, _touched, _last, _deltas = await _cycle()
 
         changed = {k for k, row in recorder.rows.items() if before.get(k) != row}
         assert changed and written == len(changed)
@@ -107,7 +107,7 @@ class TestTheSlotJob:
         recorder.read_error = RuntimeError("database is locked")
 
         with caplog.at_level(logging.WARNING, logger=_history.__name__):
-            written, earliest, _touched, _last = await _cycle()
+            written, earliest, _touched, _last, _deltas = await _cycle()
 
         assert written == first[0] and earliest == first[1]  # exactly as the first cycle
         assert len([r for r in caplog.records if "stored statistics" in r.getMessage()]) == 1
@@ -228,11 +228,12 @@ class TestTheEndStateIsUnchanged:
         b = [await _cycle(now) for now in nows]
 
         assert _snapshot(changed_only) == _snapshot(write_all)
-        for (a_written, a_earliest, a_touched, a_last), (
+        for (a_written, a_earliest, a_touched, a_last, _a_deltas), (
             b_written,
             b_earliest,
             b_touched,
             b_last,
+            _b_deltas,
         ) in zip(a, b, strict=True):
             assert a_touched == b_touched and a_last == b_last  # live states: identical
             assert a_written <= b_written  # never more rows than writing everything

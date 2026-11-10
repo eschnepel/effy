@@ -198,6 +198,7 @@ from .calculation import (
     TRAPEZOID_MAX_MINUTES,
     _parse_energy_state,
     capacity_by_slot,
+    convert_unit,
     drain_activity_start,
     drain_feed,
     drop_open_slot,
@@ -205,6 +206,7 @@ from .calculation import (
     effective_in_original_unit,
     energy_drain_events,
     interpolate_slot_gaps,
+    pv_delta,
     power_drain_events,
     recent_rewrite_start,
     recent_trigger_from,
@@ -241,6 +243,15 @@ from .inputs import (
 from .inputs import output_ids as configured_output_ids
 
 _LOGGER = logging.getLogger(__name__)
+
+# What a recalculation returns: (short-term rows written, recalculated_from, touched entity
+# IDs, last values, the PV deltas). The PV deltas (ADR-027 decision 2) map the entity ID of
+# each PV input to ``(delta, unit)`` with the unit "Wh" (effective unit W) or "kWh" (kW);
+# ``None`` if the stored rows could not be read: no delta, which is not 0.
+_PvDeltas = dict[str, tuple[float, str]]
+_RecalcResult = tuple[
+    int, datetime | None, set[str], dict[str, tuple[float, str]], _PvDeltas | None
+]
 
 # Type alias for a single statistics row returned by the recorder
 StatRow = dict[str, Any]
@@ -1712,7 +1723,8 @@ async def async_recalculate_history(
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
     storage: Storage | None = None,
     export: ExportHook | None = None,
-) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+    delta_skip: frozenset[str] = frozenset(),
+) -> _RecalcResult:
     """
     Recalculate and overwrite effy statistics for up to max_history_days.
 
@@ -1744,7 +1756,8 @@ async def async_recalculate_history(
     written from the slot-timer-driven recent recalculation.
 
     Returns (short_term_rows_written, recalculated_from, touched_entity_ids,
-    last_values).
+    last_values, deltas); ``deltas`` is the PV delta of every PV input (see
+    ``_pv_deltas``), or ``None`` if the stored rows could not be read.
     A full recalc recomputes every slot in [start, end) but, since TASK-0030
     (ADR-024), writes only the rows that are new or differ from what is
     stored. recalculated_from is the earliest slot whose row was written (a
@@ -1786,7 +1799,7 @@ async def async_recalculate_history(
     token = _active_export.set(record)
     try:
         return await _recalculate_history(
-            hass, entry_options, energy_reading_cache, storage, phases, export, record
+            hass, entry_options, energy_reading_cache, storage, phases, export, record, delta_skip
         )
     finally:
         _active_export.reset(token)
@@ -1819,7 +1832,8 @@ async def _recalculate_history(
     phases: _PhaseTimings,
     export: ExportHook | None = None,
     record: ExportRecord | None = None,
-) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+    delta_skip: frozenset[str] = frozenset(),
+) -> _RecalcResult:
     max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
     phases.detail_on(_environment_summary(hass, max_days))
     end = datetime.now(tz=timezone.utc)
@@ -1849,7 +1863,7 @@ async def _recalculate_history(
     if not per_sensor and not per_sensor_power and not per_sensor_smoothed:
         _LOGGER.warning("Effy history recalc: no statistics found in the requested period.")
         phases.finish(0)
-        return 0, None, set(), {}
+        return 0, None, set(), {}, {}
 
     # Nothing Effy inserts first (TASK-0035, ADR-020 Amendment): the rows of a slot the
     # recorder has not surely compiled, and the hourly row of an hour it has not surely
@@ -1864,13 +1878,14 @@ async def _recalculate_history(
 
     # Read what is stored and mark the rows that are already right (ADR-024); the
     # writer skips them. The reads are recorder jobs, so they count as fetch.
-    await _mark_unchanged(
+    stored_values_read = await _mark_unchanged(
         hass,
         all_series,
         short_term_cutoff=short_term_cutoff,
         include_long_term=True,
         phases=phases,
         storage=storage,
+        delta_series=_pv_delta_series(entry_options, delta_skip),
     )
 
     short_term_written = 0
@@ -1938,7 +1953,14 @@ async def _recalculate_history(
         }
         await _run_export(export, record, phases)
     phases.finish(short_term_written)
-    return short_term_written, earliest, touched_entity_ids, last_values
+    deltas = _pv_deltas(
+        per_sensor,
+        entry_options,
+        delta_skip,
+        short_term_cutoff=short_term_cutoff,
+        values_read=stored_values_read,
+    )
+    return short_term_written, earliest, touched_entity_ids, last_values, deltas
 
 
 async def async_recalculate_recent(
@@ -1948,7 +1970,8 @@ async def async_recalculate_recent(
     energy_reading_cache: dict[str, tuple[datetime, str]] | None = None,
     trigger_since: datetime | None = None,
     storage: Storage | None = None,
-) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+    delta_skip: frozenset[str] = frozenset(),
+) -> _RecalcResult:
     """
     Recalculate and write effy statistics for whatever recent slots need it.
 
@@ -1983,7 +2006,7 @@ async def async_recalculate_recent(
     ADR-012 or the gap-interpolation feature).
 
     Returns (short_term_rows_written, recalculated_from, touched_entity_ids,
-    last_values).
+    last_values, deltas); ``deltas`` as in ``async_recalculate_history``.
     recalculated_from is the earliest slot whose stored row this run wrote
     across all three series, or None if nothing was written (every row
     already equalled what is stored, TASK-0031, ADR-024) — see ADR-012
@@ -2037,7 +2060,14 @@ async def async_recalculate_recent(
     storage.set_timing(phases)
     try:
         return await _recalculate_recent(
-            hass, entry_options, now, energy_reading_cache, trigger_since, storage, phases
+            hass,
+            entry_options,
+            now,
+            energy_reading_cache,
+            trigger_since,
+            storage,
+            phases,
+            delta_skip,
         )
     finally:
         storage.set_timing(_NO_TIMINGS)
@@ -2051,7 +2081,8 @@ async def _recalculate_recent(
     trigger_since: datetime | None,
     storage: Storage,
     phases: _PhaseTimings,
-) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+    delta_skip: frozenset[str] = frozenset(),
+) -> _RecalcResult:
     start = now - RECENT_RECALC_WINDOW
     per_sensor, per_sensor_power, per_sensor_smoothed = await _compute_effective_slots(
         hass,
@@ -2076,19 +2107,20 @@ async def _recalculate_recent(
             now,
         )
         phases.finish(0)
-        return 0, None, set(), {}
+        return 0, None, set(), {}, {}
 
     # Read what is stored and mark the rows that are already right (ADR-024); the
     # writer skips them. ``touched``/``last_values`` below stay "every entity computed":
     # the live states of ADR-016 go out for all of them, changed row or not.
     all_series = (per_sensor, per_sensor_power, per_sensor_smoothed)
-    await _mark_unchanged(
+    stored_values_read = await _mark_unchanged(
         hass,
         all_series,
         short_term_cutoff=None,
         include_long_term=False,
         phases=phases,
         storage=storage,
+        delta_series=_pv_delta_series(entry_options, delta_skip),
     )
 
     written = 0
@@ -2128,7 +2160,14 @@ async def _recalculate_recent(
     )
     phases.note_unchanged(unchanged)
     phases.finish(written)
-    return written, earliest, touched_entity_ids, last_values
+    deltas = _pv_deltas(
+        per_sensor,
+        entry_options,
+        delta_skip,
+        short_term_cutoff=None,
+        values_read=stored_values_read,
+    )
+    return written, earliest, touched_entity_ids, last_values, deltas
 
 
 async def async_rewrite_hourly(
@@ -2874,12 +2913,14 @@ def _unchanged_slots(
     statistic_id: str,
     period: str,
     expected: dict[datetime, float],
-) -> tuple[frozenset[datetime], str]:
+) -> tuple[frozenset[datetime], str, dict[datetime, float]]:
     """Starts of the stored rows that equal ``expected`` (start -> mean) exactly.
 
     Also returns a one-line diagnosis: how many stored rows were read, how many were
     equal and, for each of the others, which column differed, with the first pair of
-    values (the first Pi run found nothing unchanged and could not say why).
+    values (the first Pi run found nothing unchanged and could not say why), and the
+    stored value (``mean``) of every row whose start is one of ``expected``, equal or
+    not, for the PV delta (ADR-027 decision 2). It is the same single read.
     """
     from homeassistant.components.recorder.statistics import (  # noqa: PLC0415
         statistics_during_period,
@@ -2892,6 +2933,7 @@ def _unchanged_slots(
     )
     rows = result.get(statistic_id, [])
     same: set[datetime] = set()
+    stored: dict[datetime, float] = {}
     why = {"start": 0, "mean": 0, "columns": 0}
     seen = 0
     sample = ""
@@ -2908,6 +2950,8 @@ def _unchanged_slots(
             sample = sample or f"start {raw_start!r} is not one of the new rows"
             continue
         seen += 1
+        if isinstance(row.get("mean"), (int, float)):
+            stored[start] = float(row["mean"])
         reason, detail = "", ""
         if row.get("mean") != want:
             reason, detail = "mean", f"mean stored {row.get('mean')!r}, new {want!r}"
@@ -2926,7 +2970,7 @@ def _unchanged_slots(
         f" start unexpected {why['start']}, mean differs {why['mean']},"
         f" columns set {why['columns']}" + (f"; first: {sample}" if sample else "")
     )
-    return frozenset(same), text
+    return frozenset(same), text, stored
 
 
 def _unchanged_rows(
@@ -2936,14 +2980,22 @@ def _unchanged_rows(
     short: list[tuple[datetime, float]],
     hourly: dict[datetime, tuple[float, float]],
     notes: dict[str, str] | None = None,
-) -> dict[str, frozenset[datetime]]:
+    values: bool = False,
+) -> dict[str, Any]:
     """Which rows of one series are already exactly what the writer would write.
 
-    Blocking: run in the recorder's executor, one series at a time, so only the set
-    of unchanged starts crosses back to the event loop, never the stored rows
-    (TASK-0030, ADR-024). A series whose stored unit differs from ``unit`` (or has no
-    metadata yet) has nothing unchanged: the import is what updates the metadata.
-    ``short`` is the 5-minute rows to write, ``hourly`` the hourly ones.
+    Blocking: run in the recorder's executor, one series at a time. A series whose
+    stored unit differs from ``unit`` (or has no metadata yet) has nothing unchanged:
+    the import is what updates the metadata. ``short`` is the 5-minute rows to write,
+    ``hourly`` the hourly ones.
+
+    The result has the unchanged starts, ``"short"`` and ``"hourly"``. With ``values``
+    it also has ``"stored"``: the stored 5-minute value of every row to write that is
+    stored, converted to ``unit`` by the unit in the metadata (``{}`` with no
+    metadata: such a value counts as 0). Only the PV inputs' effective series ask for
+    it (ADR-024 Amendment 2026-11-09): their values cross to the event loop, where the
+    PV delta is computed; every other series returns only its unchanged starts. It
+    is the same read that finds the unchanged rows, never an additional one.
     """
     nothing: frozenset[datetime] = frozenset()
     stored_unit = _get_statistics_units(hass, [statistic_id]).get(statistic_id)
@@ -2954,20 +3006,31 @@ def _unchanged_rows(
                 if stored_unit is None
                 else f"unit stored {stored_unit!r}, new {unit!r}: written in full"
             )
-        return {"short": nothing, "hourly": nothing}
-    found_short, text_short = (
-        _unchanged_slots(hass, statistic_id, "5minute", dict(short)) if short else (nothing, "")
+        result: dict[str, Any] = {"short": nothing, "hourly": nothing}
+        if values:
+            result["stored"] = {}
+            if stored_unit is not None and short:
+                _same, _text, stored = _unchanged_slots(hass, statistic_id, "5minute", dict(short))
+                result["stored"] = {
+                    start: convert_unit(value, stored_unit, unit) for start, value in stored.items()
+                }
+        return result
+    found_short, text_short, stored_short = (
+        _unchanged_slots(hass, statistic_id, "5minute", dict(short)) if short else (nothing, "", {})
     )
-    found_hourly, text_hourly = (
+    found_hourly, text_hourly, _stored_hourly = (
         _unchanged_slots(
             hass, statistic_id, "hour", {h: mean for h, (mean, _state) in hourly.items()}
         )
         if hourly
-        else (nothing, "")
+        else (nothing, "", {})
     )
     if notes is not None:
         notes[statistic_id] = "; ".join(text for text in (text_short, text_hourly) if text)
-    return {"short": found_short, "hourly": found_hourly}
+    result = {"short": found_short, "hourly": found_hourly}
+    if values:
+        result["stored"] = stored_short
+    return result
 
 
 def _unchanged_hours(
@@ -2994,8 +3057,14 @@ async def _mark_unchanged(
     include_short_term: bool = True,
     phases: _PhaseTimings,
     storage: Storage | None = None,
-) -> None:
+    delta_series: frozenset[str] = frozenset(),
+) -> bool:
     """Add ``unchanged_short`` and ``unchanged_hourly`` to every series entry (in place).
+
+    The series in ``delta_series`` (the effective series of the PV inputs, ADR-027
+    decision 2) also get ``stored_short``: the stored 5-minute values of the rows to write,
+    for the PV delta. Returns whether those values were read: ``False`` if a read failed or
+    a storage did not return them (an older snapshot), in which case the run has no delta.
 
     ``all_series`` are the series of one recalculation (effective, derived power,
     smoothed): one pass, one series per executor job, one warning at most.
@@ -3006,6 +3075,7 @@ async def _mark_unchanged(
     """
     storage = _storage_or_default(hass, storage, phases)
     notes: dict[str, str] = {}
+    values_read = True
     for series in all_series:
         for statistic_id, info in series.items():
             slot_values: list[tuple[datetime, float]] = info["slot_values"]
@@ -3025,9 +3095,16 @@ async def _mark_unchanged(
             )
             if not short and not hourly:
                 continue
+            wants_values = statistic_id in delta_series
             try:
-                found: dict[str, frozenset[datetime]] = await storage.unchanged_rows(
-                    statistic_id, info["unit"], short, hourly, notes
+                found: dict[str, Any] = (
+                    await storage.unchanged_rows(
+                        statistic_id, info["unit"], short, hourly, notes, values=True
+                    )
+                    if wants_values
+                    else await storage.unchanged_rows(
+                        statistic_id, info["unit"], short, hourly, notes
+                    )
                 )
             except Exception as err:  # a failed read must never fail the recalculation
                 _LOGGER.warning(
@@ -3039,7 +3116,13 @@ async def _mark_unchanged(
                     for done in done_series.values():
                         done.pop("unchanged_short", None)
                         done.pop("unchanged_hourly", None)
-                return
+                        done.pop("stored_short", None)
+                return False
+            if wants_values:
+                if "stored" not in found:  # a storage that cannot say: no delta
+                    values_read = False
+                else:
+                    info["stored_short"] = found["stored"]
             info["unchanged_short"] = found["short"]
             info["unchanged_hourly"] = (
                 _unchanged_hours(slot_values, found["short"])
@@ -3047,6 +3130,61 @@ async def _mark_unchanged(
                 else found["hourly"]
             )
     phases.note_stored_checks(notes)
+    return values_read
+
+
+def _pv_delta_series(entry_options: dict[str, Any], delta_skip: frozenset[str]) -> frozenset[str]:
+    """The statistic IDs of the effective series that need their stored values (the PV delta).
+
+    Those of the PV inputs (the EPS sensor and the BMS inputs have no delta) except the
+    inputs the caller marks as having no delta base yet (``delta_skip``, source entity IDs).
+    """
+    return frozenset(
+        _effy_entity_id(entity_id)
+        for entity_id in pv_input_ids(entry_options)
+        if entity_id not in delta_skip
+    )
+
+
+def _pv_deltas(
+    per_sensor: dict[str, dict[str, Any]],
+    entry_options: dict[str, Any],
+    delta_skip: frozenset[str],
+    *,
+    short_term_cutoff: datetime | None,
+    values_read: bool,
+) -> _PvDeltas | None:
+    """The PV delta of this run per PV input (ADR-027 decision 2, glossary "PV delta").
+
+    The energy the run changed in the stored rows of the input's effective series: the
+    added-up ``(new - stored) * 5/60`` over the 5-minute rows it wrote, in Wh if the
+    effective unit is W and in kWh if kW. A row counts if it is at or after the short-term
+    cutoff and before ``settled_before``: a slot left to the recorder is not written
+    (ADR-024), so it is no change. An unchanged row adds 0 and the hourly rows do not
+    count. An input without an effective series this run is not reported, and neither is
+    one in ``delta_skip``. ``None`` if the stored values could not be read: no delta for
+    any input, which is not 0.
+    """
+    if not values_read:
+        return None
+    deltas: _PvDeltas = {}
+    for entity_id in pv_input_ids(entry_options):
+        info = per_sensor.get(_effy_entity_id(entity_id))
+        if entity_id in delta_skip or info is None:
+            continue
+        settled: datetime | None = info.get("settled_before")
+        written = [
+            (ts, value)
+            for ts, value in info["slot_values"]
+            if (short_term_cutoff is None or ts >= short_term_cutoff)
+            and (settled is None or ts < settled)
+        ]
+        stored: dict[datetime, float] = info.get("stored_short", {})
+        deltas[entity_id] = (
+            pv_delta(written, stored, SLOT_MINUTES),
+            "Wh" if info["unit"] == "W" else "kWh",
+        )
+    return deltas
 
 
 def _count_hourly_left(all_series: tuple[dict[str, dict[str, Any]], ...], settled: datetime) -> int:

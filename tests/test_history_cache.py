@@ -230,6 +230,56 @@ class TestACleanCacheHoldsExactlyWhatARecalculationRead:
         assert recorder2.rows == recorder.rows
 
 
+class TestTheStoredValuesOfThePvInputsInTheSnapshot:
+    """ADR-024 Amendment 2026-11-09 (TASK-0045b): the PV delta's stored values are observed."""
+
+    @staticmethod
+    async def _recorded(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+        recorder, _ = _rig(monkeypatch)
+        _compiled_through(recorder, _at(11, 55))
+        cache = _cache_over(_Logging(_recorder_storage()))
+        _FrozenDatetime.frozen = _at(12, 1)
+        recorded = await _history.async_recalculate_history(object(), _opts(), storage=cache)
+        return cache.snapshot(), recorded
+
+    @pytest.mark.asyncio
+    async def test_only_the_effective_series_of_the_pv_inputs_record_their_stored_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        snapshot, recorded = await self._recorded(monkeypatch)
+        entries = snapshot["observed"]["unchanged_rows"]
+        with_values = {k: v for k, v in entries.items() if k.endswith("|values")}
+        assert {v["statistic_id"] for v in with_values.values()} == {
+            "sensor.effy_pv",
+            "sensor.effy_pv_w",
+        }  # the PV inputs of the world (_opts), not the output, not the derived series
+        assert all("stored" in v for v in with_values.values())
+        assert not any("stored" in v for k, v in entries.items() if k not in with_values)
+        assert recorded[4] is not None
+
+    @pytest.mark.asyncio
+    async def test_an_entry_without_stored_values_replays_as_no_delta(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import copy
+
+        from tests.support import RaisingStorage
+
+        snapshot, recorded = await self._recorded(monkeypatch)
+        older = copy.deepcopy(snapshot)
+        for key, entry in older["observed"]["unchanged_rows"].items():
+            if key.endswith("|values"):
+                del entry["stored"]  # a snapshot of a version that did not record them
+        replay = _history.Cache.from_snapshot(
+            older, RaisingStorage(), clock=lambda: _FrozenDatetime.frozen, settle=SETTLE
+        )
+        recorder2, _ = _rig(monkeypatch)
+        _compiled_through(recorder2, _at(11, 55))
+        replayed = await _history.async_recalculate_history(object(), _opts(), storage=replay)
+        assert replayed[4] is None  # no delta: not 0
+        assert replayed[:4] == recorded[:4]  # everything else is what was recorded
+
+
 class TestWhatEffyWroteIsForgotten:
     @pytest.mark.asyncio
     async def test_the_storage_is_told_once_the_writer_has_the_rows_in_the_recorder(

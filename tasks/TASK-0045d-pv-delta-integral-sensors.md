@@ -87,7 +87,13 @@ and subscribe in the style of `restore_standby` / `subscribe_standby`),
   `coordinator._schedule_next_slot_timer` (the pattern for timers),
   `sensor.EffyStandbyPowerSensor`, `sensor._standby_entities`,
   `sensor._async_restore_measurement`.
-- The deltas the recalculations return (→ task: TASK-0045b-pv-delta-values).
+- The deltas the recalculations return (→ task: TASK-0045b-pv-delta-values,
+  done: `history.async_recalculate_history` and `async_recalculate_recent`
+  return `(written, from, touched, last_values, deltas)`,
+  `deltas: dict[source PV entity ID, (delta, "Wh"|"kWh")] | None`, keyword
+  `delta_skip`; `calculation.convert_unit`, `calculation.pv_delta`;
+  `history._unchanged_slots` -> `(starts, text, stored)`;
+  `Storage.unchanged_rows(..., values=False)`).
 - The delta base per series and the derivation (→ task:
   TASK-0045c-delta-derivation).
 

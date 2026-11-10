@@ -405,6 +405,7 @@ class Cache:
         unit: str,
         short: list[tuple[datetime, float]],
         hourly: dict[datetime, tuple[float, float]],
+        values: bool = False,
     ) -> str:
         # Instants, not datetimes: the repr of a datetime names its tzinfo object, which a
         # replay from a file does not have to share with the recorded run (TASK-0037).
@@ -418,7 +419,9 @@ class Cache:
                 )
             ).encode()
         ).hexdigest()
-        return f"{statistic_id}|{digest}"
+        # A read with the stored values is another observation than one without: its own
+        # key. The key without them is what it always was, so an older snapshot still hits.
+        return f"{statistic_id}|{digest}" + ("|values" if values else "")
 
     async def unchanged_rows(
         self,
@@ -427,21 +430,34 @@ class Cache:
         short: list[tuple[datetime, float]],
         hourly: dict[datetime, tuple[float, float]],
         notes: dict[str, str] | None = None,
-    ) -> dict[str, frozenset[datetime]]:
-        key = self._rows_key(statistic_id, unit, short, hourly)
+        values: bool = False,
+    ) -> dict[str, Any]:
+        key = self._rows_key(statistic_id, unit, short, hourly, values)
         if self._replay and key in self._observed.unchanged_rows:
             self._hits += 1
             recorded = self._observed.unchanged_rows[key]
-            return {
+            replayed: dict[str, Any] = {
                 name: frozenset(_parse(t) for t in recorded[name]) for name in ("short", "hourly")
             }
-        result = await self._inner.unchanged_rows(statistic_id, unit, short, hourly, notes)
+            if values and "stored" in recorded:
+                replayed["stored"] = {_parse(t): value for t, value in recorded["stored"].items()}
+            return replayed
+        result = (
+            await self._inner.unchanged_rows(
+                statistic_id, unit, short, hourly, notes, values=values
+            )
+            if values
+            else await self._inner.unchanged_rows(statistic_id, unit, short, hourly, notes)
+        )
         self._misses += 1
-        self._observed.unchanged_rows[key] = {
+        observed: dict[str, Any] = {
             "statistic_id": statistic_id,
             "short": sorted(_iso(t) for t in result.get("short", frozenset())),
             "hourly": sorted(_iso(t) for t in result.get("hourly", frozenset())),
         }
+        if values and "stored" in result:
+            observed["stored"] = {_iso(t): v for t, v in sorted(result["stored"].items())}
+        self._observed.unchanged_rows[key] = observed
         return result
 
     def written(self, statistic_ids: list[str], start: datetime, end: datetime) -> None:

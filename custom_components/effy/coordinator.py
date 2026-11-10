@@ -826,7 +826,9 @@ class EffyCoordinator:
                 # for the lock for minutes, a later slot may be completed but not yet
                 # compiled: it is left to that slot's own job (TASK-0035).
                 now = min(now, slot + 2 * timedelta(minutes=SLOT_MINUTES) - timedelta(seconds=1))
-            _written, earliest, touched, last_values = await async_recalculate_recent(
+            # The fifth value, the PV deltas of this run (ADR-027 decision 2), is booked by
+            # TASK-0045d once the write has succeeded; nothing uses it yet.
+            _written, earliest, touched, last_values, _deltas = await async_recalculate_recent(
                 self._hass,
                 self._entry.options,
                 now,
@@ -973,15 +975,22 @@ class EffyCoordinator:
             self._pending_export = None
             # With the debug export on, the cache of this run is the export (TASK-0037):
             # the lock keeps other recalculations out.
-            export = None
+            export_kwargs: dict[str, Any] = {}
             if self._entry.options.get(CONF_DEBUG_EXPORT):
-                export = self._debug_export_hook()
-            written, recalculated_from, touched, last_values = await async_recalculate_history(
+                export_kwargs["export"] = self._debug_export_hook()
+            # The PV deltas (fifth value) are booked by TASK-0045d; nothing uses them yet.
+            (
+                written,
+                recalculated_from,
+                touched,
+                last_values,
+                _deltas,
+            ) = await async_recalculate_history(
                 self._hass,
                 self._entry.options,
                 energy_reading_cache=self.last_valid_energy_readings,
                 storage=self._storage,
-                **({"export": export} if export is not None else {}),
+                **export_kwargs,
             )
             if touched:
                 self.notify_updated(touched, last_values)

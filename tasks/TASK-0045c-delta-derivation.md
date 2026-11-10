@@ -81,7 +81,13 @@ it, and tests.
   `history._hourly_rows`, the settled rule for hourly rows and the
   last-completed-slot logic (ADR-024).
 - The unit conversion and the delta helper of TASK-0045b (→ task:
-  TASK-0045b-pv-delta-values).
+  TASK-0045b-pv-delta-values, done: `history.async_recalculate_history` and
+  `async_recalculate_recent` return
+  `(written, from, touched, last_values, deltas)`,
+  `deltas: dict[source PV entity ID, (delta, "Wh"|"kWh")] | None`, keyword
+  `delta_skip`; `calculation.convert_unit`, `calculation.pv_delta`;
+  `history._unchanged_slots` -> `(starts, text, stored)`;
+  `Storage.unchanged_rows(..., values=False)`).
 
 ## Delivered Artifacts
 

@@ -168,10 +168,10 @@ class TestWhichSeriesAHistoryRecalculationWrites:
 
     async def _recalc(
         self, monkeypatch: pytest.MonkeyPatch, world: _World, options: dict[str, Any]
-    ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+    ) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]], Any]:
         _install(monkeypatch, world)
         _FrozenDatetime.frozen = END
-        outcome: tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]
+        outcome: tuple[int, datetime | None, set[str], dict[str, tuple[float, str]], Any]
         outcome = await _history.async_recalculate_history(object(), options)
         return outcome
 
@@ -181,7 +181,7 @@ class TestWhichSeriesAHistoryRecalculationWrites:
         """Every input is silent, the output counter is not: the output's derived
         power is the only series, and the effective one is not written empty."""
         world = _energy_world(**{NOTHING: [], OUT: _ticks(5.0, 0.2)})
-        written, _start, touched, last = await self._recalc(
+        written, _start, touched, last, _deltas = await self._recalc(
             monkeypatch, world, _options([NOTHING], [OUT])
         )
 
@@ -197,7 +197,9 @@ class TestWhichSeriesAHistoryRecalculationWrites:
         """Power-family sensors have no derived-power series (ADR-012)."""
         world = _World()
         _add_power(world, PW)
-        written, _start, touched, _last = await self._recalc(monkeypatch, world, _options([PW]))
+        written, _start, touched, _last, _deltas = await self._recalc(
+            monkeypatch, world, _options([PW])
+        )
 
         # The PV combined series (TASK-0045a) is written with the effective series; a PV
         # input is all this world has, so it is the series of PW alone.

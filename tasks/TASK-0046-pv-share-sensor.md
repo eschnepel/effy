@@ -2,8 +2,8 @@
 
 - **Status:** todo
 - **Capability:** CAP-13 (added 2026-11-09)
-- **Related ADRs:** [ADR-027 (amendment 2026-11-09), ADR-026, ADR-001, ADR-016,
-  ADR-021, ADR-024]
+- **Related ADRs:** \[ADR-027 (amendment 2026-11-09), ADR-026, ADR-001, ADR-016,
+  ADR-021, ADR-024\]
 - **Dependencies:** [TASK-0045a-pv-combined-series]
 - **Needed by:** TASK-0045f (publishes the sensor), TASK-0045g (acceptance and
   README)

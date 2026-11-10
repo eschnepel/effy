@@ -150,6 +150,12 @@ def _fake_create_storage(hass: Any, *, clock: Any, warn: Any = None) -> _FakeSto
     return _FakeStorage()
 
 
+# What the real functions return: the four values the tests below describe and, fifth, the PV
+# deltas (TASK-0045b), which the coordinator does not use yet. The fakes append an empty one.
+_Delta = dict[str, tuple[float, str]]
+_RecalcResult = tuple[int, datetime | None, set[str], dict[str, tuple[float, str]], _Delta | None]
+
+
 async def _fake_async_recalculate_recent(
     hass: Any,
     entry_options: Any,
@@ -157,7 +163,7 @@ async def _fake_async_recalculate_recent(
     energy_reading_cache: Any = None,
     trigger_since: Any = None,
     storage: Any = None,
-) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+) -> _RecalcResult:
     _storage_seen.append(("recalculate_recent", storage))
     _history_calls.append((hass, entry_options, now, energy_reading_cache))
     _history_trigger_since.append(trigger_since)
@@ -166,7 +172,7 @@ async def _fake_async_recalculate_recent(
     if _history_raise_next[0]:
         _history_raise_next[0] = False
         raise RuntimeError("recorder exploded")
-    return _history_return_value[0]
+    return (*_history_return_value[0], {})
 
 
 def _fake_recent_trigger_since(previous_run: datetime | None, now: datetime) -> datetime:
@@ -210,7 +216,7 @@ async def _fake_async_recalculate_history(
     energy_reading_cache: Any = None,
     storage: Any = None,
     **extra: Any,
-) -> tuple[int, datetime | None, set[str], dict[str, tuple[float, str]]]:
+) -> _RecalcResult:
     _storage_seen.append(("recalculate_history", storage))
     _history_full_calls.append((hass, entry_options, energy_reading_cache))
     _storage_events.append("history")
@@ -226,7 +232,7 @@ async def _fake_async_recalculate_history(
         record.window_start = _ts(0, 0)
         record.result = {"rows_written": 0, "recalculated_from": None}
         _export_outcomes.append(await export(record))
-    return _history_full_return_value[0]
+    return (*_history_full_return_value[0], {})
 
 
 _hourly_calls: list[tuple[dict[str, str], datetime, bool]] = []
