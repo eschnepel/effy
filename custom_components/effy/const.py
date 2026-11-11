@@ -51,5 +51,11 @@ PV_SUM_ENTITY_ID = "sensor.effy_effective_pv_sum_now"
 PV_SUM_UNIQUE_ID_SUFFIX = "effective_pv_sum_now"
 PV_SUM_TRANSLATION_KEY = "effective_pv_sum_now"
 
+# The PV delta integrals (ADR-027 decision 3, TASK-0045c): a per-input one,
+# ``sensor.effy_<slug>_delta_integral_today``, and the combined *today* and *total* ones.
+PV_DELTA_INTEGRAL_TODAY_SUFFIX = "_delta_integral_today"
+PV_DELTA_TODAY_ENTITY_ID = "sensor.effy_pv_delta_integral_today"
+PV_DELTA_TOTAL_ENTITY_ID = "sensor.effy_pv_delta_integral_total"
+
 # The published contract (schema version, aggregations, entity IDs, keys) lives in
 # effy_exports.py, a standalone file other projects copy (ADR-021 Amendment 2026-10-23).

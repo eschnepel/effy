@@ -95,7 +95,12 @@ and subscribe in the style of `restore_standby` / `subscribe_standby`),
   `history._unchanged_slots` -> `(starts, text, stored)`;
   `Storage.unchanged_rows(..., values=False)`).
 - The delta base per series and the derivation (→ task:
-  TASK-0045c-delta-derivation).
+  TASK-0045c-delta-derivation, done:
+  `history.async_derive_pv_delta_integrals(hass, options, *, now=None, storage=None) -> dict[statistic ID, history.DeltaBase(state, last_reset, total)]`
+  (only derived series); `history._pv_delta_integral_id(source)`,
+  `const.PV_DELTA_TODAY_ENTITY_ID`, `const.PV_DELTA_TOTAL_ENTITY_ID`;
+  `calculation.slot_energy_steps`, `integral_rows`, `combined_integral_rows`;
+  `Storage.stored_means`).
 
 ## Delivered Artifacts
 

@@ -230,6 +230,28 @@ class TestACleanCacheHoldsExactlyWhatARecalculationRead:
         assert recorder2.rows == recorder.rows
 
 
+class TestTheStoredMeansForTheDeltaDerivation:
+    """ADR-027 decision 5: Effy's own rows are observed, never reused."""
+
+    @pytest.mark.asyncio
+    async def test_the_cache_asks_the_storage_every_time_and_records_nothing(self) -> None:
+        class _Means:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def stored_means(self, *args: Any) -> Any:
+                self.calls += 1
+                return {_at(10, 0): float(self.calls)}, {}
+
+        inner = _Means()
+        cache = _cache_over(inner)
+        first = await cache.stored_means("sensor.effy_x", _at(9, 0), _at(11, 0))
+        second = await cache.stored_means("sensor.effy_x", _at(9, 0), _at(11, 0))
+        assert (first[0][_at(10, 0)], second[0][_at(10, 0)]) == (1.0, 2.0)  # not reused
+        assert inner.calls == 2
+        assert "stored_means" not in str(cache.snapshot()["observed"])
+
+
 class TestTheStoredValuesOfThePvInputsInTheSnapshot:
     """ADR-024 Amendment 2026-11-09 (TASK-0045b): the PV delta's stored values are observed."""
 
@@ -443,6 +465,7 @@ class TestNoReadGoesAroundTheInterface:
         "_fetch_last_valid_state_before",
         "_fetch_statistics",
         "_fetch_capacity_states",
+        "_fetch_integral_source",
         "_unchanged_rows",
         "_unchanged_slots",
         "_get_statistics_units",

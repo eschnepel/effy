@@ -242,6 +242,9 @@ class RaisingStorage:
     async def statistics_units(self, *args: Any) -> Any:
         raise UnrecordedRead(("statistics_units", *args))
 
+    async def stored_means(self, *args: Any) -> Any:
+        raise UnrecordedRead(("stored_means", *args))
+
     async def unchanged_rows(self, *args: Any, **kwargs: Any) -> Any:
         raise UnrecordedRead(("unchanged_rows", *args))
 
@@ -391,6 +394,13 @@ class FakeStorage:
         self.calls.append(("statistics_units", tuple(entity_ids)))
         await self._maybe_yield()
         return {eid: self.units[eid] for eid in entity_ids if eid in self.units}
+
+    async def stored_means(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, float], dict[datetime, float]]:
+        self.calls.append(("stored_means", statistic_id))
+        await self._maybe_yield()
+        return {}, {}
 
     async def unchanged_rows(
         self,

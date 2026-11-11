@@ -66,6 +66,17 @@ class Storage(Protocol):
         """The unit the recorder's statistics are stored in, per id (metadata)."""
         ...
 
+    async def stored_means(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, float], dict[datetime, float]]:
+        """The stored 5-minute and hourly ``mean`` of one series, ``start <= row start < end``.
+
+        Effy's own rows: **observed, never reused**. Read once, by the delta derivation
+        (ADR-027 decision 5), which is no part of a recorded history run; ``({}, {})`` for a
+        series with no rows.
+        """
+        ...
+
     async def unchanged_rows(
         self,
         statistic_id: str,

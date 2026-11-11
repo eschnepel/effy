@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Literal
 
 
@@ -91,6 +91,123 @@ def pv_delta(
     """
     hours = slot_minutes / 60
     return sum((value - stored.get(start, 0.0)) * hours for start, value in new_rows)
+
+
+@dataclass(frozen=True)
+class IntegralStep:
+    """The energy of one step of an integral's history (ADR-027 decision 5).
+
+    ``start`` is the start of the 5-minute slot, or of the hour for a step that comes from an
+    hourly row. ``energy`` is in the unit the caller keeps (Wh or kWh). ``short`` says whether
+    a 5-minute row exists for the step; an hourly-only step has no 5-minute row of its own.
+    """
+
+    start: datetime
+    energy: float
+    short: bool = True
+
+
+@dataclass(frozen=True)
+class IntegralRow:
+    """One row of an integral's history: what the recorder stores for ``start``.
+
+    ``state`` is the energy since the local midnight of the row's day (the *today* integral)
+    or the running total (the *total* integral); ``total`` is the running total, the
+    recorder's ``sum`` column; ``last_reset`` is that midnight, ``None`` for the total.
+    """
+
+    start: datetime
+    state: float
+    total: float
+    last_reset: datetime | None
+    short: bool = True
+
+
+def local_midnight(ts: datetime, tz: tzinfo) -> datetime:
+    """The local midnight that starts the day ``ts`` falls in (a day may last 23 or 25 hours)."""
+    local = ts.astimezone(tz)
+    return datetime.combine(local.date(), time.min, tzinfo=tz)
+
+
+def slot_energy_steps(
+    rows_5min: Mapping[datetime, float],
+    rows_hourly: Mapping[datetime, float],
+    slot_minutes: int = 5,
+) -> list[IntegralStep]:
+    """The energy of every slot of one effective series, from its stored rows (ADR-027 decision 5).
+
+    A 5-minute row is its power times ``slot_minutes / 60`` h. An hourly row (its mean times
+    1 h) is used for the hours older than the 5-minute rows, which the recorder purges by
+    time: an hour that ends at or before the oldest 5-minute row. The hour that contains the
+    oldest 5-minute row is usually only half there; its hourly row holds the whole hour, so
+    what the 5-minute rows lack is carried as an hourly-only step at the start of the hour, so
+    that the energy of the hour is neither lost nor counted twice. An hourly row after the
+    oldest 5-minute row without 5-minute rows of its own is not made up into energy.
+    """
+    slot_hours = slot_minutes / 60
+    five = sorted(rows_5min.items())
+    steps = [IntegralStep(start, power * slot_hours, True) for start, power in five]
+    if not rows_hourly:
+        return steps
+    first = five[0][0] if five else None
+    seen: dict[datetime, float] = {}
+    for step in steps:
+        hour = step.start.replace(minute=0, second=0, microsecond=0)
+        seen[hour] = seen.get(hour, 0.0) + step.energy
+    hour_width = timedelta(hours=1)
+    for hour, mean in rows_hourly.items():
+        if first is None or hour + hour_width <= first:
+            steps.append(IntegralStep(hour, mean, False))
+        elif hour < first < hour + hour_width:
+            carried = max(0.0, mean - seen.get(hour, 0.0))
+            if carried > 0.0:
+                steps.append(IntegralStep(hour, carried, False))
+    steps.sort(key=lambda step: step.start)
+    return steps
+
+
+def integral_rows(steps: Iterable[IntegralStep], tz: tzinfo, *, today: bool) -> list[IntegralRow]:
+    """The rows of one integral, accumulated from the oldest step (ADR-027 decision 5).
+
+    ``today``: ``state`` is the energy since the local midnight of the step's day and
+    ``last_reset`` that midnight; the running total goes on across the days. Otherwise
+    (*total*) ``state`` is the running total and there is no ``last_reset``. ``steps`` ascend.
+    """
+    rows: list[IntegralRow] = []
+    total = 0.0
+    since_midnight = 0.0
+    day: datetime | None = None
+    for step in steps:
+        total += step.energy
+        if not today:
+            rows.append(IntegralRow(step.start, total, total, None, step.short))
+            continue
+        midnight = local_midnight(step.start, tz)
+        if midnight != day:
+            day, since_midnight = midnight, 0.0
+        since_midnight += step.energy
+        rows.append(IntegralRow(step.start, since_midnight, total, midnight, step.short))
+    return rows
+
+
+def combined_integral_rows(
+    per_input: Iterable[tuple[Iterable[IntegralStep], str]], tz: tzinfo
+) -> tuple[list[IntegralRow], list[IntegralRow]]:
+    """The *today* and the *total* rows of the combined integral (ADR-027 decision 5).
+
+    Per slot the energies of the inputs are added up, each given with its unit (``Wh`` or
+    ``kWh``) and converted to kWh; an input without a step in a slot adds 0. A combined step
+    has a 5-minute row if any input's step has one.
+    """
+    energy: dict[datetime, float] = {}
+    short: dict[datetime, bool] = {}
+    for steps, unit in per_input:
+        factor = 0.001 if unit == "Wh" else 1.0
+        for step in steps:
+            energy[step.start] = energy.get(step.start, 0.0) + step.energy * factor
+            short[step.start] = short.get(step.start, False) or step.short
+    combined = [IntegralStep(start, energy[start], short[start]) for start in sorted(energy)]
+    return integral_rows(combined, tz, today=True), integral_rows(combined, tz, today=False)
 
 
 def distribute_loss(

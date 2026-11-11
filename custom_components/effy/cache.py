@@ -388,6 +388,13 @@ class Cache:
         self._anchors[key] = answer
         return answer
 
+    async def stored_means(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, float], dict[datetime, float]]:
+        """Passed through: Effy's own rows are observed, never reused, and the delta derivation
+        that reads them once is no part of a recorded history run (ADR-027 decision 5)."""
+        return await self._inner.stored_means(statistic_id, start, end)
+
     # ------------------------------------------------------------------ observed
     async def statistics_units(self, entity_ids: list[str]) -> dict[str, str]:
         key = ",".join(sorted(entity_ids))

@@ -91,7 +91,12 @@ orchestration and the reader of per-input statistics), and tests for each.
   flow is `OptionsFlowWithReload`), `coordinator._recorder_job_lock`,
   `coordinator.async_recalculate_history_and_report`.
 - The derivation, its writer and the delta base (→ task:
-  TASK-0045c-delta-derivation).
+  TASK-0045c-delta-derivation, done:
+  `history.async_derive_pv_delta_integrals(hass, options, *, now=None, storage=None) -> dict[statistic ID, history.DeltaBase(state, last_reset, total)]`
+  (only derived series); `history._pv_delta_integral_id(source)`,
+  `const.PV_DELTA_TODAY_ENTITY_ID`, `const.PV_DELTA_TOTAL_ENTITY_ID`;
+  `calculation.slot_energy_steps`, `integral_rows`, `combined_integral_rows`;
+  `Storage.stored_means`).
 - The sensors, booking and base handover (→ task:
   TASK-0045d-pv-delta-integral-sensors).
 

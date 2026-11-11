@@ -88,6 +88,19 @@ class RecorderStorage:
         )
         return result
 
+    async def stored_means(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, float], dict[datetime, float]]:
+        result: tuple[dict[datetime, float], dict[datetime, float]] = await self._job(
+            "_fetch_integral_source",
+            statistic_id,
+            start,
+            end,
+            label="integral source",
+            source=statistic_id,
+        )
+        return result
+
     async def statistics_units(self, entity_ids: list[str]) -> dict[str, str]:
         result: dict[str, str] = await self._job(
             "_get_statistics_units", list(entity_ids), label="units"

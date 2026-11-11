@@ -1,6 +1,6 @@
 # Task: Delta derivation: the history of the PV delta integrals and the first has_sum writer
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-027, ADR-024, ADR-011]
 - **Dependencies:** [TASK-0045b-pv-delta-values]
@@ -94,4 +94,59 @@ it, and tests.
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/calculation.py` →
+  `IntegralStep(start, energy, short=True)`,
+  `IntegralRow(start, state, total, last_reset, short=True)` (frozen
+  dataclasses); `local_midnight(ts, tz)`;
+  `slot_energy_steps(rows_5min, rows_hourly, slot_minutes=5)` (5-minute row =
+  power x 5/60; hourly row = mean x 1 h for hours ending at or before the oldest
+  5-minute row; the hour that contains it carries what its 5-minute rows lack as
+  an hourly-only step, never negative); `integral_rows(steps, tz, *, today)`;
+  `combined_integral_rows(per_input, tz) -> (today_rows, total_rows)` with
+  `per_input` an iterable of `(steps, "Wh" | "kWh")`, summed in kWh.
+- `custom_components/effy/const.py` → `PV_DELTA_INTEGRAL_TODAY_SUFFIX`
+  (`"_delta_integral_today"`), `PV_DELTA_TODAY_ENTITY_ID`
+  (`"sensor.effy_pv_delta_integral_today"`), `PV_DELTA_TOTAL_ENTITY_ID`
+  (`"sensor.effy_pv_delta_integral_total"`). TASK-0045f moves them into
+  `effy_exports.py`.
+- `custom_components/effy/history.py` →
+  - `async_derive_pv_delta_integrals(hass, entry_options, *, now=None, storage=None) -> dict[str, DeltaBase]`,
+    keyed by statistic ID (`_pv_delta_integral_id(source)`, the two combined
+    IDs); only the series it derived have an entry; a series that already has
+    metadata is skipped; nothing to derive gives `DeltaBase(0.0, None, 0.0)` and
+    writes nothing. Not called by anything yet (the button never does).
+  - `DeltaBase(state, last_reset, total)`; `_pv_delta_integral_id(entity_id)`;
+    `_integral_statistics(rows, settled)`; `_fetch_integral_source(...)` (a
+    reader); `_local_tz(hass)` (`hass.config.time_zone`, UTC with a warning if
+    unknown).
+  - `_build_statistic_metadata(statistic_id, unit, *, has_sum=False)`: with
+    `has_sum` the flags are `has_mean=False, has_sum=True`, and on newer cores
+    `mean_type` NONE and `unit_class` `"energy"`.
+  - Writes both tables via `instance.async_import_statistics`; 5-minute rows
+    only where a 5-minute row exists and `start < settled_before(now)`; hourly
+    rows only for closed hours (`hour + 1 h <= settled`) with the values of the
+    hour's last row.
+- `storage.py`, `recorder_storage.py`, `cache.py` →
+  `Storage.stored_means(statistic_id, start, end) -> (rows_5min, rows_hourly)`
+  of `mean`; the cache passes it through (observed, never reused; the derivation
+  is no part of a recorded run). The derivation reads only through the storage
+  (ADR-025); `_fetch_integral_source` is registered as a reader in the guard
+  test.
+- Tests: new `tests/test_delta_derivation.py` (32) and 1 in
+  `tests/test_history_cache.py`; `tests/support.py` fakes got `stored_means`.
+  The stateful recorder of `test_history_write_only_changed` already kept `sum`,
+  `last_reset` and the metadata flags; the new test only adds a subclass that
+  records the imported metadata.
+- External dependencies added: none (`zoneinfo` is standard library).
+- **Open points for the human** (not decided here):
+  1. *ID collision (ADR-027 decision 3).* A PV source whose slug is `pv` (for
+     example `sensor.pv`) gets the per-input ID
+     `sensor.effy_pv_delta_integral_today`, which is the combined *today* ID.
+     The derivation leaves such a per-input series out and logs a warning;
+     TASK-0045d's sensors need the same rule, and the ADR needs a decision on
+     naming.
+  1. *Unit class.* The has_sum metadata sets `unit_class` `"energy"` on newer
+     cores so that it matches what the recorder gives the live sensor. Written
+     from reading the code, not run against Home Assistant: check once on the
+     Pi.
+- Reviewer (inline, no sub-agent available): PASS.

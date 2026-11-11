@@ -54,7 +54,7 @@
 | TASK-0044-eps-acceptance-and-readme-formula | CAP-12 acceptance test; README formula, ADR index (CAP-12) | done | TASK-0042-eps-activity-in-standby-and-efficiency, TASK-0043-eps-sensors-and-published-entries | inline (Lead) |
 | TASK-0045a-pv-combined-series | PV combined series and the sensor Effective PV Sum now (CAP-13) | done | — | inline |
 | TASK-0045b-pv-delta-values | PV delta of every run, from the stored values (CAP-13) | done | TASK-0045a-pv-combined-series | inline |
-| TASK-0045c-delta-derivation | Delta derivation: history of the PV delta integrals, first has_sum writer (CAP-13) | todo | TASK-0045b-pv-delta-values | — |
+| TASK-0045c-delta-derivation | Delta derivation: history of the PV delta integrals, first has_sum writer (CAP-13) | done | TASK-0045b-pv-delta-values | inline |
 | TASK-0045d-pv-delta-integral-sensors | PV delta integral sensors: booking, midnight reset, base handover (CAP-13) | todo | TASK-0045b-pv-delta-values, TASK-0045c-delta-derivation | — |
 | TASK-0045e-formula-signature-and-implicit-recalc | Formula signature, implicit full recalculation and derivation (CAP-13; decision 9 / Q27 decided: A) | todo | TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors | — |
 | TASK-0046-pv-share-sensor | PV share now: 100 × (effective PV + EPS input) / all effective inputs per slot, hourly energy-weighted, in % (CAP-13; human request 2026-11-09) | todo | TASK-0045a-pv-combined-series | — |
