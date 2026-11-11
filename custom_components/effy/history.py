@@ -2361,17 +2361,6 @@ async def async_derive_pv_delta_integrals(
 
     per_input_ids = {entity_id: _pv_delta_integral_id(entity_id) for entity_id in pv_inputs}
     combined_ids = (PV_DELTA_TODAY_ENTITY_ID, PV_DELTA_TOTAL_ENTITY_ID)
-    # A source whose slug makes its per-input ID the combined one cannot have both (ADR-027
-    # decision 3 names them alike): the per-input series is not derived, and the human is told.
-    for entity_id, statistic_id in list(per_input_ids.items()):
-        if statistic_id in combined_ids:
-            _LOGGER.warning(
-                "Effy: the delta integral of %s would have the statistic ID %s, which is the "
-                "combined integral's; it is not derived",
-                entity_id,
-                statistic_id,
-            )
-            del per_input_ids[entity_id]
     targets = [*per_input_ids.values(), *combined_ids]
     existing = await storage.statistics_units(targets)
     missing = [statistic_id for statistic_id in targets if statistic_id not in existing]

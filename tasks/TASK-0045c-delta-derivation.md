@@ -144,7 +144,9 @@ it, and tests.
      `sensor.effy_pv_delta_integral_today`, which is the combined *today* ID.
      The derivation leaves such a per-input series out and logs a warning;
      TASK-0045d's sensors need the same rule, and the ADR needs a decision on
-     naming.
+     naming. **Resolved 2026-11-10** by the human (combined IDs read `deltasum`,
+     ADR-027 Amendment 2026-11-10); the change is
+     TASK-0045c-delta-derivation-patch-1, this task stays `done`.
   1. *Unit class.* The has_sum metadata sets `unit_class` `"energy"` on newer
      cores so that it matches what the recorder gives the live sensor. Written
      from reading the code, not run against Home Assistant: check once on the

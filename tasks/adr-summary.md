@@ -151,6 +151,10 @@ amendment is in force: four counter pickers, no update listener;
   `pv_delta_integral_today`, `pv_delta_integral_total` (role `pv`, direction
   `input`). Decision 9 (Q27 = A): when the PV inputs change, the combined
   integrals are derived again as the addition of the configured inputs.
+  Amendment 2026-11-10 (human): the combined integrals' entity IDs read
+  `deltasum` (`sensor.effy_pv_deltasum_integral_today` / `_total`), the
+  per-input ones stay `sensor.effy_<slug>_delta_integral_today`, so no slug can
+  collide; names, unique IDs and published `series` values are unchanged.
 - **ADR-026 (Accepted, 2026-11-06):** the EPS/UPS port as one optional signed
   power sensor (`eps_sensor`, domain sensor, device class power, state class
   `measurement`, W or kW). Per slot its `mean` is split: positive = EPS output

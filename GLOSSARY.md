@@ -188,7 +188,9 @@ correction series
 Assistant compiles its statistics. There is one per PV input and one combined
 for all PV inputs, both with a `last_reset` at local midnight that Effy resets
 at wall-clock midnight (_today_), and one combined without `last_reset`
-(_total_). The delta of any period is its change. _Avoid_: PV delta sum
+(_total_). The delta of any period is its change. The entity IDs of the two
+combined ones read `deltasum`, the per-input ones `delta` (ADR-027 Amendment
+2026-11-10). _Avoid_: PV delta sum
 
 **Delta derivation**: The one-time computation of the history of the PV delta
 integrals from the stored effective rows, after a full history recalculation

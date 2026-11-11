@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.test_history_recent_equivalence import _history, _options
+from tests.test_history_recent_equivalence import _const, _history, _options
 from tests.test_history_write_only_changed import (
     REAL_UNITS,
     StoredRecorder,
@@ -38,8 +38,8 @@ EFF_A = "sensor.effy_pv_a"
 EFF_B = "sensor.effy_pv_b"
 TODAY_A = "sensor.effy_pv_a_delta_integral_today"
 TODAY_B = "sensor.effy_pv_b_delta_integral_today"
-COMBINED_TODAY = "sensor.effy_pv_delta_integral_today"
-COMBINED_TOTAL = "sensor.effy_pv_delta_integral_total"
+COMBINED_TODAY = "sensor.effy_pv_deltasum_integral_today"
+COMBINED_TOTAL = "sensor.effy_pv_deltasum_integral_total"
 SLOT = timedelta(minutes=5)
 HOUR = timedelta(hours=1)
 
@@ -476,22 +476,29 @@ class TestTheButtonDoesNotDerive:
 
 
 class TestGuards:
-    async def test_a_source_whose_id_would_be_the_combined_integrals_is_not_derived_and_warned(
+    async def test_a_source_named_pv_is_derived_like_any_other_beside_the_combined_ones(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """ADR-027 decision 3 names the per-input integral
-        ``sensor.effy_<slug>_delta_integral_today`` and the combined one
-        ``sensor.effy_pv_delta_integral_today``: a PV source named ``pv`` gets the same ID.
-        The two cannot share a statistic, so the per-input one is left out."""
+        """ADR-027 Amendment 2026-11-10: the combined integrals read ``deltasum``, so the
+        per-input integral of ``sensor.pv`` (``sensor.effy_pv_delta_integral_today``) is its own
+        series: derived, no warning, and the combined one is still the addition of both."""
         recorder = _world(monkeypatch)
         _store(recorder, "sensor.effy_pv", "W", five={_u(10, 10): 120.0, _u(10, 10, 5): 120.0})
         options = _options([PV_A, "sensor.pv"], [OUT])
         with caplog.at_level("WARNING"):
             bases = await _history.async_derive_pv_delta_integrals(_hass(), options, now=NOW)
-        assert "would have the statistic ID" in caplog.text
-        assert set(bases) == {TODAY_A, COMBINED_TODAY, COMBINED_TOTAL}
+        assert caplog.text == ""
+        per_input_pv = "sensor.effy_pv_delta_integral_today"
+        assert set(bases) == {TODAY_A, per_input_pv, COMBINED_TODAY, COMBINED_TOTAL}
+        assert len({TODAY_A, per_input_pv, COMBINED_TODAY, COMBINED_TOTAL}) == 4
+        assert bases[per_input_pv].total == pytest.approx(20.0)  # 2 x 120 W x 5/60 h, in Wh
         # the combined series is the addition of both inputs, not overwritten by one of them
         assert bases[COMBINED_TOTAL].total == pytest.approx(0.98 + 0.02)
+
+    def test_the_constants_name_the_combined_integrals_deltasum(self) -> None:
+        assert _const.PV_DELTA_TODAY_ENTITY_ID == "sensor.effy_pv_deltasum_integral_today"
+        assert _const.PV_DELTA_TOTAL_ENTITY_ID == "sensor.effy_pv_deltasum_integral_total"
+        assert _const.PV_DELTA_INTEGRAL_TODAY_SUFFIX == "_delta_integral_today"
 
     async def test_an_unknown_time_zone_falls_back_to_utc_days_with_a_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

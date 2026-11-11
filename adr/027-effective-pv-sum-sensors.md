@@ -64,17 +64,18 @@ does.
 1. **PV delta integrals.** Per PV input
    `sensor.effy_<slug>_delta_integral_today`, name "<source name> delta integral
    today" (Wh if the effective unit is W, kWh if kW); combined
-   `sensor.effy_pv_delta_integral_today` and
-   `sensor.effy_pv_delta_integral_total` (kWh). All have device class energy and
-   state class `total`; *today* has `last_reset` at local midnight, *total*
-   none. Booking adds the delta to the live state at the time of the write,
-   whichever slot it concerns, so a correction to earlier days lands in today
-   and the value may go negative; it is not clamped. Effy resets *today* to 0 at
-   wall-clock local midnight and sets the new `last_reset`; a restored state of
-   an earlier day is reset the same way. They exist only while the entry has at
-   least one PV input and are removed from the registry otherwise (the per-input
-   one when its input is removed). There is no per-run sensor: the delta of a
-   period is the `change` of the statistic.
+   `sensor.effy_pv_deltasum_integral_today` and
+   `sensor.effy_pv_deltasum_integral_total` (kWh; IDs per the Amendment
+   2026-11-10). All have device class energy and state class `total`; *today*
+   has `last_reset` at local midnight, *total* none. Booking adds the delta to
+   the live state at the time of the write, whichever slot it concerns, so a
+   correction to earlier days lands in today and the value may go negative; it
+   is not clamped. Effy resets *today* to 0 at wall-clock local midnight and
+   sets the new `last_reset`; a restored state of an earlier day is reset the
+   same way. They exist only while the entry has at least one PV input and are
+   removed from the registry otherwise (the per-input one when its input is
+   removed). There is no per-run sensor: the delta of a period is the `change`
+   of the statistic.
 
 1. **Statistics belong to Home Assistant.** In normal operation Effy writes none
    for the PV delta integrals; the recorder compiles them from the live states.
@@ -175,6 +176,26 @@ unit `%`, `mean` and `state`, TASK-0045f).
 battery and comes back as discharge counts as "discharge" later; the README
 states this limit. One overall sensor, because Effy cannot observe which input
 fed which output.
+
+## Amendment — 2026-11-10 (the combined integrals' entity IDs read `deltasum`)
+
+**Reason:** TASK-0045c found that a PV source whose slug is `pv` (for example
+`sensor.pv`) gets the per-input ID `sensor.effy_pv_delta_integral_today`, which
+is the combined *today* ID of decision 3. Two sensors cannot have one entity ID
+or one statistic ID, and the derivation had to leave such an input out.
+
+**Decision:** The entity IDs (and so the statistic IDs) of the two integrals
+that combine all PV inputs are renamed: `sensor.effy_pv_deltasum_integral_today`
+and `sensor.effy_pv_deltasum_integral_total`. The per-input IDs stay
+`sensor.effy_<slug>_delta_integral_today`. With that the two kinds cannot
+collide: a per-input ID ends in `_delta_integral_today`, and no slug can turn
+that into `pv_deltasum_integral_…`. Nothing is skipped or warned about any more.
+The sensor names ("PV delta integral today", "PV delta integral total"), the
+published `series` values of decision 7 (`pv_delta_integral_today`,
+`pv_delta_integral_total`) and the unique IDs are not part of this decision and
+stay as they are.
+
+**Decided by:** human (2026-11-10, answering the open point of TASK-0045c)
 
 ## Amendments in other ADRs (written with this ADR, in force with it)
 
