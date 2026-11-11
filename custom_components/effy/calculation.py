@@ -129,6 +129,16 @@ def local_midnight(ts: datetime, tz: tzinfo) -> datetime:
     return datetime.combine(local.date(), time.min, tzinfo=tz)
 
 
+def next_local_midnight(ts: datetime, tz: tzinfo) -> datetime:
+    """The first local midnight after ``ts`` (wall clock: daylight saving is included).
+
+    At exactly a midnight it is the next one, never the same: the timer that resets the
+    *today* integrals (ADR-027 decision 3) is scheduled for it and must not fire at once.
+    """
+    local = ts.astimezone(tz)
+    return datetime.combine(local.date() + timedelta(days=1), time.min, tzinfo=tz)
+
+
 def slot_energy_steps(
     rows_5min: Mapping[datetime, float],
     rows_hourly: Mapping[datetime, float],

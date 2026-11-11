@@ -58,6 +58,14 @@ PV_SUM_TRANSLATION_KEY = "effective_pv_sum_now"
 PV_DELTA_INTEGRAL_TODAY_SUFFIX = "_delta_integral_today"
 PV_DELTA_TODAY_ENTITY_ID = "sensor.effy_pv_deltasum_integral_today"
 PV_DELTA_TOTAL_ENTITY_ID = "sensor.effy_pv_deltasum_integral_total"
+# The unique IDs (``<entry_id>_…``) follow the entity IDs, ``deltasum`` included: a per-input
+# unique ID ``<entry_id>_<slug>_delta_integral_today`` of a source named ``pv`` would otherwise
+# be the combined one's. The translation keys name the three kinds of sensor (TASK-0045d).
+PV_DELTA_TODAY_UNIQUE_ID_SUFFIX = "pv_deltasum_integral_today"
+PV_DELTA_TOTAL_UNIQUE_ID_SUFFIX = "pv_deltasum_integral_total"
+PV_DELTA_INPUT_TRANSLATION_KEY = "pv_input_delta_integral_today"
+PV_DELTA_TODAY_TRANSLATION_KEY = "pv_delta_integral_today"
+PV_DELTA_TOTAL_TRANSLATION_KEY = "pv_delta_integral_total"
 
 # The published contract (schema version, aggregations, entity IDs, keys) lives in
 # effy_exports.py, a standalone file other projects copy (ADR-021 Amendment 2026-10-23).

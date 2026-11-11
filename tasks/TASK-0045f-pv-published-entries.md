@@ -76,7 +76,21 @@ tests for each (`test_catalog`, `test_effy_exports`, `test_published_sensors`).
   `register_published` yet) (→ task: TASK-0045a-pv-combined-series, done).
   Replace the literal in `const.py` by an import from `effy_exports.py`.
 - The sensors of TASK-0045d-pv-delta-integral-sensors (→ task:
-  TASK-0045d-pv-delta-integral-sensors, open).
+  TASK-0045d-pv-delta-integral-sensors, done):
+  `sensor.EffyPvDeltaIntegralSensor(hass, entry, coordinator, kind, source_entity_id=None)`
+  in three kinds: per PV input (entity ID
+  `sensor.effy_<slug>_delta_integral_today`, unique ID
+  `<entry_id>_<slug>_delta_integral_today`, Wh or kWh, `_source_entity_id` the
+  input), combined today (`const.PV_DELTA_TODAY_ENTITY_ID` =
+  `sensor.effy_pv_deltasum_integral_today`, unique ID suffix
+  `const.PV_DELTA_TODAY_UNIQUE_ID_SUFFIX`) and combined total
+  (`const.PV_DELTA_TOTAL_ENTITY_ID`, `const.PV_DELTA_TOTAL_UNIQUE_ID_SUFFIX`),
+  kWh; all energy, state class `total`; created by `sensor._pv_delta_entities`;
+  **not registered with `register_published` yet**. The published `series`
+  values keep their names (`pv_delta_integral`, `pv_delta_integral_today`,
+  `pv_delta_integral_total`) although the combined entity IDs read `deltasum`
+  (ADR-027 Amendment 2026-11-10); the published `statistic_id` of an entry is
+  the sensor's entity ID.
 
 ## Delivered Artifacts
 

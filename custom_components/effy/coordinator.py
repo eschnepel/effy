@@ -123,7 +123,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import async_call_later, async_track_point_in_utc_time
 
 from .calculation import (
     DrainState,
@@ -131,12 +131,14 @@ from .calculation import (
     RunState,
     ValleyState,
     drain_state_from_restore,
+    next_local_midnight,
     rebuild_summary,
     run_state_from_restore,
     valley_state_from_restore,
 )
 from .const import CONF_DEBUG_EXPORT, DOMAIN
 from .debug_export import DIRECTORY, ExportOutcome, ExportRecord, export_to_file
+from .delta_integrals import Base, DeltaIntegral, DeltaIntegrals, Kind
 from .inputs import (
     all_input_ids,
     battery_hysteresis,
@@ -152,6 +154,7 @@ from .inputs import (
     soc_id,
 )
 from .history import (
+    _local_tz,
     async_probe_last_slot_ready,
     async_recalculate_history,
     async_recalculate_recent,
@@ -199,6 +202,8 @@ StandbyCallback = Callable[[DrainState], None]
 EfficiencyCallback = Callable[[RunState], None]
 # The valley machine's state after every slot job (ADR-023 decision 9).
 BatteryCallback = Callable[[ValleyState], None]
+# A PV delta integral after it changed: a booking, the midnight or the base (ADR-027 decision 3).
+DeltaIntegralCallback = Callable[[DeltaIntegral], None]
 
 
 def _next_slot_trigger_delay(
@@ -342,6 +347,12 @@ class EffyCoordinator:
         self._battery_hysteresis: float = battery_hysteresis(entry.options)
         self._battery_state: ValleyState | None = None
         self._battery_subscribers: list[BatteryCallback] = []
+        # The PV delta integrals (ADR-027 decisions 3 to 5, TASK-0045d): the live states the
+        # sensors show, the booking of every run's deltas and the reset at local midnight.
+        self._delta_integrals = DeltaIntegrals()
+        self._delta_subscribers: dict[str, DeltaIntegralCallback] = {}
+        self._unsub_midnight: Callable[[], None] | None = None
+        self._midnight_due: datetime | None = None
         # Descriptors of the Effy sensors that exist (ADR-021): each sensor registers
         # itself when added and unregisters when removed; the recalculated-from
         # sensor reads them when the closing step writes its state.
@@ -508,6 +519,100 @@ class EffyCoordinator:
         return _unsubscribe
 
     # ------------------------------------------------------------------
+    # PV delta integrals (ADR-027, TASK-0045d)
+    # ------------------------------------------------------------------
+
+    @property
+    def pv_delta_enabled(self) -> bool:
+        """The PV delta integrals exist only with at least one PV input (ADR-027 decision 3)."""
+        return bool(self._pv_input_ids)
+
+    def restore_delta_integral(
+        self,
+        entity_id: str,
+        kind: Kind,
+        source: str | None,
+        unit: str,
+        value: float | None,
+        last_reset: datetime | None,
+    ) -> DeltaIntegral:
+        """Register a delta integral sensor with what it restored (ADR-027 decision 5).
+
+        ``value`` is ``None`` when nothing was restored (the sensor is then unavailable until
+        its base arrives). A *today* integral whose ``last_reset`` is of an earlier local day
+        starts at 0 with today's midnight. Returns the live integral the sensor shows.
+        """
+        return self._delta_integrals.restore(
+            entity_id=entity_id,
+            kind=kind,
+            source=source,
+            unit=unit,
+            value=value,
+            last_reset=last_reset,
+            now=self._now(),
+            tz=_local_tz(self._hass),
+        )
+
+    def subscribe_delta_integral(
+        self, entity_id: str, cb: DeltaIntegralCallback
+    ) -> Callable[[], None]:
+        """Register a sensor's callback; it gets the integral after every change of it."""
+        self._delta_subscribers[entity_id] = cb
+
+        def _unsubscribe() -> None:
+            if self._delta_subscribers.get(entity_id) is cb:
+                del self._delta_subscribers[entity_id]
+
+        return _unsubscribe
+
+    def hand_over_delta_bases(
+        self, bases: Mapping[str, Base], units: Mapping[str, str] | None = None
+    ) -> None:
+        """Give the sensors the base the derivation wrote (ADR-027 decision 5).
+
+        ``bases`` is what ``history.async_derive_pv_delta_integrals`` returned, keyed by
+        statistic ID. Each sensor then shows exactly its base and is available; from then on
+        its input's deltas are booked. ``units`` optionally names the unit of each derived
+        series. Nothing in the integration calls this yet (TASK-0045e).
+        """
+        self._notify_delta_integrals(
+            self._delta_integrals.hand_over(bases, self._now(), _local_tz(self._hass), units=units)
+        )
+
+    def _delta_skip(self) -> frozenset[str]:
+        """The PV inputs without a base: a run neither computes nor books their deltas."""
+        return self._delta_integrals.skip_sources(self._pv_input_ids)
+
+    def _book_deltas(self, deltas: Mapping[str, tuple[float, str]] | None) -> None:
+        """Book the deltas of a run whose write has succeeded (ADR-027 decision 2)."""
+        self._notify_delta_integrals(self._delta_integrals.book(deltas))
+
+    def _notify_delta_integrals(self, changed: Iterable[DeltaIntegral]) -> None:
+        for integral in changed:
+            cb = self._delta_subscribers.get(integral.entity_id)
+            if cb is not None:
+                cb(integral)
+
+    def _schedule_midnight(self) -> None:
+        """Schedule the reset of the *today* integrals for the next local midnight."""
+        due = next_local_midnight(self._now(), _local_tz(self._hass))
+        self._midnight_due = due
+        self._unsub_midnight = async_track_point_in_utc_time(
+            self._hass, self._on_midnight, due.astimezone(timezone.utc)
+        )
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_midnight(self, _now: Any) -> None:
+        """Local midnight: both *today* kinds go to 0 with the midnight as ``last_reset``.
+
+        The midnight is the one the timer was set for, not the time the callback runs at.
+        The *total* is never reset. Always schedules the next midnight.
+        """
+        due = self._midnight_due or next_local_midnight(self._now(), _local_tz(self._hass))
+        self._notify_delta_integrals(self._delta_integrals.reset_today(due))
+        self._schedule_midnight()
+
+    # ------------------------------------------------------------------
     # Setup / teardown
     # ------------------------------------------------------------------
 
@@ -524,6 +629,8 @@ class EffyCoordinator:
             EVENT_RECORDER_5MIN_STATISTICS_GENERATED, self._on_recorder_statistics
         )
         self._schedule_next_slot_timer()
+        if self.pv_delta_enabled:
+            self._schedule_midnight()
 
     @callback  # type: ignore[untyped-decorator]
     def async_shutdown(self) -> None:
@@ -534,6 +641,9 @@ class EffyCoordinator:
         if self._unsub_slot_timer is not None:
             self._unsub_slot_timer()
             self._unsub_slot_timer = None
+        if self._unsub_midnight is not None:
+            self._unsub_midnight()
+            self._unsub_midnight = None
         task = self._slot_job_task
         if task is not None and not task.done():
             task.cancel()
@@ -826,16 +936,19 @@ class EffyCoordinator:
                 # for the lock for minutes, a later slot may be completed but not yet
                 # compiled: it is left to that slot's own job (TASK-0035).
                 now = min(now, slot + 2 * timedelta(minutes=SLOT_MINUTES) - timedelta(seconds=1))
-            # The fifth value, the PV deltas of this run (ADR-027 decision 2), is booked by
-            # TASK-0045d once the write has succeeded; nothing uses it yet.
-            _written, earliest, touched, last_values, _deltas = await async_recalculate_recent(
+            # The fifth value, the PV deltas of this run (ADR-027 decision 2), is booked as
+            # soon as the write has succeeded (it raises otherwise); an input without a base
+            # is left out of the run (``delta_skip``).
+            _written, earliest, touched, last_values, deltas = await async_recalculate_recent(
                 self._hass,
                 self._entry.options,
                 now,
                 energy_reading_cache=self.last_valid_energy_readings,
                 trigger_since=recent_trigger_since(self._last_recent_run, now),
                 storage=self._storage,
+                delta_skip=self._delta_skip(),
             )
+            self._book_deltas(deltas)
             # Only reached when the cycle completed (an exception above leaves
             # the marker alone, so the next cycle's trigger window covers this
             # one too). max(): cycles may overlap and finish out of order.
@@ -978,20 +1091,24 @@ class EffyCoordinator:
             export_kwargs: dict[str, Any] = {}
             if self._entry.options.get(CONF_DEBUG_EXPORT):
                 export_kwargs["export"] = self._debug_export_hook()
-            # The PV deltas (fifth value) are booked by TASK-0045d; nothing uses them yet.
+            # The PV deltas (fifth value) are booked as soon as the write has succeeded, like
+            # the slot job's; the button never writes the integrals' statistics (ADR-027
+            # decision 4).
             (
                 written,
                 recalculated_from,
                 touched,
                 last_values,
-                _deltas,
+                deltas,
             ) = await async_recalculate_history(
                 self._hass,
                 self._entry.options,
                 energy_reading_cache=self.last_valid_energy_readings,
                 storage=self._storage,
+                delta_skip=self._delta_skip(),
                 **export_kwargs,
             )
+            self._book_deltas(deltas)
             if touched:
                 self.notify_updated(touched, last_values)
             # The standby, efficiency and battery machines are rebuilt over the rewritten

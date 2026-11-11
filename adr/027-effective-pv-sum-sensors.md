@@ -190,12 +190,19 @@ and `sensor.effy_pv_deltasum_integral_total`. The per-input IDs stay
 `sensor.effy_<slug>_delta_integral_today`. With that the two kinds cannot
 collide: a per-input ID ends in `_delta_integral_today`, and no slug can turn
 that into `pv_deltasum_integral_…`. Nothing is skipped or warned about any more.
-The sensor names ("PV delta integral today", "PV delta integral total"), the
+The sensor names ("PV delta integral today", "PV delta integral total"), and the
 published `series` values of decision 7 (`pv_delta_integral_today`,
-`pv_delta_integral_total`) and the unique IDs are not part of this decision and
-stay as they are.
+`pv_delta_integral_total`) are not part of this decision and stay as they are.
+The unique IDs follow the entity IDs, for the same reason (TASK-0045d): the
+combined ones are `<entry_id>_pv_deltasum_integral_today` and
+`<entry_id>_pv_deltasum_integral_total`, the per-input ones
+`<entry_id>_<slug>_delta_integral_today`; otherwise a source named `pv` would
+share its unique ID with the combined *today* sensor, which the entity registry
+refuses.
 
-**Decided by:** human (2026-11-10, answering the open point of TASK-0045c)
+**Decided by:** human (2026-11-10, answering the open point of TASK-0045c: the
+rename of the entity IDs); Lead Agent (the same rule for the unique IDs, a
+consequence of it, to be confirmed by the human with TASK-0045d)
 
 ## Amendments in other ADRs (written with this ADR, in force with it)
 

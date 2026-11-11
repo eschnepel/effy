@@ -91,6 +91,15 @@
       },
       "effective_pv_sum_now": {
         "name": "Effective PV Sum now"
+      },
+      "pv_input_delta_integral_today": {
+        "name": "{source_name} delta integral today"
+      },
+      "pv_delta_integral_today": {
+        "name": "PV delta integral today"
+      },
+      "pv_delta_integral_total": {
+        "name": "PV delta integral total"
       }
     }
   },

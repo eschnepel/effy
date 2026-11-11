@@ -98,7 +98,20 @@ orchestration and the reader of per-input statistics), and tests for each.
   `calculation.slot_energy_steps`, `integral_rows`, `combined_integral_rows`;
   `Storage.stored_means`).
 - The sensors, booking and base handover (→ task:
-  TASK-0045d-pv-delta-integral-sensors).
+  TASK-0045d-pv-delta-integral-sensors, done):
+  `coordinator.EffyCoordinator.hand_over_delta_bases(bases, units=None)` takes
+  what `history.async_derive_pv_delta_integrals` returned (keyed by statistic
+  ID, which is the sensor's entity ID) and makes each sensor show exactly its
+  base, available; `units` optionally names the unit each derived series was
+  written in so that the sensor continues in it. `coordinator.pv_delta_enabled`,
+  the live integrals `coordinator._delta_integrals`
+  (`delta_integrals.DeltaIntegrals.has_base(source)` says whether an input has a
+  base: the slot job and the button already pass `delta_skip=` for those without
+  one and book the deltas after the write). A base of an earlier local day is
+  reset like a restored state. The combined IDs read `deltasum` (ADR-027
+  Amendment 2026-11-10): `sensor.effy_pv_deltasum_integral_today` / `_total`;
+  per input `sensor.effy_<slug>_delta_integral_today`; `delta_integrals.py`,
+  `sensor.EffyPvDeltaIntegralSensor`. Nothing calls `hand_over_delta_bases` yet.
 
 ## Delivered Artifacts
 

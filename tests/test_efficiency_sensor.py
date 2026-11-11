@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC as UTC_TZ
 from datetime import datetime
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -67,6 +67,13 @@ class _Registry:
     def async_remove(self, entity_id: str) -> None:
         self.removed.append(entity_id)
 
+    def entries(self, _entry_id: str) -> list[Any]:
+        """What ``er.async_entries_for_config_entry`` lists: every known entity."""
+        return [
+            SimpleNamespace(domain=domain, platform=platform, unique_id=unique_id, entity_id=eid)
+            for (domain, platform, unique_id), eid in self.known.items()
+        ]
+
 
 _registry: list[_Registry] = [_Registry({})]
 
@@ -94,6 +101,7 @@ def _load() -> tuple[ModuleType, ModuleType]:
             "inputs",
             "catalog",
             "calculation",
+            "delta_integrals",
             "sensor_utils",
             "coordinator",
             "sensor",
@@ -110,6 +118,7 @@ def _load() -> tuple[ModuleType, ModuleType]:
 
     class _DeviceClass:
         POWER = "power"
+        ENERGY = "energy"
         TIMESTAMP = "timestamp"
 
     class _StateClass:
@@ -132,7 +141,11 @@ def _load() -> tuple[ModuleType, ModuleType]:
         stub("homeassistant.helpers")
         stub("homeassistant.helpers.entity", DeviceInfo=dict)
         stub("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
-        stub("homeassistant.helpers.entity_registry", async_get=lambda _hass: _registry[0])
+        stub(
+            "homeassistant.helpers.entity_registry",
+            async_get=lambda _hass: _registry[0],
+            async_entries_for_config_entry=lambda registry, entry_id: registry.entries(entry_id),
+        )
         sys.modules["homeassistant.helpers"].entity_registry = sys.modules[  # type: ignore[attr-defined]
             "homeassistant.helpers.entity_registry"
         ]
@@ -161,6 +174,7 @@ def _load() -> tuple[ModuleType, ModuleType]:
             "inputs",
             "catalog",
             "calculation",
+            "delta_integrals",
             "sensor_utils",
             "sensor",
         ):

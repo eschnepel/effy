@@ -45,6 +45,7 @@ from tests.support import role_options
 from unittest.mock import MagicMock
 
 import pytest
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from effy.coordinator import EffyCoordinator as EffyCoordinator
@@ -70,7 +71,11 @@ _stub(
     EVENT_RECORDER_5MIN_STATISTICS_GENERATED="recorder_5min_statistics_generated",
 )
 _stub("homeassistant.helpers")
-_stub("homeassistant.helpers.event", async_call_later=MagicMock())
+_stub(
+    "homeassistant.helpers.event",
+    async_call_later=MagicMock(),
+    async_track_point_in_utc_time=MagicMock(),
+)
 _stub("homeassistant.components")
 
 
@@ -151,9 +156,12 @@ def _fake_create_storage(hass: Any, *, clock: Any, warn: Any = None) -> _FakeSto
 
 
 # What the real functions return: the four values the tests below describe and, fifth, the PV
-# deltas (TASK-0045b), which the coordinator does not use yet. The fakes append an empty one.
+# deltas (TASK-0045b), which the coordinator books (TASK-0045d). The fakes append the ones in
+# ``_deltas_return`` (empty unless a test sets them) and note the ``delta_skip`` they were given.
 _Delta = dict[str, tuple[float, str]]
 _RecalcResult = tuple[int, datetime | None, set[str], dict[str, tuple[float, str]], _Delta | None]
+_deltas_return: list[_Delta | None] = [{}]
+_delta_skip_seen: list[tuple[str, frozenset[str]]] = []
 
 
 async def _fake_async_recalculate_recent(
@@ -163,8 +171,10 @@ async def _fake_async_recalculate_recent(
     energy_reading_cache: Any = None,
     trigger_since: Any = None,
     storage: Any = None,
+    delta_skip: frozenset[str] = frozenset(),
 ) -> _RecalcResult:
     _storage_seen.append(("recalculate_recent", storage))
+    _delta_skip_seen.append(("recent", delta_skip))
     _history_calls.append((hass, entry_options, now, energy_reading_cache))
     _history_trigger_since.append(trigger_since)
     if _job_hook[0] is not None:
@@ -172,7 +182,7 @@ async def _fake_async_recalculate_recent(
     if _history_raise_next[0]:
         _history_raise_next[0] = False
         raise RuntimeError("recorder exploded")
-    return (*_history_return_value[0], {})
+    return (*_history_return_value[0], _deltas_return[0])
 
 
 def _fake_recent_trigger_since(previous_run: datetime | None, now: datetime) -> datetime:
@@ -215,9 +225,11 @@ async def _fake_async_recalculate_history(
     entry_options: Any,
     energy_reading_cache: Any = None,
     storage: Any = None,
+    delta_skip: frozenset[str] = frozenset(),
     **extra: Any,
 ) -> _RecalcResult:
     _storage_seen.append(("recalculate_history", storage))
+    _delta_skip_seen.append(("history", delta_skip))
     _history_full_calls.append((hass, entry_options, energy_reading_cache))
     _storage_events.append("history")
     _export_seen.append(extra)
@@ -232,7 +244,7 @@ async def _fake_async_recalculate_history(
         record.window_start = _ts(0, 0)
         record.result = {"rows_written": 0, "recalculated_from": None}
         _export_outcomes.append(await export(record))
-    return (*_history_full_return_value[0], {})
+    return (*_history_full_return_value[0], _deltas_return[0])
 
 
 _hourly_calls: list[tuple[dict[str, str], datetime, bool]] = []
@@ -412,6 +424,7 @@ _history_stub.async_recalculate_history = _fake_async_recalculate_history  # typ
 _history_stub.async_recalculate_recent = _fake_async_recalculate_recent  # type: ignore[attr-defined]
 _history_stub.recent_trigger_since = _fake_recent_trigger_since  # type: ignore[attr-defined]
 _history_stub.create_storage = _fake_create_storage  # type: ignore[attr-defined]
+_history_stub._local_tz = lambda hass: ZoneInfo(hass.config.time_zone)  # type: ignore[attr-defined]
 _history_stub.__package__ = "effy"
 sys.modules["effy.history"] = _history_stub
 _effy_pkg.history = _history_stub  # type: ignore[attr-defined]
@@ -914,6 +927,8 @@ def _reset_slot_job_fakes() -> None:
     _lock_probe[0] = None
     _history_calls.clear()
     _history_full_calls.clear()
+    _delta_skip_seen.clear()
+    _deltas_return[0] = {}
     _export_seen.clear()
     _export_outcomes.clear()
     _probe_calls.clear()

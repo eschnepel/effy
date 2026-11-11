@@ -21,6 +21,10 @@ EffyPvSumSensor (TASK-0045a, ADR-027 decision 1) is the effective series' siblin
 PV combined series: the effective values of all PV inputs added up, in W. Like the
 effective sensors it only receives the live push after a recalculation and restores its state;
 it exists only while a PV input is configured.
+EffyPvDeltaIntegralSensor (TASK-0045d, ADR-027 decision 3) is the PV delta integral: per PV
+input, and combined *today* and *total*. Its state is the coordinator's live integral (booked
+after every write, reset at local midnight, started from the base the derivation wrote);
+Home Assistant compiles its statistics. Not yet in the published list (TASK-0045f).
 EffyStandbyPowerSensor (TASK-0005 Stage 2, ADR-018) is the one sensor with a real
 live state of its own: the battery system's standby power, estimated by the
 coordinator's standby machine after every slot job. It exists only when at
@@ -65,11 +69,20 @@ from .const import (
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
+    PV_DELTA_INPUT_TRANSLATION_KEY,
+    PV_DELTA_INTEGRAL_TODAY_SUFFIX,
+    PV_DELTA_TODAY_ENTITY_ID,
+    PV_DELTA_TODAY_TRANSLATION_KEY,
+    PV_DELTA_TODAY_UNIQUE_ID_SUFFIX,
+    PV_DELTA_TOTAL_ENTITY_ID,
+    PV_DELTA_TOTAL_TRANSLATION_KEY,
+    PV_DELTA_TOTAL_UNIQUE_ID_SUFFIX,
     PV_SUM_ENTITY_ID,
     PV_SUM_TRANSLATION_KEY,
     PV_SUM_UNIQUE_ID_SUFFIX,
 )
 from .coordinator import EffyCoordinator
+from .delta_integrals import TODAY, TOTAL, DeltaIntegral, Kind
 from .effy_exports import (
     EFFY_ATTR_MAX_HISTORY_DAYS,
     EFFY_ATTR_RESTORED_AS_OF,
@@ -217,6 +230,7 @@ async def async_setup_entry(
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
     entities.extend(_pv_sum_entities(hass, entry, coordinator))
+    entities.extend(_pv_delta_entities(hass, entry, coordinator))
     entities.extend(_standby_entities(hass, entry, coordinator))
     entities.extend(_efficiency_entities(hass, entry, coordinator))
     entities.extend(_battery_efficiency_entities(hass, entry, coordinator))
@@ -248,6 +262,40 @@ def _pv_sum_entities(
     if stale is not None:
         registry.async_remove(stale)
     return []
+
+
+def _pv_delta_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """The PV delta integrals, only with a PV input (ADR-027 decision 3).
+
+    One *today* integral per PV input and the combined *today* and *total* ones. Every such
+    entity that is in the registry but not wanted any more (the PV inputs were removed in the
+    options, or one of them) is removed from the registry with its input; the statistics stay.
+    """
+    entities: list[SensorEntity] = []
+    if coordinator.pv_input_ids:
+        entities.extend(
+            EffyPvDeltaIntegralSensor(hass, entry, coordinator, TODAY, source)
+            for source in coordinator.pv_input_ids
+        )
+        entities.append(EffyPvDeltaIntegralSensor(hass, entry, coordinator, TODAY))
+        entities.append(EffyPvDeltaIntegralSensor(hass, entry, coordinator, TOTAL))
+    wanted = {str(entity.unique_id) for entity in entities}
+    combined = {
+        f"{entry.entry_id}_{PV_DELTA_TODAY_UNIQUE_ID_SUFFIX}",
+        f"{entry.entry_id}_{PV_DELTA_TOTAL_UNIQUE_ID_SUFFIX}",
+    }
+    registry = er.async_get(hass)
+    for registered in list(er.async_entries_for_config_entry(registry, entry.entry_id)):
+        unique_id = registered.unique_id
+        is_delta = unique_id in combined or (
+            unique_id.startswith(f"{entry.entry_id}_")
+            and unique_id.endswith(PV_DELTA_INTEGRAL_TODAY_SUFFIX)
+        )
+        if registered.domain == "sensor" and is_delta and unique_id not in wanted:
+            registry.async_remove(registered.entity_id)
+    return entities
 
 
 def _standby_entities(
@@ -885,6 +933,168 @@ class EffyPvSumSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     def _on_updated(self, value: float | None, unit: str | None) -> None:
         """Push the last-written slot's value as the live state (ADR-016)."""
         self._attr_native_value = round(value, 3) if value is not None else None
+        self.async_write_ha_state()
+
+
+_DELTA_UNITS = ("Wh", "kWh")
+
+
+def _parse_last_reset(value: Any) -> datetime | None:
+    """A restored ``last_reset`` attribute; ``None`` if it is missing or not a full timestamp."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+class EffyPvDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """A PV delta integral: the energy the recalculations added to or took from the PV history.
+
+    Three kinds (ADR-027 decision 3), all device class energy and state class ``total``: the
+    *today* integral of one PV input (``source_entity_id`` given; Wh if its effective unit is
+    W, kWh if kW), and the combined *today* and *total* ones (kWh, no source). *Today* has a
+    ``last_reset`` at local midnight, *total* none.
+
+    The state is the coordinator's live integral, shown at full precision: the coordinator
+    books each run's PV delta after its write, resets *today* at local midnight and hands over
+    the base the derivation wrote (``DeltaIntegrals``). The sensor is *unavailable* until it
+    has a base, restored or handed over; Home Assistant compiles its statistics from the
+    states (decision 4). The last state, with its ``last_reset``, is restored after a restart
+    (ADR-021 section 6); a *today* state of an earlier day is reset by the coordinator. Not yet
+    in the published list (TASK-0045f).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+        kind: Kind,
+        source_entity_id: str | None = None,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._source_entity_id = source_entity_id
+        self._slug = slugify(source_entity_id.split(".")[-1]) if source_entity_id else ""
+        if source_entity_id is not None:
+            self._kind: Kind = TODAY  # a PV input has a *today* integral only
+            self._entity_id = f"sensor.effy_{self._slug}{PV_DELTA_INTEGRAL_TODAY_SUFFIX}"
+            self._unique_id = f"{entry.entry_id}_{self._slug}{PV_DELTA_INTEGRAL_TODAY_SUFFIX}"
+            self._attr_translation_key = PV_DELTA_INPUT_TRANSLATION_KEY
+        elif kind == TODAY:
+            self._kind = TODAY
+            self._entity_id = PV_DELTA_TODAY_ENTITY_ID
+            self._unique_id = f"{entry.entry_id}_{PV_DELTA_TODAY_UNIQUE_ID_SUFFIX}"
+            self._attr_translation_key = PV_DELTA_TODAY_TRANSLATION_KEY
+        else:
+            self._kind = TOTAL
+            self._entity_id = PV_DELTA_TOTAL_ENTITY_ID
+            self._unique_id = f"{entry.entry_id}_{PV_DELTA_TOTAL_UNIQUE_ID_SUFFIX}"
+            self._attr_translation_key = PV_DELTA_TOTAL_TRANSLATION_KEY
+        self._integral: DeltaIntegral | None = None
+        self._unsub_integral: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return self._unique_id
+
+    @property
+    def entity_id(self) -> str:
+        return self._entity_id
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    @property
+    def translation_placeholders(self) -> dict[str, str]:
+        """The source's name for the per-input sensor, like the other per-source sensors."""
+        if self._source_entity_id is None:
+            return {}
+        state = self._hass.states.get(self._source_entity_id)
+        friendly = state.attributes.get("friendly_name", self._slug) if state else self._slug
+        return {"source_name": str(friendly)}
+
+    @property
+    def available(self) -> bool:
+        return self._integral is not None and self._integral.available
+
+    @property
+    def native_value(self) -> float | None:
+        return self._integral.state if self._integral is not None else None
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        if self._integral is not None:
+            return self._integral.unit
+        return self._unit_for(None)
+
+    @property
+    def last_reset(self) -> datetime | None:
+        if self._kind == TOTAL or self._integral is None:
+            return None
+        return self._integral.last_reset
+
+    def _unit_for(self, restored: str | None) -> str:
+        """Wh or kWh: what the restored state said, else what the source's unit implies.
+
+        Never ``None``: the energy device class has no state without a valid unit. Without a
+        restored unit and without a source state (it may not have loaded yet) the unit is Wh;
+        the derivation's hand-over can name the unit of its statistics (``hand_over``).
+        """
+        if self._source_entity_id is None:
+            return "kWh"
+        if restored in _DELTA_UNITS:
+            return str(restored)
+        unit = get_sensor_meta(self._hass, self._source_entity_id).get("unit")
+        if isinstance(unit, str):
+            return "Wh" if effective_unit_for(unit) == "W" else "kWh"
+        return "Wh"
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last state, give it to the coordinator and subscribe (ADR-027 decision 5).
+
+        The coordinator keeps the live integral; it resets a *today* state of an earlier day
+        and starts the sensor unavailable if nothing was restored. Restoring comes first, so
+        a push is never overwritten by it.
+        """
+        await super().async_added_to_hass()
+        value, unit, attrs = await _async_restore_measurement(self)
+        last_reset = _parse_last_reset(attrs.get("last_reset")) if self._kind == TODAY else None
+        self._integral = self._coordinator.restore_delta_integral(
+            self.entity_id,
+            self._kind,
+            self._source_entity_id,
+            self._unit_for(unit),
+            value,
+            last_reset,
+        )
+        self._unsub_integral = self._coordinator.subscribe_delta_integral(
+            self.entity_id, self._on_integral
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_integral is not None:
+            self._unsub_integral()
+            self._unsub_integral = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_integral(self, integral: DeltaIntegral) -> None:
+        """The integral changed (a booking, the midnight, the base): publish its state as is."""
+        self._integral = integral
         self.async_write_ha_state()
 
 

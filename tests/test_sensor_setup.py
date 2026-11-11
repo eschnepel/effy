@@ -148,6 +148,9 @@ class TestSetupEntry:
             ("EffyDerivedPowerSensor", OUT_E),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
+            ("EffyPvDeltaIntegralSensor", None),  # combined today
+            ("EffyPvDeltaIntegralSensor", None),  # combined total
         ]
         assert tracker.calls == [] and entry.unloads == []  # nothing is waiting
         assert platform.coordinator.refreshes == 1  # one recalculation on first load
@@ -169,6 +172,9 @@ class TestSetupEntry:
             ("EffySmoothedSensor", PV_W),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
+            ("EffyPvDeltaIntegralSensor", None),  # combined today
+            ("EffyPvDeltaIntegralSensor", None),  # combined total
         ]
         ((hass, waiting_for, callback),) = tracker.calls
         assert hass is platform.hass
@@ -207,6 +213,9 @@ class TestEpsSensorSetup:
             ("EffySmoothedSensor", self.EPS),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
+            ("EffyPvDeltaIntegralSensor", None),  # combined today
+            ("EffyPvDeltaIntegralSensor", None),  # combined total
         ]
         assert tracker.calls == []
 
@@ -239,6 +248,9 @@ class TestEpsSensorSetup:
             ("EffySmoothedSensor", PV_W),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
+            ("EffyPvDeltaIntegralSensor", None),  # combined today
+            ("EffyPvDeltaIntegralSensor", None),  # combined total
         ]
 
     def test_the_names_follow_the_other_series_sensors(self) -> None:
