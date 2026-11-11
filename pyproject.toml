@@ -33,6 +33,7 @@ dev = [
   "pytest-asyncio",
   "pytest-cov",
   "ruff",
+  "tzdata; sys_platform == 'win32'",
   "voluptuous",
 ]
 

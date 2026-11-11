@@ -9,9 +9,10 @@
 
 The human decided (2026-11-10) on the open point of TASK-0045c: the entity IDs
 of the two integrals that combine all PV inputs are renamed to
-`sensor.effy_pv_deltasum_integral_today` and `sensor.effy_pv_deltasum_integral_total`.
-Change only the artifacts that carry those IDs and drop the collision rule that
-is no longer needed. TASK-0045c stays `done` and is not reopened.
+`sensor.effy_pv_deltasum_integral_today` and
+`sensor.effy_pv_deltasum_integral_total`. Change only the artifacts that carry
+those IDs and drop the collision rule that is no longer needed. TASK-0045c stays
+`done` and is not reopened.
 
 ## Acceptance Criteria
 
@@ -41,10 +42,10 @@ is no longer needed. TASK-0045c stays `done` and is not reopened.
 ## Consumed Interfaces
 
 - `const.PV_DELTA_INTEGRAL_TODAY_SUFFIX`, `const.PV_DELTA_TODAY_ENTITY_ID`,
-  `const.PV_DELTA_TOTAL_ENTITY_ID` in `custom_components/effy/const.py`
-  (→ task: TASK-0045c-delta-derivation).
-- `history.async_derive_pv_delta_integrals`, `history._pv_delta_integral_id`
-  in `custom_components/effy/history.py` (→ task: TASK-0045c-delta-derivation).
+  `const.PV_DELTA_TOTAL_ENTITY_ID` in `custom_components/effy/const.py` (→ task:
+  TASK-0045c-delta-derivation).
+- `history.async_derive_pv_delta_integrals`, `history._pv_delta_integral_id` in
+  `custom_components/effy/history.py` (→ task: TASK-0045c-delta-derivation).
 
 ## Delivered Artifacts
 
@@ -56,8 +57,10 @@ is no longer needed. TASK-0045c stays `done` and is not reopened.
   collision skip and its warning are removed; the returned dict is keyed by the
   new combined IDs. No other symbol changed.
 - Tests: `tests/test_delta_derivation.py` constants renamed; the guard test is
-  replaced by `test_a_source_named_pv_is_derived_like_any_other_beside_the_combined_ones`
-  and `test_the_constants_name_the_combined_integrals_deltasum` (32 → 33 tests there).
+  replaced by
+  `test_a_source_named_pv_is_derived_like_any_other_beside_the_combined_ones`
+  and `test_the_constants_name_the_combined_integrals_deltasum` (32 → 33 tests
+  there).
 - External dependencies added: none.
 - Reviewer (inline, no sub-agent available): PASS. Acceptance criteria met; the
   change stays within ADR-027 Amendment 2026-11-10; no other file references the
