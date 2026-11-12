@@ -43,6 +43,7 @@ class _Coordinator:
     charge_id: str | None = OUT
     grid_export_id: str | None = None
     eps_id: str | None = None
+    additional_ids: list[str] = []
 
     def __init__(self) -> None:
         self.recalculated_from: datetime | None = None

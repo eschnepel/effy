@@ -68,14 +68,17 @@ PINNED: dict[str, object] = {
     "EFFY_DIRECTION_INPUT": "input",
     "EFFY_DIRECTION_OUTPUT": "output",
     "EFFY_DIRECTION_BOTH": "both",
+    "EFFY_DIRECTION_UNKNOWN": "unknown",
     "EFFY_ROLE_PV": "pv",
     "EFFY_ROLE_BMS": "bms",
     "EFFY_ROLE_EPS": "eps",
+    "EFFY_ROLE_OTHER": "other",
     "EFFY_FUNCTION_GRID_IMPORT": "grid_import",
     "EFFY_FUNCTION_DISCHARGE": "discharge",
     "EFFY_FUNCTION_CHARGE": "charge",
     "EFFY_FUNCTION_GRID_EXPORT": "grid_export",
     "EFFY_FUNCTION_EPS": "eps",
+    "EFFY_FUNCTION_UNKNOWN": "unknown",
     "EFFY_AGGREGATION_MEAN": "mean",
     "EFFY_AGGREGATION_MIN": "min",
     "EFFY_AGGREGATION_MAX": "max",
@@ -209,11 +212,13 @@ class TestTheTypesMatchTheConstants:
             exports.EFFY_DIRECTION_INPUT,
             exports.EFFY_DIRECTION_OUTPUT,
             exports.EFFY_DIRECTION_BOTH,
+            exports.EFFY_DIRECTION_UNKNOWN,
         }
         assert set(typing.get_args(exports.EffyRole)) == {
             exports.EFFY_ROLE_PV,
             exports.EFFY_ROLE_BMS,
             exports.EFFY_ROLE_EPS,
+            exports.EFFY_ROLE_OTHER,
         }
         assert set(typing.get_args(exports.EffyFunction)) == {
             exports.EFFY_FUNCTION_GRID_IMPORT,
@@ -221,6 +226,7 @@ class TestTheTypesMatchTheConstants:
             exports.EFFY_FUNCTION_CHARGE,
             exports.EFFY_FUNCTION_GRID_EXPORT,
             exports.EFFY_FUNCTION_EPS,
+            exports.EFFY_FUNCTION_UNKNOWN,
         }
 
     def test_the_schema_version_is_still_one_because_function_is_additive(self) -> None:

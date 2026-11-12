@@ -134,3 +134,41 @@ class TestNothingElseChanges:
         _setup(_options())
         assert "add_update_listener" not in _CALLS
         assert "async_update_entry" not in _CALLS  # storing the signature is the coordinator's
+
+
+class TestAdditionalSensors:
+    """TASK-0047 (ADR-028 decision 4): the list of additional sensors is part of the signature,
+    so a change of it recalculates the history by itself."""
+
+    A, B = "sensor.house_grid_import", "sensor.house_power"
+    KEY = "additional_sensors"
+
+    def test_adding_one_starts_the_recalculation(self) -> None:
+        _setup(_options(**{self.KEY: [self.A, self.B]}), stored=_signature(**{self.KEY: [self.A]}))
+        assert len(_BACKGROUND) == 1
+
+    def test_the_first_one_of_an_entry_that_had_none_starts_it(self) -> None:
+        _setup(_options(**{self.KEY: [self.A]}), stored=_signature())
+        assert len(_BACKGROUND) == 1
+
+    def test_removing_one_starts_it(self) -> None:
+        _setup(_options(**{self.KEY: [self.A]}), stored=_signature(**{self.KEY: [self.A, self.B]}))
+        assert len(_BACKGROUND) == 1
+
+    def test_the_task_carries_the_signature_with_the_list(self) -> None:
+        _setup(_options(**{self.KEY: [self.B, self.A]}), stored=_signature())
+        (_name, signature) = _BACKGROUND[0]
+        assert signature[self.KEY] == sorted([self.A, self.B])
+
+    def test_the_same_list_in_another_order_starts_nothing(self) -> None:
+        _setup(
+            _options(**{self.KEY: [self.B, self.A]}),
+            stored=_signature(**{self.KEY: [self.A, self.B]}),
+        )
+        assert _BACKGROUND == []
+
+    def test_a_signature_stored_before_the_list_existed_starts_one_more_recalculation(self) -> None:
+        old = _signature()
+        del old[self.KEY]
+        _setup(_options(), stored=old)
+        assert len(_BACKGROUND) == 1

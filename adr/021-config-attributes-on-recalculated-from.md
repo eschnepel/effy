@@ -349,3 +349,22 @@ and the aggregation.
 
 **Decided by:** human (design interview 2026-11-07), formalized by the Lead
 Agent
+
+## Amendment — 2026-11-12 (additional sensors; in force with ADR-028, TASK-0047)
+
+**Reason:** ADR-028 gives any sensor that has no role in Effy the series an
+input gets (a derived power or a smoothed series). Their entries have no role,
+no direction and no function that Effy knows, yet the keys `role`, `direction`
+and `function` are always present for a source series.
+
+**Decision:** `role` gains the value `other`, `direction` and `function` the
+value `unknown`, for the `derived_power` or `smoothed` entry of an additional
+sensor (`source_entity_id` is the sensor). The `function` key is present with
+the value `unknown`, not absent and not null (human, 2026-11-09: "as this all is
+unknown"). All three are additive values: `schema_version` stays 1; a reader
+that picks a counter by `function`, a flow by `direction` or a PV string by
+`role` never selects such an entry, and a reader that does not know the values
+ignores it. `effy_exports.py` gets `EFFY_ROLE_OTHER`, `EFFY_DIRECTION_UNKNOWN`
+and `EFFY_FUNCTION_UNKNOWN`.
+
+**Decided by:** human (2026-11-09), formalized by the Lead Agent

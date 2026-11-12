@@ -1,9 +1,10 @@
 # ADR-028 – Additional Sensors with Derived Power and Smoothed Series
 
-**Date:** 2026-11-09 **Status:** Draft (Gate 1 pending). The decisions are the
-human's answers of 2026-11-09 to the questions of TASK-0047; the text was
-written by the Lead Agent and has not been read by the human. Terms follow
-`GLOSSARY.md`.
+**Date:** 2026-11-09 **Status:** Accepted 2026-11-12 — by the human's
+instruction in chat to work on TASK-0047 (the ADR's Gate 2), as for ADR-023. The
+decisions are the human's answers of 2026-11-09 to the questions of TASK-0047;
+the text was written by the Lead Agent and has not been read line by line by the
+human. Terms follow `GLOSSARY.md`.
 
 ---
 
@@ -54,3 +55,44 @@ effective, standby, efficiency or battery calculation.
 - `direction` and `function` `unknown` are new values of existing contract keys.
 - Until the button (or the signature of ADR-027) runs, a new sensor has no
   history.
+
+## Amendment — 2026-11-12 (implementation, TASK-0047)
+
+**Reason:** the implementation had to settle points the decisions leave open.
+
+**Decision:**
+
+1. **Unique ID.** The Effy entity of an additional sensor has the unique ID
+   `<entry_id>_additional-<slug>_power` (or `_smoothed`); its entity ID is the
+   input's, `sensor.effy_<slug>_power` / `_smoothed`. The hyphen cannot be part
+   of a slug, so no input's entity can have such an ID and the registry cleanup
+   of a sensor taken out of the list finds exactly the additional ones. A sensor
+   still in the list keeps both of its possible entities (the other family is
+   built late when its state appears).
+1. **Slot union.** The additional sensors are fetched, converted and smoothed
+   with the inputs, but their rows are not in the slot union the waterfall runs
+   over: the effective rows are the same with and without them, a slot that only
+   an additional sensor has starts no waterfall slot.
+1. **Rewrite range.** The slot job's rewrite range stays global (ADR-014): a
+   jump of an additional counter extends it for every series, like any
+   counter's. The effective rows that this rewrites are recomputed from the same
+   data, and unchanged rows are not written (ADR-024).
+1. **Role check at read time.** A sensor listed as additional that also has a
+   role in the options (a hand-edited entry) is not an additional sensor: the
+   options flow refuses it, and `inputs.additional_ids` drops it.
+1. **Formula signature.** The signature of ADR-027 decision 6 holds the sorted
+   list under the option key `additional_sensors` (empty when there is none). An
+   entry that stored the earlier signature differs from it and recalculates once
+   more at its first start.
+1. **Unit check.** A sensor that reports a unit other than W, kW, Wh or kWh is
+   refused (`additional_unit_not_supported`); a sensor without a unit or without
+   a state is accepted, as for the capacity entity.
+
+**Known limit (not run against a real Home Assistant):** a sensor moved from a
+role to the additional list keeps its old role entity in the registry, as a
+sensor taken out of a role always did. The new additional entity has the same
+entity ID and a different unique ID, so the registry may give it another entity
+ID until the old entity is removed by hand. The cleanup deliberately touches
+additional entities only.
+
+**Decided by:** Lead Agent (◇ formalization), to be confirmed by the human

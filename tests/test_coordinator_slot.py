@@ -658,6 +658,18 @@ class TestEffyCoordinatorShell:
         assert coord.bms_input_ids == ["sensor.grid_in"]  # no BMS input: the standby is unaffected
         assert coord.pv_input_ids == ["sensor.pv"]
 
+    def test_exposes_the_additional_sensors_and_they_are_in_no_input_or_output_list(self) -> None:
+        """ADR-028: a series each, no role. A copy, so the caller cannot change the options."""
+        entry = _FakeEntry(["sensor.pv"], ["sensor.charge"], ["sensor.grid_in"])
+        assert EffyCoordinator(_FakeHass(), entry).additional_ids == []  # unset: nothing changes
+        entry.options["additional_sensors"] = ["sensor.house_grid", "sensor.house_power"]
+        coord = EffyCoordinator(_FakeHass(), entry)
+        assert coord.additional_ids == ["sensor.house_grid", "sensor.house_power"]
+        coord.additional_ids.append("sensor.x")
+        assert coord.additional_ids == ["sensor.house_grid", "sensor.house_power"]
+        assert coord._input_ids == ["sensor.pv", "sensor.grid_in"]
+        assert coord._output_ids == ["sensor.charge"]
+
     def test_an_unset_role_has_no_entity_and_the_standby_sensor_follows_the_bms_inputs(
         self,
     ) -> None:

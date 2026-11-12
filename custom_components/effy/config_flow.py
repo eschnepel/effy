@@ -10,7 +10,9 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    ADDITIONAL_UNITS,
     CAPACITY_UNITS,
+    CONF_ADDITIONAL_SENSORS,
     CONF_CAPACITY_ENTITY,
     CONF_CHARGE_SENSOR,
     CONF_DEBUG_EXPORT,
@@ -84,6 +86,7 @@ def _build_schema(
     charge_sensor: str | None = None,
     grid_export_sensor: str | None = None,
     eps_sensor: str | None = None,
+    additional_sensors: list[str] | None = None,
     soc_sensor: str | None = None,
     capacity_entity: str | None = None,
     valley_hysteresis: float = DEFAULT_VALLEY_HYSTERESIS,
@@ -109,6 +112,13 @@ def _build_schema(
         schema[marker] = picker
     marker, picker = _picker(CONF_EPS_SENSOR, eps_sensor, device_class=_EPS_DEVICE_CLASSES)
     schema[marker] = picker
+    # The additional sensors (ADR-028): any sensor, no device or state class filter, optional like
+    # the PV list: a suggested value, never a default, so that the list can be emptied.
+    schema[
+        vol.Optional(
+            CONF_ADDITIONAL_SENSORS, description={"suggested_value": additional_sensors or []}
+        )
+    ] = selector.selector({"entity": {"multiple": True, "domain": ["sensor"]}})
     marker, picker = _picker(CONF_SOC_SENSOR, soc_sensor, device_class=False)
     schema[marker] = picker
     marker, picker = _picker(
@@ -213,6 +223,19 @@ def _validate_eps_option(hass: Any, user_input: dict[str, Any]) -> dict[str, str
     return {}
 
 
+def _validate_additional_option(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
+    """The unit check of the additional sensors (ADR-028 decision 3, ADR-002).
+
+    A sensor that reports a unit must report W, kW, Wh or kWh: Effy turns it into a power in
+    W. A sensor without a unit, or without a state yet, cannot be judged here and is accepted.
+    """
+    for entity_id in user_input.get(CONF_ADDITIONAL_SENSORS) or []:
+        unit = _entity_attribute(hass, entity_id, "unit_of_measurement")
+        if unit is not None and unit not in ADDITIONAL_UNITS:
+            return {CONF_ADDITIONAL_SENSORS: "additional_unit_not_supported"}
+    return {}
+
+
 def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
     """Validate one submit of the config or the options flow (ADR-019, ADR-023).
 
@@ -220,9 +243,11 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
     raw text — ADR-000 §8. The first failing check wins, in this order: at
     least one input in total (the PV list, grid import or discharge); no entity
     in two roles (the PV list, the four counters, the SoC sensor, the capacity
-    entity and the EPS sensor; the error sits on the later field); at least one output
-    (charge or grid export); every output has a device class; then the battery options
-    (``_validate_battery_options``) and the EPS sensor (``_validate_eps_option``). Each
+    entity, the EPS sensor and the additional sensors; the error sits on the later field, and the
+    additional list is the last); at least one output (charge or grid export); every output has
+    a device class; then the battery options (``_validate_battery_options``), the EPS sensor
+    (``_validate_eps_option``) and the unit of the additional sensors
+    (``_validate_additional_option``). Each
     picker alone is optional. The EPS sensor counts for neither minimum: only the PV list and
     the grid import and discharge counters are inputs here, only charge and grid export
     outputs (ADR-026 decision 1).
@@ -248,6 +273,11 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
             errors[key] = "sensor_in_two_roles"
             return errors
         seen.add(entity_id)
+    for entity_id in user_input.get(CONF_ADDITIONAL_SENSORS) or []:
+        if entity_id in seen:
+            errors[CONF_ADDITIONAL_SENSORS] = "sensor_in_two_roles"
+            return errors
+        seen.add(entity_id)
     outputs = [(k, entity) for k in _OUTPUT_KEYS if (entity := counters[k])]
     if not outputs:
         errors[CONF_CHARGE_SENSOR] = "at_least_one_output"
@@ -259,15 +289,24 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
     errors = _validate_battery_options(hass, user_input)
     if errors:
         return errors
-    return _validate_eps_option(hass, user_input)
+    errors = _validate_eps_option(hass, user_input)
+    if errors:
+        return errors
+    return _validate_additional_option(hass, user_input)
 
 
 def _normalised(user_input: dict[str, Any]) -> dict[str, Any]:
     """The submitted options: the PV list always present (possibly empty), a counter, the SoC
-    sensor, the capacity entity and the EPS sensor only if set; everything else (the hysteresis,
-    the history days) as submitted."""
+    sensor, the capacity entity, the EPS sensor and the additional list only if set; everything
+    else (the hysteresis, the history days) as submitted."""
     optional = (*_COUNTER_KEYS, *_BATTERY_KEYS, CONF_EPS_SENSOR)
-    result = {key: value for key, value in user_input.items() if key not in optional}
+    result = {
+        key: value
+        for key, value in user_input.items()
+        if key not in (*optional, CONF_ADDITIONAL_SENSORS)
+    }
+    if user_input.get(CONF_ADDITIONAL_SENSORS):
+        result[CONF_ADDITIONAL_SENSORS] = list(user_input[CONF_ADDITIONAL_SENSORS])
     result[CONF_PV_INPUT_SENSORS] = list(user_input.get(CONF_PV_INPUT_SENSORS) or [])
     for key in optional:
         if user_input.get(key):
@@ -353,6 +392,7 @@ class EffyOptionsFlow(config_entries.OptionsFlowWithReload):  # type: ignore[mis
                 charge_sensor=current.get(CONF_CHARGE_SENSOR),
                 grid_export_sensor=current.get(CONF_GRID_EXPORT_SENSOR),
                 eps_sensor=current.get(CONF_EPS_SENSOR),
+                additional_sensors=current.get(CONF_ADDITIONAL_SENSORS, []),
                 soc_sensor=current.get(CONF_SOC_SENSOR),
                 capacity_entity=current.get(CONF_CAPACITY_ENTITY),
                 valley_hysteresis=valley_hysteresis(current),

@@ -20,12 +20,14 @@ from .effy_exports import (
     EFFY_DIRECTION_BOTH,
     EFFY_DIRECTION_INPUT,
     EFFY_DIRECTION_OUTPUT,
+    EFFY_DIRECTION_UNKNOWN,
     EFFY_EFFICIENCY_AGGREGATIONS,
     EFFY_FUNCTION_CHARGE,
     EFFY_FUNCTION_DISCHARGE,
     EFFY_FUNCTION_EPS,
     EFFY_FUNCTION_GRID_EXPORT,
     EFFY_FUNCTION_GRID_IMPORT,
+    EFFY_FUNCTION_UNKNOWN,
     EFFY_KEY_AGGREGATIONS,
     EFFY_KEY_DIRECTION,
     EFFY_KEY_ENTITY_ID,
@@ -36,6 +38,7 @@ from .effy_exports import (
     EFFY_PUBLISHED_SCHEMA_VERSION,
     EFFY_ROLE_BMS,
     EFFY_ROLE_EPS,
+    EFFY_ROLE_OTHER,
     EFFY_ROLE_PV,
     EFFY_SERIES_EFFECTIVE,
     EFFY_SERIES_STANDBY_POWER,
@@ -59,6 +62,7 @@ def describe_source_series(
     charge_id: str | None,
     grid_export_id: str | None,
     eps_id: str | None = None,
+    additional_ids: Sequence[str] = (),
 ) -> EffyPublishedSensor:
     """Describe an Effy sensor that is a series of one configured source sensor.
 
@@ -69,8 +73,10 @@ def describe_source_series(
     function (ADR-023 decision 11). The EPS sensor (ADR-026) has role and function
     ``eps``; its ``effective`` series, the effective value of the input half, is an
     ``input``, every other series of it (the ``smoothed`` one) is the signed value and
-    has direction ``both``. A source that is not configured is a programming error:
-    the entities are only ever built from the same options.
+    has direction ``both``. An additional sensor (ADR-028) is role ``other``, direction
+    ``unknown`` and function ``unknown``: Effy does not know what it stands for, and the key
+    ``function`` is present all the same. A source that is not configured is a programming
+    error: the entities are only ever built from the same options.
     """
     direction: EffyDirection
     role: EffyRole
@@ -88,8 +94,10 @@ def describe_source_series(
     elif source_entity_id == eps_id:
         direction = EFFY_DIRECTION_INPUT if series == EFFY_SERIES_EFFECTIVE else EFFY_DIRECTION_BOTH
         role, function = EFFY_ROLE_EPS, EFFY_FUNCTION_EPS
+    elif source_entity_id in additional_ids:
+        direction, role, function = EFFY_DIRECTION_UNKNOWN, EFFY_ROLE_OTHER, EFFY_FUNCTION_UNKNOWN
     else:
-        raise ValueError(f"{source_entity_id} is not a configured input or output sensor")
+        raise ValueError(f"{source_entity_id} is not a configured sensor")
     return {
         EFFY_KEY_ENTITY_ID: entity_id,
         EFFY_KEY_SERIES: series,

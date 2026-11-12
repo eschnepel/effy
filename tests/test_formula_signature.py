@@ -74,6 +74,7 @@ class TestFormulaSignature:
             _const.CONF_CHARGE_SENSOR: "sensor.charge",
             _const.CONF_GRID_EXPORT_SENSOR: "sensor.grid_out",
             _const.CONF_EPS_SENSOR: "sensor.eps",
+            _const.CONF_ADDITIONAL_SENSORS: [],  # TASK-0047
         }
 
     def test_the_order_of_the_pv_inputs_does_not_matter(self) -> None:

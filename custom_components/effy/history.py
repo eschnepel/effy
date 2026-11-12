@@ -239,6 +239,7 @@ from .effy_exports import EFFY_STANDBY_POWER_ENTITY_ID
 from .recorder_storage import RecorderStorage
 from .storage import IntegralStat, Storage
 from .inputs import (
+    additional_ids,
     all_input_ids,
     battery_hysteresis,
     bms_input_ids,
@@ -1322,6 +1323,55 @@ async def _fetch_energy_raw_with_anchor(
     return raw_states
 
 
+def _additional_series(
+    extra_ids: list[str],
+    energy_ids: list[str],
+    indexed: dict[str, dict[datetime, StatRow]],
+    state_classes: dict[str, str | None],
+    units: dict[str, str],
+    smoothed_series: dict[str, dict[datetime, float]],
+    start: datetime,
+    end: datetime,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """The series of the additional sensors (ADR-028): ``(derived power, smoothed)``.
+
+    An energy-family sensor gets the derived power series an energy-family input gets: the
+    trapezoidal redistribution already in ``indexed`` (with the explicit zeros of an idle
+    counter, ADR-013) turned into a power the way ``_readings_for_slot`` does for the waterfall.
+    A power-family sensor gets the gap-interpolated series in ``smoothed_series``. Neither is
+    handed to the waterfall: the caller keeps these sensors out of its slot loop, so no
+    effective, loss or share value depends on them.
+    """
+    energy = set(energy_ids)
+    power_results: dict[str, list[tuple[datetime, float]]] = {
+        eid: [] for eid in extra_ids if eid in energy
+    }
+    for slot in sorted({slot for eid in power_results for slot in indexed.get(eid, {})}):
+        for reading in _readings_for_slot(
+            slot, SLOT_MINUTES, list(power_results), indexed, state_classes, units
+        ):
+            power_results[reading.entity_id].append((slot, reading.raw_value))
+    per_sensor_power: dict[str, dict[str, Any]] = {
+        _effy_power_entity_id(eid): {
+            "unit": effective_unit_for(units[eid]),
+            "slot_values": slot_values,
+        }
+        for eid, slot_values in power_results.items()
+        if slot_values
+    }
+    per_sensor_smoothed: dict[str, dict[str, Any]] = {}
+    for eid in extra_ids:
+        slot_values = sorted(
+            (ts, val) for ts, val in smoothed_series.get(eid, {}).items() if start <= ts < end
+        )
+        if slot_values:
+            per_sensor_smoothed[_effy_smoothed_entity_id(eid)] = {
+                "unit": units[eid],
+                "slot_values": slot_values,
+            }
+    return per_sensor_power, per_sensor_smoothed
+
+
 async def _compute_effective_slots(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
@@ -1420,6 +1470,12 @@ async def _compute_effective_slots(
     recent recalculation and the button write it the same way, and a full
     recalculation and the recent recalculation give identical rows.
 
+    The additional sensors (ADR-028, ``additional_ids``) are fetched, converted and smoothed
+    with the inputs, and their derived power or smoothed series is added to the second and
+    third result. They are never in the slot union or the slot loop below, so the effective
+    rows are the same with and without them; the rewrite range of the slot job stays global, so
+    a jump of an additional counter extends it for every series, like any other jump.
+
     ``phases`` (TASK-0010) books the time of this call to the fetch and compute
     phases; the default does nothing.
     """
@@ -1427,13 +1483,16 @@ async def _compute_effective_slots(
     input_ids: list[str] = all_input_ids(entry_options)
     output_ids: list[str] = configured_output_ids(entry_options)
     all_ids: list[str] = input_ids + output_ids
+    extra_ids: list[str] = additional_ids(entry_options)
+    # every sensor Effy reads; the additional ones only get a series (ADR-028)
+    read_ids: list[str] = all_ids + extra_ids
     max_history_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
 
     storage = _storage_or_default(hass, storage, phases)
 
     # Gather per-sensor metadata (event loop – states are in memory)
-    live_units: dict[str, str] = {eid: storage.unit(eid) for eid in all_ids}
-    state_classes: dict[str, str | None] = {eid: storage.state_class(eid) for eid in all_ids}
+    live_units: dict[str, str] = {eid: storage.unit(eid) for eid in read_ids}
+    state_classes: dict[str, str | None] = {eid: storage.state_class(eid) for eid in read_ids}
 
     recorder = get_recorder(hass)
 
@@ -1443,9 +1502,9 @@ async def _compute_effective_slots(
     # assuming it matches the live state, to avoid interpreting e.g. an
     # already-Wh value as if it were kWh (or vice versa), which would throw
     # off every downstream Wh/kWh → W conversion by a further factor of 1000.
-    stats_units: dict[str, str] = await storage.statistics_units(all_ids)
+    stats_units: dict[str, str] = await storage.statistics_units(read_ids)
     units: dict[str, str] = {}
-    for eid in all_ids:
+    for eid in read_ids:
         stat_unit = stats_units.get(eid)
         live_unit = live_units[eid]
         if stat_unit and stat_unit != live_unit:
@@ -1462,9 +1521,9 @@ async def _compute_effective_slots(
         units[eid] = stat_unit or live_unit
 
     energy_ids = [
-        eid for eid in all_ids if _stat_field_for(state_classes.get(eid), units[eid]) == "change"
+        eid for eid in read_ids if _stat_field_for(state_classes.get(eid), units[eid]) == "change"
     ]
-    power_ids = [eid for eid in all_ids if eid not in energy_ids]
+    power_ids = [eid for eid in read_ids if eid not in energy_ids]
     phases.note_sources(len(energy_ids), len(power_ids))
 
     indexed: dict[str, dict[datetime, StatRow]] = {}
@@ -1558,12 +1617,14 @@ async def _compute_effective_slots(
     # recorder row for a slot is never overwritten, only genuinely missing
     # slots get a synthetic one. This runs *before* `slots`/distribute_loss
     # below, so the waterfall calculation itself sees the smoothed series.
-    # Output sensors are deliberately left untouched (out of scope). The one exception is the
+    # Output sensors are deliberately left untouched (out of scope). The additional sensors are
+    # smoothed like inputs (ADR-028) but, never being in the slot union below, no waterfall slot
+    # comes of their filled values. The one exception is the
     # EPS sensor (ADR-026 decision 3): it is a member of ``input_ids``, so its *signed* series
     # is interpolated here, before the slot loop splits it into an EPS input and an EPS output,
     # and both halves see the same filled value.
     smoothed_series: dict[str, dict[datetime, float]] = {}
-    for eid in input_ids:
+    for eid in input_ids + extra_ids:
         if eid not in power_ids:
             continue
         entity_rows = indexed.setdefault(eid, {})
@@ -1579,21 +1640,29 @@ async def _compute_effective_slots(
         for ts, value in filled.items():
             entity_rows.setdefault(ts, {"start": ts, "mean": value})
 
-    # Union of all slot timestamps actually present, sorted
+    # Union of all slot timestamps actually present, sorted. The additional sensors are left
+    # out: the waterfall runs for the slots of the inputs and outputs only (ADR-028 decision 2).
     slot_set: set[datetime] = set()
-    for entity_rows in indexed.values():
-        slot_set.update(entity_rows.keys())
+    for eid, entity_rows in indexed.items():
+        if eid not in extra_ids:
+            slot_set.update(entity_rows.keys())
     slots: list[datetime] = sorted(slot_set)
     phases.slots = len(slots)
 
+    extra_power, extra_smoothed = _additional_series(
+        extra_ids, energy_ids, indexed, state_classes, units, smoothed_series, start, end
+    )
+
     if not slots:
         phases.enter(None)
-        return {}, {}, {}
+        return {}, extra_power, extra_smoothed
 
     # results: effective (post-waterfall) values per slot, input sensors only
     results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in input_ids}
     # power_results: raw (pre-waterfall) derived power per slot, energy-family only
-    power_results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in energy_ids}
+    power_results: dict[str, list[tuple[datetime, float]]] = {
+        eid: [] for eid in energy_ids if eid in all_ids
+    }
     # pv_sum_results: the PV combined series (ADR-027 decision 1): per slot the effective
     # values of all PV inputs added up, in W (``effective_values_w`` is W for every input)
     pv_ids: set[str] = set(pv_input_ids(entry_options))
@@ -1659,7 +1728,7 @@ async def _compute_effective_slots(
         per_sensor[PV_SUM_ENTITY_ID] = {"unit": "W", "slot_values": pv_sum_results}
 
     per_sensor_power: dict[str, dict[str, Any]] = {}
-    for eid in energy_ids:
+    for eid in power_results:
         if not power_results[eid]:
             continue
         per_sensor_power[_effy_power_entity_id(eid)] = {
@@ -1669,6 +1738,8 @@ async def _compute_effective_slots(
 
     per_sensor_smoothed: dict[str, dict[str, Any]] = {}
     for eid, filled in smoothed_series.items():
+        if eid in extra_ids:
+            continue
         slot_values = sorted((ts, val) for ts, val in filled.items() if start <= ts < end)
         if not slot_values:
             continue
@@ -1679,6 +1750,9 @@ async def _compute_effective_slots(
             "unit": units[eid],
             "slot_values": slot_values,
         }
+
+    per_sensor_power.update(extra_power)
+    per_sensor_smoothed.update(extra_smoothed)
 
     phases.enter(None)
     return per_sensor, per_sensor_power, per_sensor_smoothed

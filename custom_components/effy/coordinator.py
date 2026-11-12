@@ -146,6 +146,7 @@ from .const import (
 from .debug_export import DIRECTORY, ExportOutcome, ExportRecord, export_to_file
 from .delta_integrals import Base, DeltaIntegral, DeltaIntegrals, Kind
 from .inputs import (
+    additional_ids,
     all_input_ids,
     battery_hysteresis,
     bms_input_ids,
@@ -270,6 +271,8 @@ class EffyCoordinator:
         self._charge_id: str | None = charge_id(entry.options)
         self._grid_export_id: str | None = grid_export_id(entry.options)
         self._eps_id: str | None = eps_id(entry.options)
+        # the additional sensors (ADR-028): a series each, in no formula
+        self._additional_ids: list[str] = additional_ids(entry.options)
 
         # Subscriber registry: entity_id → callback
         self._subscribers: dict[str, SubscriberCallback] = {}
@@ -402,6 +405,11 @@ class EffyCoordinator:
     def eps_id(self) -> str | None:
         """The EPS/UPS sensor (ADR-026), or ``None``; the catalog describes its series by it."""
         return self._eps_id
+
+    @property
+    def additional_ids(self) -> list[str]:
+        """The additional sensors (ADR-028), a copy; the catalog describes their series by it."""
+        return list(self._additional_ids)
 
     @property
     def efficiency_enabled(self) -> bool:

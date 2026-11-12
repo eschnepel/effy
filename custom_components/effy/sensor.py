@@ -66,6 +66,7 @@ from .catalog import (
     published_attributes,
 )
 from .const import (
+    ADDITIONAL_UNIQUE_ID_MARKER,
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
@@ -185,6 +186,7 @@ def _source_descriptor(
         charge_id=coordinator.charge_id,
         grid_export_id=coordinator.grid_export_id,
         eps_id=coordinator.eps_id,
+        additional_ids=coordinator.additional_ids,
     )
 
 
@@ -217,16 +219,23 @@ async def async_setup_entry(
     # entity for a perfectly valid source sensor simply never gets created
     # for the rest of that HA session (the bug this fixes: the entity is
     # entirely missing from the integration page, not just lacking data).
-    input_id_set = set(input_ids)
+    # The additional sensors (ADR-028) get the derived entity of an input, and no effective one,
+    # so they are "inputs" for the choice between a derived power and a smoothed sensor.
+    additional = coordinator.additional_ids
+    additional_set = set(additional)
+    input_id_set = set(input_ids) | additional_set
     pending_ids: list[str] = []
-    for entity_id in input_ids + output_ids:
+    for entity_id in input_ids + output_ids + additional:
         state = hass.states.get(entity_id)
         if state is None:
             pending_ids.append(entity_id)
             continue
         entities.extend(
-            _build_derived_entities(hass, entry, coordinator, entity_id, entity_id in input_id_set)
+            _build_derived_entities(
+                hass, entry, coordinator, entity_id, entity_id in input_id_set, additional_set
+            )
         )
+    _remove_dropped_additional_entities(hass, entry, additional)
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
     entities.extend(_pv_sum_entities(hass, entry, coordinator))
@@ -239,7 +248,7 @@ async def async_setup_entry(
 
     if pending_ids:
         _add_late_derived_entities(
-            hass, entry, coordinator, pending_ids, input_id_set, async_add_entities
+            hass, entry, coordinator, pending_ids, input_id_set, async_add_entities, additional_set
         )
 
     # Trigger one immediate recalculation so sensors have values on first load
@@ -373,12 +382,39 @@ def _battery_efficiency_entities(
     return entities
 
 
+def _remove_dropped_additional_entities(
+    hass: HomeAssistant, entry: ConfigEntry, additional: list[str]
+) -> None:
+    """Remove the Effy entities of an additional sensor that is no longer in the list.
+
+    An additional sensor's unique ID holds ``ADDITIONAL_UNIQUE_ID_MARKER`` (no slug can), so
+    only those entities are looked at: an input's entity is never touched. A sensor still in
+    the list keeps both of its possible entities even when only one exists, for one that has no
+    state yet is built late. The statistics of a removed entity stay (ADR-028).
+    """
+    prefix = f"{entry.entry_id}_{ADDITIONAL_UNIQUE_ID_MARKER}"
+    kept = {
+        f"{prefix}{slugify(entity_id.split('.')[-1])}{suffix}"
+        for entity_id in additional
+        for suffix in ("_power", "_smoothed")
+    }
+    registry = er.async_get(hass)
+    for registered in list(er.async_entries_for_config_entry(registry, entry.entry_id)):
+        if (
+            registered.domain == "sensor"
+            and registered.unique_id.startswith(prefix)
+            and registered.unique_id not in kept
+        ):
+            registry.async_remove(registered.entity_id)
+
+
 def _build_derived_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
     coordinator: EffyCoordinator,
     entity_id: str,
     is_input: bool,
+    additional: frozenset[str] | set[str] = frozenset(),
 ) -> list[SensorEntity]:
     """Return whichever derived entity applies to one source sensor, given
     its now-known state_class/unit.
@@ -389,15 +425,19 @@ def _build_derived_entities(
     EffySmoothedSensor instead (gap-interpolation feature) — output
     sensors and non-input power-family sensors get neither. Shared by the
     initial setup pass and the late-binding listener below so the two
-    paths can't silently diverge.
+    paths can't silently diverge. An additional sensor (ADR-028, in ``additional``) is
+    treated as an input here and its entity is marked as an additional one.
     """
     meta = get_sensor_meta(hass, entity_id)
     state_class = meta.get("state_class")
     unit = meta.get("unit", "W")
+    is_additional = entity_id in additional
     if is_energy_family(state_class, unit):
-        return [EffyDerivedPowerSensor(hass, entry, coordinator, entity_id)]
+        return [
+            EffyDerivedPowerSensor(hass, entry, coordinator, entity_id, additional=is_additional)
+        ]
     if is_input:
-        return [EffySmoothedSensor(hass, entry, coordinator, entity_id)]
+        return [EffySmoothedSensor(hass, entry, coordinator, entity_id, additional=is_additional)]
     return []
 
 
@@ -408,6 +448,7 @@ def _add_late_derived_entities(
     pending_ids: list[str],
     input_id_set: set[str],
     async_add_entities: AddEntitiesCallback,
+    additional: set[str] | None = None,
 ) -> None:
     """Create derived entities whose classification couldn't be resolved
     at initial setup because the source entity had no state yet (see
@@ -432,7 +473,7 @@ def _add_late_derived_entities(
         remaining.discard(entity_id)
 
         new_entities = _build_derived_entities(
-            hass, entry, coordinator, entity_id, entity_id in input_id_set
+            hass, entry, coordinator, entity_id, entity_id in input_id_set, additional or set()
         )
         if new_entities:
             async_add_entities(new_entities)
@@ -663,6 +704,7 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         entry: ConfigEntry,
         coordinator: EffyCoordinator,
         source_entity_id: str,
+        additional: bool = False,
     ) -> None:
         self._hass = hass
         self._entry = entry
@@ -670,7 +712,10 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._source_entity_id = source_entity_id
 
         self._slug = slugify(source_entity_id.split(".")[-1])
-        self._attr_unique_id = f"{entry.entry_id}_{self._slug}_power"
+        # An additional sensor (ADR-028) marks its unique ID, so that the registry cleanup of a
+        # sensor taken out of the list finds exactly these entities.
+        marker = ADDITIONAL_UNIQUE_ID_MARKER if additional else ""
+        self._attr_unique_id = f"{entry.entry_id}_{marker}{self._slug}_power"
         self._attr_native_value: float | None = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -787,6 +832,7 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         entry: ConfigEntry,
         coordinator: EffyCoordinator,
         source_entity_id: str,
+        additional: bool = False,
     ) -> None:
         self._hass = hass
         self._entry = entry
@@ -794,7 +840,10 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._source_entity_id = source_entity_id
 
         self._slug = slugify(source_entity_id.split(".")[-1])
-        self._attr_unique_id = f"{entry.entry_id}_{self._slug}_smoothed"
+        # An additional sensor (ADR-028) marks its unique ID, so that the registry cleanup of a
+        # sensor taken out of the list finds exactly these entities.
+        marker = ADDITIONAL_UNIQUE_ID_MARKER if additional else ""
+        self._attr_unique_id = f"{entry.entry_id}_{marker}{self._slug}_smoothed"
         self._attr_native_value: float | None = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_state_class = SensorStateClass.MEASUREMENT

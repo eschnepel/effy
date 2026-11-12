@@ -18,6 +18,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+import pytest
 
 if TYPE_CHECKING:
     from effy.config_flow import _outputs_missing_device_class as _outputs_missing_device_class
@@ -861,3 +862,129 @@ class TestDebugExportOption:
             data = json.loads((_base / "translations" / f"{lang}.json").read_text("utf-8"))
             for section, step in (("config", "user"), ("options", "init")):
                 assert data[section]["step"][step]["data"][_const.CONF_DEBUG_EXPORT], (lang, step)
+
+
+ADDITIONAL = _const.CONF_ADDITIONAL_SENSORS
+
+
+class TestAdditionalSensorsInTheForm:
+    """TASK-0047: the optional list of additional sensors (ADR-028 decision 1)."""
+
+    def _form(self, step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return TestSchemaHasTheFourCounterPickers()._form(step, options)
+
+    def test_both_flows_offer_one_optional_multi_entity_picker_for_sensors(self) -> None:
+        for step in ("user", "init"):
+            form = self._form(step)
+            assert not _keys(form)[ADDITIONAL].required
+            cfg = {m.schema: c for m, c in form["data_schema"].schema.items()}[ADDITIONAL]
+            # no device class or state class filter: any sensor entity
+            assert cfg == {"entity": {"multiple": True, "domain": ["sensor"]}}
+
+    def test_the_options_flow_suggests_the_saved_list_and_an_entry_without_one_gets_none(
+        self,
+    ) -> None:
+        saved = self._form("init", {PV: ["sensor.pv"], ADDITIONAL: ["sensor.a", "sensor.b"]})
+        assert _keys(saved)[ADDITIONAL].description == {"suggested_value": ["sensor.a", "sensor.b"]}
+        bare = self._form("init", {PV: ["sensor.pv"]})
+        assert _keys(bare)[ADDITIONAL].description == {"suggested_value": []}
+        assert _keys(bare)[ADDITIONAL].default is _MISSING  # a default would revive a cleared list
+
+
+class TestAdditionalSensorsValidation:
+    BASE: dict[str, Any] = {PV: ["sensor.pv"], GRID_IMPORT: "sensor.g", CHARGE: "sensor.charge"}
+
+    def _hass(self, **units: str | None) -> _FakeHass:
+        states = dict(_hass_with_outputs().states._states)
+        for entity_id, unit in units.items():
+            attrs: dict[str, Any] = {} if unit is None else {"unit_of_measurement": unit}
+            states[f"sensor.{entity_id}"] = _FakeState(None, **attrs)
+        return _FakeHass(states)
+
+    def _submit(
+        self, extra: dict[str, Any], step: str = "user", hass: _FakeHass | None = None
+    ) -> dict[str, Any]:
+        user_input = {**self.BASE, **extra}
+        hass = hass or self._hass()
+        if step == "user":
+            flow = _config_flow.EffyConfigFlow()
+            flow.hass = hass
+            return asyncio.run(flow.async_step_user(user_input))
+        entry = type("Entry", (), {"options": {}})()
+        options_flow = _config_flow.EffyOptionsFlow(entry)
+        options_flow.hass = hass
+        return asyncio.run(options_flow.async_step_init(user_input))
+
+    def _errors(self, extra: dict[str, Any], hass: _FakeHass | None = None) -> dict[str, str]:
+        result = self._submit(extra, hass=hass)
+        return dict(result.get("errors", {})) if result["type"] == "form" else {}
+
+    def test_a_list_of_free_sensors_is_saved_as_given(self) -> None:
+        result = self._submit({ADDITIONAL: ["sensor.grid_in", "sensor.house"]})
+        assert result["type"] == "create_entry"
+        assert result["options"][ADDITIONAL] == ["sensor.grid_in", "sensor.house"]
+
+    def test_without_the_list_or_with_it_emptied_nothing_is_saved_for_it(self) -> None:
+        extras: tuple[dict[str, Any], ...] = ({}, {ADDITIONAL: []}, {ADDITIONAL: None})
+        for extra in extras:
+            assert ADDITIONAL not in self._submit(extra)["options"]
+
+    @pytest.mark.parametrize(
+        "role_input",
+        [
+            {PV: ["sensor.pv", "sensor.x"]},
+            {GRID_IMPORT: "sensor.x"},
+            {DISCHARGE: "sensor.x"},
+            {CHARGE: "sensor.x"},
+            {GRID_EXPORT: "sensor.x"},
+            {EPS: "sensor.x"},
+            {SOC: "sensor.x", CAPACITY: "sensor.cap_kwh"},
+            {SOC: "sensor.soc", CAPACITY: "sensor.x"},
+        ],
+    )
+    def test_a_sensor_that_has_a_role_is_refused_on_the_additional_field(
+        self, role_input: dict[str, Any]
+    ) -> None:
+        hass = _hass_with_outputs()
+        for entity_id in ("sensor.x", "sensor.soc"):
+            hass.states._states.setdefault(
+                entity_id, _FakeState(None, state_class="measurement", unit_of_measurement="W")
+            )
+        errors = self._errors({**role_input, ADDITIONAL: ["sensor.x"]}, hass=hass)
+        assert errors == {ADDITIONAL: "sensor_in_two_roles"}
+
+    def test_the_same_sensor_listed_twice_is_refused(self) -> None:
+        errors = self._errors({ADDITIONAL: ["sensor.a", "sensor.b", "sensor.a"]})
+        assert errors == {ADDITIONAL: "sensor_in_two_roles"}
+
+    @pytest.mark.parametrize("unit", ["W", "kW", "Wh", "kWh", None])
+    def test_a_unit_of_power_or_energy_or_no_unit_is_accepted(self, unit: str | None) -> None:
+        assert self._errors({ADDITIONAL: ["sensor.a"]}, hass=self._hass(a=unit)) == {}
+
+    @pytest.mark.parametrize("unit", ["°C", "%", "V", "A", "MWh"])
+    def test_another_unit_is_refused(self, unit: str) -> None:
+        errors = self._errors({ADDITIONAL: ["sensor.a"]}, hass=self._hass(a=unit))
+        assert errors == {ADDITIONAL: "additional_unit_not_supported"}
+
+    def test_a_sensor_without_a_state_cannot_be_judged_and_is_accepted(self) -> None:
+        assert self._errors({ADDITIONAL: ["sensor.nowhere"]}) == {}
+
+    def test_a_role_conflict_is_reported_before_a_unit_problem(self) -> None:
+        errors = self._errors(
+            {ADDITIONAL: ["sensor.a", "sensor.pv"]}, hass=self._hass(a="°C", pv="W")
+        )
+        assert errors == {ADDITIONAL: "sensor_in_two_roles"}
+
+    def test_the_options_flow_validates_and_saves_the_same_way(self) -> None:
+        assert self._submit({ADDITIONAL: ["sensor.pv"]}, step="init")["errors"] == {
+            ADDITIONAL: "sensor_in_two_roles"
+        }
+        ok = self._submit({ADDITIONAL: ["sensor.a"]}, step="init")
+        assert ok["type"] == "create_entry" and ok["data"][ADDITIONAL] == ["sensor.a"]
+
+    def test_the_additional_sensors_are_no_input_and_no_output(self) -> None:
+        # an entry with only additional sensors still needs an input and an output
+        errors = self._errors({PV: [], GRID_IMPORT: None, ADDITIONAL: ["sensor.a"]})
+        assert errors == {PV: "at_least_one_input"}
+        errors = self._errors({CHARGE: None, ADDITIONAL: ["sensor.a"]})
+        assert errors == {CHARGE: "at_least_one_output"}

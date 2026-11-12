@@ -61,7 +61,7 @@
 | TASK-0046-pv-share-sensor | PV share now: 100 × (effective PV + EPS input) / all effective inputs per slot, hourly energy-weighted, in % (CAP-13; human request 2026-11-09) | todo | TASK-0045a-pv-combined-series | — |
 | TASK-0045f-pv-published-entries | The PV sensors in the published list, effy_exports.py (CAP-13) | todo | TASK-0045a-pv-combined-series, TASK-0045d-pv-delta-integral-sensors, TASK-0046-pv-share-sensor | — |
 | TASK-0045g-cap13-acceptance-and-docs | CAP-13 acceptance test and README | todo | TASK-0045a-pv-combined-series, TASK-0045b-pv-delta-values, TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors, TASK-0045e-formula-signature-and-implicit-recalc, TASK-0045f-pv-published-entries, TASK-0046-pv-share-sensor | — |
-| TASK-0047-additional-sensors-derived-series | Additional sensors: a config option whose sensors get a derived power or smoothed series and no effective value, published with role `other` (CAP-14, ADR-028 Draft; human request 2026-11-09; runs after CAP-13 for shared files) | todo | — | — |
+| TASK-0047-additional-sensors-derived-series | Additional sensors: a config option whose sensors get a derived power or smoothed series and no effective value, published with role `other` (CAP-14, ADR-028 accepted 2026-11-12; human request 2026-11-09; done before TASK-0046, TASK-0045f and TASK-0045g at the human's instruction) | done | — | inline |
 
 CAP-12 tasks (TASK-0039 to TASK-0044, approved at Gate 2 on 2026-11-06; ADR-026
 accepted): strictly sequential, in the order of the numbering. Shared files
@@ -256,4 +256,10 @@ changed.
 
 Both groups belong to the single capability CAP-1 (`tasks/adr-capability.md`);
 split along the pure/impure boundary because the findings and the
-people-decisions differ per side.
+people-decisions differ per side. | 2026-11-12 |
+TASK-0047-additional-sensors-derived-series | released and implemented ahead of
+CAP-13's TASK-0046, TASK-0045f and TASK-0045g at the human's instruction ("work
+on task 47"); ADR-028 accepted by that instruction, ADR-021 amended (`other`,
+`unknown`); the three Gate 1 open points settled by the assumptions in the task;
+unique ID marker `additional-` and the role-sensor drop decided in ADR-028's
+amendment | the human named the task; TASK-0045e (its only upstream) is done |

@@ -29,6 +29,18 @@ CONF_SOC_SENSOR = "soc_sensor"
 CONF_CAPACITY_ENTITY = "capacity_entity"
 CONF_VALLEY_HYSTERESIS = "valley_hysteresis"
 
+# The additional sensors (ADR-028): an optional list of any sensor that is neither an input, an
+# output, the EPS sensor, the state of charge nor the capacity. Each gets the series an input gets
+# before the loss is distributed (a derived power series for an energy-family sensor, a smoothed
+# series for a power-family one) and takes part in no formula.
+CONF_ADDITIONAL_SENSORS = "additional_sensors"
+# Their unit, if they report one, is one of these (ADR-002, ADR-028 decision 3).
+ADDITIONAL_UNITS = ("W", "kW", "Wh", "kWh")
+# The unique ID of an additional sensor's Effy entity is ``<entry_id>_additional-<slug>_power`` (or
+# ``_smoothed``). The hyphen cannot be part of a slug, so no input's entity can have such an ID,
+# and the registry cleanup of a sensor taken out of the list finds exactly the additional ones.
+ADDITIONAL_UNIQUE_ID_MARKER = "additional-"
+
 # Write a debug export file with every history recalculation of the button (TASK-0037,
 # ADR-025 Amendment 2026-11-03). Off unless set.
 CONF_DEBUG_EXPORT = "debug_export"

@@ -311,7 +311,7 @@ except that share; any change of the per-input effective sensors.
 run strictly one after the other. Inside CAP-13 the tasks also share
 `history.py`, so they run in the order of their dependencies, one at a time.
 
-## CAP-14 — Additional sensors with derived power and smoothed series *(proposed 2026-11-09 by the human's request; Gate 1 pending; Draft ADR-028; independent of CAP-13)*
+## CAP-14 — Additional sensors with derived power and smoothed series *(proposed 2026-11-09 by the human's request; released 2026-11-12 by the human's instruction to work on TASK-0047; ADR-028 accepted; delivered 2026-11-12; independent of CAP-13)*
 
 **What the user sees:** an optional **Additional sensors** list in the options.
 For each sensor in it Effy writes the series an input gets before the loss is

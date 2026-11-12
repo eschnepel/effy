@@ -90,6 +90,7 @@ All parameters are set via the UI (Config Flow + Options Flow).
 | **Charge counter** | BMS output: energy into the battery (battery side) | – |
 | **Grid export counter** | BMS output: energy the BMS gives to the grid | – |
 | **EPS/UPS sensor** | Optional: one signed power sensor of the inverter's EPS/UPS port, state class `measurement`, in W or kW: positive while energy leaves through the port, negative while another inverter feeds it | – |
+| **Additional sensors** | Optional: a list of any other sensor in W, kW, Wh or kWh; each gets a derived power or a smoothed series, and takes part in no calculation | – |
 | **State of charge sensor** | Optional, for the battery efficiency: the battery's SoC in %, state class `measurement`; set together with the capacity | – |
 | **Battery capacity entity** | Optional, for the battery efficiency: a sensor, number or input_number in Wh or kWh; set together with the SoC | – |
 | **Valley hysteresis** | Optional, for the battery efficiency: how far the SoC must rise out of a valley (in SoC points, at least 15) before the valley counts | 30 |
@@ -117,6 +118,25 @@ use the standby and efficiency sensors have fewer quiet or pure slots to work
 with, because Effy cannot tell the port's energy from the battery's: with a
 backup load that never pauses they may stop updating. An entry without this
 option changes nothing.
+
+The **additional sensors** (ADR-028) are for a sensor that is not an input, an
+output, the EPS/UPS sensor, the state of charge or the capacity, but whose
+series you want treated the way Effy treats an input's, for example the house's
+grid import. Pick any `sensor` entity; Effy chooses by its family, as for an
+input: an energy counter (`total_increasing` or `total`, in Wh or kWh) gets the
+derived power sensor `sensor.effy_<name>_power` (a low-resolution counter
+becomes a smooth power in W, and a counter that stops reporting reads 0, not a
+gap), a power sensor gets `sensor.effy_<name>_smoothed` (a gap of up to two
+5-minute slots is bridged, a longer one stays a gap). There is **no effective
+sensor** and the sensor is in no formula: the loss, the shares, the PV sums, the
+standby and efficiency sensors are the same with or without the list. A sensor
+that has another role, or is listed twice, is refused; if it reports a unit, the
+unit must be W, kW, Wh or kWh. Taking a sensor out of the list removes its Effy
+sensor from the entity registry; its statistics stay. The history of a newly
+added sensor is filled by the full history recalculation: the list is part of
+Effy's formula signature, so adding or removing a sensor starts that
+recalculation by itself once the entry is set up (the history button does the
+same by hand). An entry without the list changes nothing.
 
 The **state of charge sensor** and the **battery capacity entity** are for the
 battery efficiency only (ADR-023): they are neither inputs nor outputs, so the
@@ -261,13 +281,13 @@ sensors:
 
 | Key | Meaning |
 | -- | -- |
-| `schema_version` | Raised only when an existing key or its meaning changes; new keys and new values (`eps`, `both`) do not raise it |
+| `schema_version` | Raised only when an existing key or its meaning changes; new keys and new values (`eps`, `both`, `other`, `unknown`) do not raise it |
 | `max_history_days` | The configured number of history days |
 | `series` | `effective`, `derived_power`, `smoothed`, `standby_power`, `charge_efficiency`, `battery_efficiency`, `discharge_efficiency` or `roundtrip_efficiency` |
 | `source_entity_id` | The configured source sensor; `null` for the standby and the efficiency sensors |
-| `direction` | `input` or `output`; the standby and efficiency sensors are `output`. `both` is the signed smoothed series of the EPS/UPS sensor: positive while energy leaves the system through the port, negative while it enters |
-| `role` | `pv`, `bms` or `eps`; every output is `bms`. `eps` is the EPS/UPS sensor, neither a PV string nor a BMS counter |
-| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input, `eps` for the EPS/UPS sensor. The standby and efficiency entries have no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
+| `direction` | `input` or `output`; the standby and efficiency sensors are `output`. `both` is the signed smoothed series of the EPS/UPS sensor: positive while energy leaves the system through the port, negative while it enters. `unknown` is a series of an additional sensor: Effy does not know which way its energy flows |
+| `role` | `pv`, `bms`, `eps` or `other`; every output is `bms`. `eps` is the EPS/UPS sensor, neither a PV string nor a BMS counter; `other` is an additional sensor |
+| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input, `eps` for the EPS/UPS sensor, `unknown` for an additional sensor (the key is there, the value is `unknown`). The standby and efficiency entries have no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
 | `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's written series have `mean` and `state` (never `sum`), while standby and efficiency sensors have `mean`, `min` and `max` |
 
 - **The EPS/UPS sensor** (ADR-026) has two entries, both with role and function
@@ -275,6 +295,11 @@ sensors:
   the input half, never negative and 0 while the port exports; its `smoothed`
   series (`direction` `both`) is the signed value with short gaps bridged. A
   reader that does not know the values `eps` and `both` ignores these entries.
+- **An additional sensor** (ADR-028) has one entry: `series` `derived_power` (an
+  energy counter) or `smoothed` (a power sensor), `source_entity_id` the sensor,
+  `role` `other`, `direction` `unknown`, `function` `unknown`. A reader that
+  picks by role, direction or function never selects it; one that does not know
+  these values ignores the entry.
 - **Which sensors are listed:** every Effy sensor that exists, except
   `sensor.effy_recalculated_from` itself. A sensor that is created late (its
   source had no state at startup) is listed from the next recalculation on.
@@ -782,3 +807,4 @@ test suite runs against.
 | [025](adr/025-recorder-read-cache.md) | A cache for what Effy reads from the recorder |
 | [026](adr/026-eps-port-sensor.md) | The EPS/UPS port as a signed power sensor |
 | [027](adr/027-effective-pv-sum-sensors.md) | The Effective PV Sum and the PV delta integrals |
+| [028](adr/028-additional-sensors.md) | Additional sensors with derived power and smoothed series |

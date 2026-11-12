@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .const import (
+    CONF_ADDITIONAL_SENSORS,
     CONF_CAPACITY_ENTITY,
     CONF_CHARGE_SENSOR,
     CONF_DISCHARGE_SENSOR,
@@ -87,6 +88,27 @@ def eps_id(options: Mapping[str, Any]) -> str | None:
     return _role_id(options, CONF_EPS_SENSOR)
 
 
+def additional_ids(options: Mapping[str, Any]) -> list[str]:
+    """The additional sensors (ADR-028), in the saved order, each once; empty when unset.
+
+    A sensor in the list gets the series of an input (a derived power or a smoothed series) and
+    is in no formula. A sensor that also has a role (a PV input, a BMS counter, the EPS sensor,
+    the state of charge or the capacity) is *not* an additional one: the options flow refuses
+    it, and a hand-edited entry must not give two Effy entities one unique ID (decision 3).
+    """
+    roles = {
+        *pv_input_ids(options),
+        *bms_input_ids(options),
+        *output_ids(options),
+        *(i for i in (eps_id(options), soc_id(options), capacity_id(options)) if i),
+    }
+    result: list[str] = []
+    for entity_id in options.get(CONF_ADDITIONAL_SENSORS) or []:
+        if entity_id and entity_id not in roles and entity_id not in result:
+            result.append(str(entity_id))
+    return result
+
+
 def valley_hysteresis(options: Mapping[str, Any]) -> float:
     """The valley hysteresis in SoC points: the saved number, else the default (30).
 
@@ -138,12 +160,12 @@ def formula_signature(options: Mapping[str, Any]) -> dict[str, Any]:
     """The sensors that make up the formula (ADR-027 decision 6): what a recalculation depends on.
 
     The PV inputs (a sorted list: their order does not matter), grid import, discharge, charge,
-    grid export and the EPS sensor, ``None`` where a role is unset; keyed by the option each
-    comes from. A change of any of them
-    changes what the history is, so Effy recalculates it by itself at setup; a change of
-    anything else (history days, SoC, capacity, valley hysteresis, debug export) does not.
-    JSON-safe: it is kept in the entry's data and compared after a round trip through the store.
-    TASK-0047 adds the list of additional sensors here.
+    grid export and the EPS sensor, ``None`` where a role is unset, and the additional sensors
+    (ADR-028, a sorted list, empty when there are none); keyed by the option each comes from. A
+    change of any of them changes what the history is, so Effy recalculates it by itself at
+    setup; a change of anything else (history days, SoC, capacity, valley hysteresis, debug
+    export) does not. JSON-safe: it is kept in the entry's data and compared after a round trip
+    through the store.
     """
     return {
         CONF_PV_INPUT_SENSORS: sorted(set(pv_input_ids(options))),
@@ -152,6 +174,7 @@ def formula_signature(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_CHARGE_SENSOR: charge_id(options),
         CONF_GRID_EXPORT_SENSOR: grid_export_id(options),
         CONF_EPS_SENSOR: eps_id(options),
+        CONF_ADDITIONAL_SENSORS: sorted(additional_ids(options)),
     }
 
 

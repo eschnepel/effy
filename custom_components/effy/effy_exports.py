@@ -18,7 +18,8 @@ Rules for this file (checked by ``tests/test_effy_exports.py``):
 - Symbols only: constants and types, no behaviour, no Home Assistant.
 - A change that breaks an existing key or its meaning raises
   ``EFFY_PUBLISHED_SCHEMA_VERSION`` (ADR-021 decision 1); an additive key or an additive
-  value (``eps``, ``both``: ADR-021 Amendment 2026-11-06, ADR-026) does not.
+  value (``eps``, ``both``: ADR-021 Amendment 2026-11-06, ADR-026; ``other``,
+  ``unknown``: ADR-021 Amendment 2026-11-12, ADR-028) does not.
   A reader therefore ignores keys it does not know, and compares the published
   ``schema_version`` with the value in its own copy of this file: a larger
   published value means the copy is stale.
@@ -83,29 +84,37 @@ EFFY_SERIES_ROUNDTRIP_EFFICIENCY: Final = "roundtrip_efficiency"
 # ``direction``: the direction of the flow the sensor stands for. ``both`` is a *signed*
 # series, the smoothed series of the EPS sensor (ADR-026): positive while energy leaves the
 # system through the EPS/UPS port, negative while it enters. A reader takes the sign as the
-# direction; it is the only ``both`` there is.
+# direction; it is the only ``both`` there is. ``unknown`` is the series of an additional sensor
+# (ADR-028): Effy does not know which way its energy flows, and a reader that picks by direction
+# never selects it.
 EFFY_DIRECTION_INPUT: Final = "input"
 EFFY_DIRECTION_OUTPUT: Final = "output"
 EFFY_DIRECTION_BOTH: Final = "both"
+EFFY_DIRECTION_UNKNOWN: Final = "unknown"
 
 # ``role``: PV inputs apart from the battery system (ADR-019); every output except the EPS
 # output is ``bms``. ``eps`` is the EPS/UPS sensor of the inverter (ADR-026): neither a PV
-# string nor a BMS counter.
+# string nor a BMS counter. ``other`` is an additional sensor (ADR-028): it has the series of an
+# input, but takes part in no loss, effective value, standby, efficiency or battery calculation.
 EFFY_ROLE_PV: Final = "pv"
 EFFY_ROLE_BMS: Final = "bms"
 EFFY_ROLE_EPS: Final = "eps"
+EFFY_ROLE_OTHER: Final = "other"
 
 # ``function``: which counter of the battery system a source series stands for (ADR-023,
 # ADR-021 Amendment 2026-10-23). Only the entries of a source series (``effective``,
 # ``derived_power``, ``smoothed``) have the key; it is ``None`` for a PV input. The
 # standby power entry has none. Pick a BMS counter by this, not by guessing. ``eps`` marks
 # the two series of the EPS/UPS sensor (ADR-026): its ``effective`` series is the effective
-# value of its input half (never negative), its ``smoothed`` series the signed value.
+# value of its input half (never negative), its ``smoothed`` series the signed value. ``unknown``
+# marks the series of an additional sensor: its function is not known to Effy (the key is
+# present, the value is ``unknown``); a reader that picks a counter by function never selects it.
 EFFY_FUNCTION_GRID_IMPORT: Final = "grid_import"
 EFFY_FUNCTION_DISCHARGE: Final = "discharge"
 EFFY_FUNCTION_CHARGE: Final = "charge"
 EFFY_FUNCTION_GRID_EXPORT: Final = "grid_export"
 EFFY_FUNCTION_EPS: Final = "eps"
+EFFY_FUNCTION_UNKNOWN: Final = "unknown"
 
 # ``aggregations``: the ``types`` a reader can pass to ``statistics_during_period``
 # for the sensor's short-term statistics, with non-null values.
@@ -145,9 +154,9 @@ EffySeries = Literal[
     "battery_efficiency",
     "roundtrip_efficiency",
 ]
-EffyDirection = Literal["input", "output", "both"]
-EffyRole = Literal["pv", "bms", "eps"]
-EffyFunction = Literal["grid_import", "discharge", "charge", "grid_export", "eps"]
+EffyDirection = Literal["input", "output", "both", "unknown"]
+EffyRole = Literal["pv", "bms", "eps", "other"]
+EffyFunction = Literal["grid_import", "discharge", "charge", "grid_export", "eps", "unknown"]
 
 # --- Shapes ---------------------------------------------------------------------
 

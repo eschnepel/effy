@@ -1,15 +1,22 @@
 # Task: Additional sensors that get a derived power or smoothed series
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-14
-- **Related ADRs:** \[ADR-028 (Draft), ADR-012, ADR-013, ADR-019, ADR-021,
-  ADR-024, ADR-027\]
+- **Related ADRs:** \[ADR-028, ADR-012, ADR-013, ADR-019, ADR-021, ADR-024,
+  ADR-027\]
 - **Dependencies:** []. It shares `sensor.py`, `catalog.py`, `history.py`,
   `coordinator.py`, `config_flow.py`, `README.md` and the translations with
   CAP-13, so it runs after the CAP-13 task that last touches them, one task at a
   time (see the order note in CAP-14).
-- **Gate:** Gate 1 (CAP-14, ADR-028) and Gate 2 pending (human request
-  2026-11-09, design questions answered the same day). No code before approval.
+- **Gate:** released 2026-11-12 by the human's instruction in chat ("Work on
+  task 47"), as the project did for ADR-023: the instruction is Gate 2 for this
+  task and accepts ADR-028. The text of ADR-028 and of this task was written by
+  the Lead Agent from the human's answers of 2026-11-09 and has not been read
+  line by line by the human. The three open points of Gate 1 are settled by the
+  assumptions stated under them. Order: CAP-13's TASK-0046, TASK-0045f and
+  TASK-0045g are still `todo`; this task runs before them at the human's
+  instruction. TASK-0045e (the formula signature) is `done`, so this task makes
+  the signature change.
 
 ## Goal
 
@@ -110,7 +117,7 @@ Human, 2026-11-09, in answer to the questions of this task:
    this all is unknown").
 1. New capability CAP-14 with its own ADR-028, independent of CAP-13.
 
-## Open points for Gate 1 (the Lead resolves them with the human)
+## Open points for Gate 1 (settled 2026-11-12 by the assumptions stated here; the human can overrule)
 
 - Whether an additional **power-family** sensor also gets its own series when it
   needs none (a clean `measurement` sensor with no gaps still gets the smoothed
@@ -180,4 +187,55 @@ listener, registry removal), `catalog.py`, `effy_exports.py`, `coordinator.py`,
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/const.py` →
+  `CONF_ADDITIONAL_SENSORS = "additional_sensors"`,
+  `ADDITIONAL_UNITS = ("W", "kW", "Wh", "kWh")`,
+  `ADDITIONAL_UNIQUE_ID_MARKER = "additional-"`.
+- `custom_components/effy/inputs.py` → `additional_ids(options) -> list[str]`
+  (saved order, each once, a sensor that has a role dropped);
+  `formula_signature` gains the key `CONF_ADDITIONAL_SENSORS` with the sorted
+  list. `signature_pv_inputs` unchanged.
+- `custom_components/effy/config_flow.py` →
+  `_build_schema(..., additional_sensors=None)` (optional multi-entity picker,
+  suggested value), `_validate_additional_option(hass, user_input)`, role
+  conflict and duplicate check inside `_validate_user_input` (error
+  `sensor_in_two_roles` on `additional_sensors`), new error key
+  `additional_unit_not_supported`; `_normalised` saves the list only when it is
+  not empty.
+- `custom_components/effy/history.py` →
+  `_additional_series(extra_ids, energy_ids, indexed, state_classes, units, smoothed_series, start, end)`;
+  `_compute_effective_slots` reads, converts and smooths the additional sensors
+  with the inputs, leaves them out of the slot union and the slot loop, and adds
+  their series to the 2nd and 3rd result. Nothing else in `history.py` changed:
+  the writers, ADR-024 and the live push take the series as they are.
+- `custom_components/effy/coordinator.py` → `EffyCoordinator.additional_ids`
+  (property, a copy).
+- `custom_components/effy/catalog.py` →
+  `describe_source_series(..., additional_ids=())`: `role` `other`, `direction`
+  `unknown`, `function` `unknown` for an additional sensor.
+- `custom_components/effy/effy_exports.py` → `EFFY_ROLE_OTHER = "other"`,
+  `EFFY_DIRECTION_UNKNOWN = "unknown"`, `EFFY_FUNCTION_UNKNOWN = "unknown"`; the
+  three `Literal` types gain the value. `EFFY_PUBLISHED_SCHEMA_VERSION` stays 1.
+- `custom_components/effy/sensor.py` →
+  `EffyDerivedPowerSensor(..., additional: bool = False)` and
+  `EffySmoothedSensor(..., additional: bool = False)` (unique ID
+  `<entry_id>_additional-<slug>_power|_smoothed` when set);
+  `_build_derived_entities(..., additional=frozenset())`;
+  `_remove_dropped_additional_entities(hass, entry, additional)`;
+  `_add_late_derived_entities(..., additional=None)`; `_source_descriptor`
+  passes `coordinator.additional_ids`. No effective sensor is built for an
+  additional sensor.
+- `custom_components/effy/translations/en.json`, `de.json` → label
+  `additional_sensors` in the user and init steps, error
+  `additional_unit_not_supported` in both, a sentence in both step descriptions.
+- Docs: `README.md` (configuration table and paragraph, contract table and a
+  bullet, ADR table row 028), `adr/021` Amendment 2026-11-12, `adr/028` accepted
+  and Amendment 2026-11-12 (implementation).
+- Tests: `tests/test_additional_sensors_options.py`,
+  `tests/test_additional_sensors_series.py`,
+  `tests/test_additional_sensors_entities.py` (new); added to
+  `tests/test_config_flow.py`, `tests/test_formula_recalc_trigger.py`,
+  `tests/test_coordinator_slot.py`; updated `tests/test_effy_exports.py` (pinned
+  values), `tests/test_formula_signature.py` (seventh key),
+  `tests/test_published_sensors.py` (fake coordinator accessor).
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).

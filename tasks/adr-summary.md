@@ -1,10 +1,11 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-11-07 (CAP-12 delivered: the EPS/UPS port, ADR-026;
-TASK-0025: the battery feed; TASK-0024: the valley and span machine; TASK-0023:
-SoC, capacity and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019
-amendment is in force: four counter pickers, no update listener;
-`effy_exports.py` added). Keep this concise; ADRs in `adr/` are authoritative.
+Last updated: 2026-11-12 (CAP-14 delivered: the additional sensors, ADR-028;
+CAP-12 delivered: the EPS/UPS port, ADR-026; TASK-0025: the battery feed;
+TASK-0024: the valley and span machine; TASK-0023: SoC, capacity and hysteresis
+options; ADR-023 accepted 2026-10-27; the ADR-019 amendment is in force: four
+counter pickers, no update listener; `effy_exports.py` added). Keep this
+concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -135,6 +136,18 @@ amendment is in force: four counter pickers, no update listener;
 
 ## Recent ADRs
 
+- **ADR-028 (Accepted 2026-11-12, delivered with TASK-0047, CAP-14):** an
+  optional list of **additional sensors** (any `sensor` entity in W, kW, Wh or
+  kWh; one that has a role or is listed twice is refused). Each gets the series
+  an input gets before the loss is distributed (`sensor.effy_<slug>_power` for
+  an energy-family sensor, `sensor.effy_<slug>_smoothed` for a power-family one)
+  by the same code, and no effective series; it is in no loss, share, PV sum,
+  standby, efficiency or battery calculation. Its rows are not in the slot union
+  of the waterfall, so the effective rows are identical with and without the
+  list. The list is part of the formula signature (adding or removing one starts
+  the full recalculation); the entity's unique ID carries `additional-` so that
+  removing a sensor removes exactly its entity, never an input's. Published with
+  `role` `other`, `direction` and `function` `unknown` (ADR-021 amendment).
 - **ADR-027 (Accepted 2026-11-07, decision 9 decided 2026-11-09: Q27 = A; being
   implemented, CAP-13, TASK-0045a to TASK-0045g and TASK-0046, Gate 2 approved
   2026-11-09):** the PV combined series (the effective values of all PV inputs
