@@ -245,6 +245,9 @@ class RaisingStorage:
     async def stored_means(self, *args: Any) -> Any:
         raise UnrecordedRead(("stored_means", *args))
 
+    async def stored_integral(self, *args: Any) -> Any:
+        raise UnrecordedRead(("stored_integral", *args))
+
     async def unchanged_rows(self, *args: Any, **kwargs: Any) -> Any:
         raise UnrecordedRead(("unchanged_rows", *args))
 
@@ -399,6 +402,13 @@ class FakeStorage:
         self, statistic_id: str, start: datetime, end: datetime
     ) -> tuple[dict[datetime, float], dict[datetime, float]]:
         self.calls.append(("stored_means", statistic_id))
+        await self._maybe_yield()
+        return {}, {}
+
+    async def stored_integral(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, Any], dict[datetime, Any]]:
+        self.calls.append(("stored_integral", statistic_id))
         await self._maybe_yield()
         return {}, {}
 

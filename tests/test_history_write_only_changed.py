@@ -54,6 +54,7 @@ class StoredRecorder(_FakeRecorder):
         # The metadata flags of the last import per series. Effy's own metadata is
         # {"has_mean": True, "has_sum": False}; a series never imported defaults to it.
         self.flags: dict[str, dict[str, bool]] = {}
+        self.cleared: list[list[str]] = []  # the id lists of every async_clear_statistics
 
     @staticmethod
     def _table(table: Any) -> str:
@@ -71,6 +72,15 @@ class StoredRecorder(_FakeRecorder):
             self.rows[(self._table(table), sid, stat["start"])] = {
                 column: stat.get(column) for column in COLUMNS
             }
+
+    def async_clear_statistics(self, statistic_ids: list[str]) -> None:
+        """Home Assistant's ``Recorder.async_clear_statistics``: every row and the metadata go."""
+        self.cleared.append(list(statistic_ids))
+        for key in [key for key in self.rows if key[1] in statistic_ids]:
+            del self.rows[key]
+        for statistic_id in statistic_ids:
+            self.units.pop(statistic_id, None)
+            self.flags.pop(statistic_id, None)
 
     async def async_block_till_done(self) -> None:
         return None

@@ -176,6 +176,45 @@ def slot_energy_steps(
     return steps
 
 
+def steps_from_running_totals(
+    rows_5min: Mapping[datetime, float],
+    rows_hourly: Mapping[datetime, float],
+    slot_minutes: int = 5,
+) -> list[IntegralStep]:
+    """The energy of every slot of an integral, from its stored running totals (ADR-027 decision 9).
+
+    The inverse of ``integral_rows``: the per-slot energy of an input is the change of its
+    running total (the recorder's ``sum``), which is what the combined integrals are made of
+    when the PV inputs change (Q27 = A). A row's total is the total *after* its slot or hour.
+
+    The totals are read as checkpoints in time order: every 5-minute row, and every hourly row
+    that ends at or before the oldest 5-minute row (the recorder purges the 5-minute rows by
+    time; a later hourly row is the coarser reading of what the 5-minute rows hold). The energy
+    of a step is the change since the checkpoint before it, so what a gap in the rows holds is
+    not lost but lands in the step after the gap, and the first checkpoint only fixes the
+    starting point: it has no step of its own. A step may be negative (a correction that took
+    energy away lowers the total); it is kept. A 5-minute step is ``short``, an hourly one not.
+    """
+    five = sorted(rows_5min.items())
+    first_short = five[0][0] if five else None
+    slot = timedelta(minutes=slot_minutes)
+    hour = timedelta(hours=1)
+    checkpoints: list[tuple[datetime, datetime, float, bool]] = [
+        (start + slot, start, total, True) for start, total in five
+    ]
+    for start, total in rows_hourly.items():
+        if first_short is None or start + hour <= first_short:
+            checkpoints.append((start + hour, start, total, False))
+    checkpoints.sort(key=lambda checkpoint: checkpoint[0])
+    steps: list[IntegralStep] = []
+    previous: float | None = None
+    for _end, start, total, short in checkpoints:
+        if previous is not None:
+            steps.append(IntegralStep(start, total - previous, short))
+        previous = total
+    return steps
+
+
 def integral_rows(steps: Iterable[IntegralStep], tz: tzinfo, *, today: bool) -> list[IntegralRow]:
     """The rows of one integral, accumulated from the oldest step (ADR-027 decision 5).
 

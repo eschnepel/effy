@@ -136,7 +136,13 @@ from .calculation import (
     run_state_from_restore,
     valley_state_from_restore,
 )
-from .const import CONF_DEBUG_EXPORT, DOMAIN
+from .const import (
+    CONF_DEBUG_EXPORT,
+    CONF_FORMULA_SIGNATURE,
+    DOMAIN,
+    PV_DELTA_TODAY_ENTITY_ID,
+    PV_DELTA_TOTAL_ENTITY_ID,
+)
 from .debug_export import DIRECTORY, ExportOutcome, ExportRecord, export_to_file
 from .delta_integrals import Base, DeltaIntegral, DeltaIntegrals, Kind
 from .inputs import (
@@ -151,16 +157,20 @@ from .inputs import (
     grid_import_id,
     output_ids,
     pv_input_ids,
+    signature_pv_inputs,
     soc_id,
 )
 from .history import (
     _local_tz,
+    async_derive_pv_delta_integrals,
     async_probe_last_slot_ready,
+    async_read_delta_bases,
     async_recalculate_history,
     async_recalculate_recent,
     async_rebuild_battery,
     async_rebuild_efficiency,
     async_rebuild_standby,
+    async_rederive_pv_combined,
     async_rewrite_hourly,
     async_update_battery,
     async_update_efficiency,
@@ -578,6 +588,102 @@ class EffyCoordinator:
         self._notify_delta_integrals(
             self._delta_integrals.hand_over(bases, self._now(), _local_tz(self._hass), units=units)
         )
+
+    async def async_run_formula_recalculation(self, signature: Mapping[str, Any]) -> bool:
+        """The full history recalculation after a change of the formula (ADR-027 decision 6).
+
+        Run in the background by ``async_setup_entry`` when the formula signature differs from the
+        one stored in the entry data, under the recorder lock that the slot jobs and the button
+        share. The steps (``_async_formula_steps``): the base of every integral that already has
+        statistics, the full recalculation (the button's), the derivation of every integral that
+        has none, and, when the PV inputs changed, the combined integrals derived again. The
+        signature is stored in the entry's data last, and only if every step succeeded: a failing
+        step logs a warning and stores nothing, the sensors stay unavailable, the slot jobs keep
+        working and the next setup tries again. Returns whether it succeeded; a cancellation
+        (the entry is unloaded) propagates.
+        """
+        step: list[str] = ["start"]
+        try:
+            async with self._recorder_job_lock():
+                await self._async_formula_steps(step)
+            step[0] = "store the signature"
+            self._hass.config_entries.async_update_entry(
+                self._entry,
+                data={**self._entry.data, CONF_FORMULA_SIGNATURE: copy.deepcopy(dict(signature))},
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - whatever fails, the next setup retries
+            _LOGGER.warning(
+                "Effy: the full recalculation after a change of the formula failed at '%s' "
+                "(%s: %s); the PV delta integrals stay unavailable until the next setup, which "
+                "tries again",
+                step[0],
+                type(err).__name__,
+                err,
+            )
+            _LOGGER.debug("Effy: the failed formula recalculation", exc_info=True)
+            return False
+        _LOGGER.info("Effy: the full recalculation after a change of the formula is done")
+        return True
+
+    async def _async_formula_steps(self, step: list[str]) -> None:
+        """The steps of ``async_run_formula_recalculation``; the caller holds the recorder lock.
+
+        ``step`` names the step under way, for the warning of a failure.
+        """
+        options = self._entry.options
+        pv_inputs = list(self._pv_input_ids)
+        combined_ids = (PV_DELTA_TODAY_ENTITY_ID, PV_DELTA_TOTAL_ENTITY_ID)
+
+        # An input that was removed and added again still has statistics: nothing is derived,
+        # its base is its last stored row, handed over *before* the recalculation so that the
+        # gap is booked as deltas. A sensor that restored a state keeps it. Which inputs have no
+        # base is decided by whether they have statistics, not by the signature.
+        step[0] = "read the bases"
+        existing, existing_units = await async_read_delta_bases(
+            self._hass, options, now=self._now(), storage=self._storage
+        )
+        previous = signature_pv_inputs(self._entry.data.get(CONF_FORMULA_SIGNATURE))
+        # Q27 = A: a changed set of PV inputs (or none known) with combined statistics that
+        # exist: they are derived again from the per-input statistics, while their sensors are
+        # unavailable, after the derivation of the new inputs.
+        rewrite_combined = any(statistic_id in existing for statistic_id in combined_ids) and (
+            previous is None or set(previous) != set(pv_inputs)
+        )
+        if rewrite_combined:
+            self._notify_delta_integrals(self._delta_integrals.invalidate(combined_ids))
+        waiting = {
+            statistic_id: base
+            for statistic_id, base in existing.items()
+            if not (rewrite_combined and statistic_id in combined_ids)
+            and (integral := self._delta_integrals.get(statistic_id)) is not None
+            and not integral.available
+        }
+        if waiting:
+            self.hand_over_delta_bases(
+                waiting, {statistic_id: existing_units[statistic_id] for statistic_id in waiting}
+            )
+
+        step[0] = "recalculate the history"
+        await self._async_recalculate_history_locked()
+
+        step[0] = "derive the integrals"
+        bases = dict(
+            await async_derive_pv_delta_integrals(
+                self._hass, options, now=self._now(), storage=self._storage
+            )
+        )
+        if rewrite_combined:
+            step[0] = "derive the combined integrals again"
+            combined, _combined_units = await async_rederive_pv_combined(
+                self._hass, options, now=self._now(), storage=self._storage
+            )
+            bases.update(combined)
+        if bases:
+            step[0] = "hand over the bases"
+            units = await self._storage.statistics_units(list(bases))
+            self.hand_over_delta_bases(bases, units)
 
     def _delta_skip(self) -> frozenset[str]:
         """The PV inputs without a base: a run neither computes nor books their deltas."""
@@ -1081,51 +1187,59 @@ class EffyCoordinator:
         number of slots written. Exceptions propagate to the caller.
         """
         async with self._recorder_job_lock():
-            # The button reads fresh (ADR-025 decision 8): what is held may predate a purge,
-            # an edit of the recorder's history or a changed unit. What this run reads
-            # then fills the cache for the slot jobs that follow.
-            self._storage.clear()
-            self._pending_export = None
-            # With the debug export on, the cache of this run is the export (TASK-0037):
-            # the lock keeps other recalculations out.
-            export_kwargs: dict[str, Any] = {}
-            if self._entry.options.get(CONF_DEBUG_EXPORT):
-                export_kwargs["export"] = self._debug_export_hook()
-            # The PV deltas (fifth value) are booked as soon as the write has succeeded, like
-            # the slot job's; the button never writes the integrals' statistics (ADR-027
-            # decision 4).
-            (
-                written,
-                recalculated_from,
-                touched,
-                last_values,
-                deltas,
-            ) = await async_recalculate_history(
-                self._hass,
-                self._entry.options,
-                energy_reading_cache=self.last_valid_energy_readings,
-                storage=self._storage,
-                delta_skip=self._delta_skip(),
-                **export_kwargs,
-            )
-            self._book_deltas(deltas)
-            if touched:
-                self.notify_updated(touched, last_values)
-            # The standby, efficiency and battery machines are rebuilt over the rewritten
-            # statistics (ADR-018 Amendment 2026-11-01, ADR-023 decision 9); here, at the
-            # caller, not inside the recalculation. Standby first: the efficiency replay
-            # reads the standby statistic the recorder holds, not the machine.
-            self._rebuild_summary = {}
-            await self._async_rebuild_standby()
-            await self._async_rebuild_efficiency()
-            await self._async_rebuild_battery()
-            # The export is written after the rebuilds: their reads (SoC, capacity, the
-            # standby statistic) are in the cache only now, and their outcome is in the file.
-            await self._async_write_pending_export()
-            # The closing step comes last (ADR-012 Amendment 2026-10-18, ADR-021).
-            if recalculated_from is not None:
-                self.set_recalculated_from(recalculated_from)
-            return written
+            return await self._async_recalculate_history_locked()
+
+    async def _async_recalculate_history_locked(self) -> int:
+        """The full history recalculation of the button; the caller holds the recorder lock.
+
+        The button and the implicit recalculation after a change of the formula
+        (``async_run_formula_recalculation``) are this one body, so that they cannot differ.
+        """
+        # The button reads fresh (ADR-025 decision 8): what is held may predate a purge,
+        # an edit of the recorder's history or a changed unit. What this run reads
+        # then fills the cache for the slot jobs that follow.
+        self._storage.clear()
+        self._pending_export = None
+        # With the debug export on, the cache of this run is the export (TASK-0037):
+        # the lock keeps other recalculations out.
+        export_kwargs: dict[str, Any] = {}
+        if self._entry.options.get(CONF_DEBUG_EXPORT):
+            export_kwargs["export"] = self._debug_export_hook()
+        # The PV deltas (fifth value) are booked as soon as the write has succeeded, like
+        # the slot job's; the button never writes the integrals' statistics (ADR-027
+        # decision 4).
+        (
+            written,
+            recalculated_from,
+            touched,
+            last_values,
+            deltas,
+        ) = await async_recalculate_history(
+            self._hass,
+            self._entry.options,
+            energy_reading_cache=self.last_valid_energy_readings,
+            storage=self._storage,
+            delta_skip=self._delta_skip(),
+            **export_kwargs,
+        )
+        self._book_deltas(deltas)
+        if touched:
+            self.notify_updated(touched, last_values)
+        # The standby, efficiency and battery machines are rebuilt over the rewritten
+        # statistics (ADR-018 Amendment 2026-11-01, ADR-023 decision 9); here, at the
+        # caller, not inside the recalculation. Standby first: the efficiency replay
+        # reads the standby statistic the recorder holds, not the machine.
+        self._rebuild_summary = {}
+        await self._async_rebuild_standby()
+        await self._async_rebuild_efficiency()
+        await self._async_rebuild_battery()
+        # The export is written after the rebuilds: their reads (SoC, capacity, the
+        # standby statistic) are in the cache only now, and their outcome is in the file.
+        await self._async_write_pending_export()
+        # The closing step comes last (ADR-012 Amendment 2026-10-18, ADR-021).
+        if recalculated_from is not None:
+            self.set_recalculated_from(recalculated_from)
+        return written
 
     def _debug_export_hook(self) -> Callable[[ExportRecord], Awaitable[None]]:
         """What the history run calls once it has written (TASK-0037).

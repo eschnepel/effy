@@ -1,6 +1,6 @@
 # Task: Formula signature and the implicit full recalculation with the delta derivation
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-027, ADR-019, ADR-024, ADR-012]
 - **Dependencies:** \[TASK-0045c-delta-derivation,
@@ -118,4 +118,87 @@ orchestration and the reader of per-input statistics), and tests for each.
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/const.py` → `CONF_FORMULA_SIGNATURE`
+  (`"formula_signature"`, a key of the entry's **data**).
+- `custom_components/effy/inputs.py` → `formula_signature(options) -> dict`
+  (keyed by the option constants `CONF_PV_INPUT_SENSORS` (sorted, de-duplicated
+  list), `CONF_GRID_IMPORT_SENSOR`, `CONF_DISCHARGE_SENSOR`,
+  `CONF_CHARGE_SENSOR`, `CONF_GRID_EXPORT_SENSOR`, `CONF_EPS_SENSOR`; `None` for
+  an unset role; JSON-safe) and
+  `signature_pv_inputs(signature) -> list[str] | None` (`None` = unknown, `[]` =
+  no PV input). **TASK-0047 adds the additional sensors to `formula_signature`
+  (one more key).**
+- `custom_components/effy/calculation.py` →
+  `steps_from_running_totals(rows_5min, rows_hourly, slot_minutes=5) -> list[IntegralStep]`
+  (the inverse of `integral_rows`; negative steps kept; the first row only fixes
+  the starting point).
+- `custom_components/effy/storage.py` → dataclass
+  `IntegralStat(state, total, last_reset=None)` and
+  `Storage.stored_integral(statistic_id, start, end) -> (5-minute rows, hourly rows)`;
+  implemented in `recorder_storage.py` (`RecorderStorage.stored_integral`),
+  passed through (observed, never reused) in `cache.py`
+  (`Cache.stored_integral`), reader `history._fetch_integral_stored` (registered
+  in the reader guard of `tests/test_history_cache.py`).
+- `custom_components/effy/history.py` →
+  `async_read_delta_bases(hass, entry_options, *, now=None, storage=None) -> (dict[statistic ID, DeltaBase], dict[statistic ID, unit])`
+  (the last stored row of every integral that has statistics) and
+  `async_rederive_pv_combined(hass, entry_options, *, now=None, storage=None) -> (dict[statistic ID, DeltaBase], dict[statistic ID, "kWh"])`
+  (clears the two combined series, then writes them as the addition of the
+  per-input statistics; `({}, {})` without a PV input).
+- `custom_components/effy/delta_integrals.py` →
+  `DeltaIntegrals.invalidate( entity_ids) -> list[DeltaIntegral]`.
+- `custom_components/effy/coordinator.py` →
+  `EffyCoordinator.async_run_formula_recalculation(signature) -> bool` (public,
+  the background task), private `_async_formula_steps(step)`,
+  `_async_recalculate_history_locked()` (the button's body, now shared:
+  `async_recalculate_history_and_report` = lock + this).
+- `custom_components/effy/__init__.py` → `async_setup_entry` compares
+  `formula_signature(entry.options)` with `entry.data[CONF_FORMULA_SIGNATURE]`
+  and, if different or absent, calls
+  `entry.async_create_background_task(hass, coordinator.async_run_formula_recalculation(signature), "effy_formula_recalculation_<entry_id>")`
+  after the platforms are set up.
+- No new sensors, so no translation changes. External dependencies added: none
+  (`tasks/DEPENDENCIES.md` unchanged).
+- Tests (new): `tests/test_formula_signature.py` (29),
+  `tests/test_integral_steps_from_totals.py` (14),
+  `tests/test_delta_rederivation.py` (24, the in-memory recorder),
+  `tests/test_coordinator_formula_recalc.py` (30),
+  `tests/test_formula_recalc_trigger.py` (13); extended:
+  `tests/test_delta_integrals.py` (`invalidate`), `tests/test_history_cache.py`
+  (the pass-through and the reader guard), and the shared fakes
+  `tests/support.py`, `tests/test_coordinator_slot.py`,
+  `tests/test_history_write_only_changed.py` (`async_clear_statistics`),
+  `tests/test_migration.py`.
+- Behaviour to know, **decisions of the Lead Agent within the task, flagged for
+  the human**:
+  1. *Q27 = A is a clear and rewrite.* The combined series are cleared with
+     `Recorder.async_clear_statistics` and written again from the per-input
+     statistics over their whole stored range, not only the history window. That
+     keeps the running total continuous and leaves no row of the earlier
+     composition, but it also drops combined rows the per-input statistics do
+     not explain, and the combined series has no rows for the last, unsettled
+     minutes until Home Assistant compiles them.
+  1. The rewrite runs when combined statistics exist and the stored signature
+     names another set of PV inputs, **or names none** (entry data without a
+     signature). The first row of every per-input series only fixes its starting
+     point, so one step at the far end of the history is not counted.
+  1. The base of a series that has statistics is handed over before the
+     recalculation (so the gap is booked), only to sensors that are unavailable;
+     a restored state is kept. The combined sensors are made unavailable while
+     they are rewritten.
+  1. A failing step logs one warning naming the step; the run is not retried
+     before the next setup.
+  1. The background task starts right after setup; it does not wait for Home
+     Assistant to finish starting.
+- Not verifiable here (no Home Assistant in the sandbox; the in-memory recorder
+  models its read and write rules): `Recorder.async_clear_statistics` and
+  `async_block_till_done` as used, that `async_update_entry(data=...)` reloads
+  nothing in a real Home Assistant, and the run time of the first recalculation.
+- Reviewer (inline, no sub-agent available): PASS. Every acceptance criterion
+  has a test; the code stays within ADR-027 decisions 6 and 9; the full suite
+  passes (2073, 1958 before this task); `ruff check` and `mypy --strict`
+  (package and tests) are clean; `ruff format` flags only `tests/test_cache.py`,
+  as before. Eight mutations of the coordinator's run (no invalidate, rewrite
+  always or never for an unknown signature, no hand-over of the waiting bases, a
+  restored state overwritten, the signature stored on failure, no lock, the
+  derived bases not handed over) each make a test fail.

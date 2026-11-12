@@ -32,6 +32,9 @@ CONF_VALLEY_HYSTERESIS = "valley_hysteresis"
 # Write a debug export file with every history recalculation of the button (TASK-0037,
 # ADR-025 Amendment 2026-11-03). Off unless set.
 CONF_DEBUG_EXPORT = "debug_export"
+# The formula signature (ADR-027 decision 6, TASK-0045e) is kept in the entry's *data*, not its
+# options: storing it reloads nothing.
+CONF_FORMULA_SIGNATURE = "formula_signature"
 
 DEFAULT_MAX_HISTORY_DAYS = 28
 # The valley hysteresis in SoC points. The minimum keeps it above the 10-point valley band

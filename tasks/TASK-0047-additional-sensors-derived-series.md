@@ -161,7 +161,19 @@ listener, registry removal), `catalog.py`, `effy_exports.py`, `coordinator.py`,
 - `tests/test_history_recent_equivalence.py` (`_World`, `_install`,
   `_run_full_recalc`, `_equivalent`).
 - The formula signature (→ task:
-  TASK-0045e-formula-signature-and-implicit-recalc, only if it is done first).
+  TASK-0045e-formula-signature-and-implicit-recalc, done, so this task makes the
+  change): `inputs.formula_signature(options) -> dict` in
+  `custom_components/effy/inputs.py`, a dict keyed by option constants (the PV
+  inputs, the four counters, the EPS sensor); add one key for the sorted list of
+  additional sensors (keyed by the option constant, so that the guard
+  `tests/test_effy_exports.py` keeps passing). `inputs.signature_pv_inputs`
+  reads only the PV list and stays as it is. `__init__.async_setup_entry`
+  compares the signature with `entry.data[const.CONF_FORMULA_SIGNATURE]` and
+  starts `coordinator.async_run_formula_recalculation(signature)` as a
+  background task; nothing else needs to change. An entry that stored the old
+  signature differs from the new one, so the first start after this task
+  recalculates once more. Tests: `tests/test_formula_signature.py`,
+  `tests/test_formula_recalc_trigger.py`.
 
 ## Delivered Artifacts
 

@@ -8,9 +8,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 
-from .const import DOMAIN
+from .const import CONF_FORMULA_SIGNATURE, DOMAIN
 from .coordinator import EffyCoordinator
-from .inputs import legacy_inputs_were_moved, migrate_legacy_input_options, output_ids
+from .inputs import (
+    formula_signature,
+    legacy_inputs_were_moved,
+    migrate_legacy_input_options,
+    output_ids,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +57,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     input as loss. It creates nothing, schedules nothing and writes nothing; the
     options flow stays reachable and reloads the entry when the human saves the
     counters (``OptionsFlowWithReload``).
+
+    The formula signature (the PV inputs, the four counters, the EPS sensor) is compared with the
+    one stored in the entry data (ADR-027 decision 6): if it differs, or none was stored, the full
+    history recalculation runs by itself, in the background, once the platforms are set up. Any
+    other change of the options reloads the entry and runs nothing.
     """
     _async_migrate_input_options(hass, entry)
     if not output_ids(entry.options):
@@ -64,6 +74,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Started after the platforms: the sensors have restored their states, so the base the
+    # recalculation hands over reaches what exists. A task of the entry, cancelled on unload.
+    signature = formula_signature(entry.options)
+    if entry.data.get(CONF_FORMULA_SIGNATURE) != signature:
+        entry.async_create_background_task(
+            hass,
+            coordinator.async_run_formula_recalculation(signature),
+            f"effy_formula_recalculation_{entry.entry_id}",
+        )
 
     return True
 

@@ -34,6 +34,8 @@ def _stub(name: str, **attrs: Any) -> ModuleType:
 
 _CALLS: list[str] = []
 _COORDINATOR_OPTIONS: list[dict[str, Any]] = []
+# the background tasks an entry was asked to create: (name, the signature the task was made for)
+_BACKGROUND: list[tuple[str, Any]] = []
 
 
 class _FakeCoordinator:
@@ -43,6 +45,10 @@ class _FakeCoordinator:
 
     def async_setup(self) -> None:
         _CALLS.append("coordinator.async_setup")
+
+    async def async_run_formula_recalculation(self, signature: Any) -> bool:
+        _CALLS.append("coordinator.async_run_formula_recalculation")
+        return True
 
 
 _stub("homeassistant")
@@ -117,6 +123,14 @@ class _FakeEntry:
         self.entry_id = "entry-1"
         self.version = 1
         self.options: MappingProxyType[str, Any] = MappingProxyType(options)
+        self.data: dict[str, Any] = {}
+
+    def async_create_background_task(self, hass: Any, target: Any, name: str) -> Any:
+        """Note what was asked for; the coroutine is not run (it is closed, never awaited)."""
+        _CALLS.append("async_create_background_task")
+        _BACKGROUND.append((name, target.cr_frame.f_locals.get("signature")))
+        target.close()
+        return None
 
     def add_update_listener(self, listener: Any) -> Any:
         _CALLS.append("add_update_listener")
@@ -153,6 +167,7 @@ class _FakeHass:
 def _setup(options: dict[str, Any]) -> tuple[_FakeHass, _FakeEntry, bool]:
     _CALLS.clear()
     _COORDINATOR_OPTIONS.clear()
+    _BACKGROUND.clear()
     hass, entry = _FakeHass(), _FakeEntry(options)
     ok = asyncio.run(_init.async_setup_entry(hass, entry))
     return hass, entry, ok

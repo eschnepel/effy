@@ -134,6 +134,41 @@ def all_input_ids(options: Mapping[str, Any]) -> list[str]:
     return pv_input_ids(options) + bms_input_ids(options) + ([eps] if eps else [])
 
 
+def formula_signature(options: Mapping[str, Any]) -> dict[str, Any]:
+    """The sensors that make up the formula (ADR-027 decision 6): what a recalculation depends on.
+
+    The PV inputs (a sorted list: their order does not matter), grid import, discharge, charge,
+    grid export and the EPS sensor, ``None`` where a role is unset; keyed by the option each
+    comes from. A change of any of them
+    changes what the history is, so Effy recalculates it by itself at setup; a change of
+    anything else (history days, SoC, capacity, valley hysteresis, debug export) does not.
+    JSON-safe: it is kept in the entry's data and compared after a round trip through the store.
+    TASK-0047 adds the list of additional sensors here.
+    """
+    return {
+        CONF_PV_INPUT_SENSORS: sorted(set(pv_input_ids(options))),
+        CONF_GRID_IMPORT_SENSOR: grid_import_id(options),
+        CONF_DISCHARGE_SENSOR: discharge_id(options),
+        CONF_CHARGE_SENSOR: charge_id(options),
+        CONF_GRID_EXPORT_SENSOR: grid_export_id(options),
+        CONF_EPS_SENSOR: eps_id(options),
+    }
+
+
+def signature_pv_inputs(signature: Mapping[str, Any] | None) -> list[str] | None:
+    """The PV inputs a stored signature was made for; ``None`` when it does not say.
+
+    ``None`` is *unknown*, not *no PV inputs* (which is ``[]``): an entry that never stored a
+    signature has none, and so does anything that is not a signature.
+    """
+    if not isinstance(signature, Mapping):
+        return None
+    pv = signature.get(CONF_PV_INPUT_SENSORS)
+    if not isinstance(pv, list):
+        return None
+    return [str(entity_id) for entity_id in pv]
+
+
 def legacy_inputs_were_moved(options: Mapping[str, Any]) -> bool:
     """True when ``migrate_legacy_input_options`` moves the old list into the PV list.
 

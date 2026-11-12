@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-    from .storage import CapacityState, RawState, StatRow
+    from .storage import CapacityState, IntegralStat, RawState, StatRow
 
 
 class RecorderStorage:
@@ -97,6 +97,19 @@ class RecorderStorage:
             start,
             end,
             label="integral source",
+            source=statistic_id,
+        )
+        return result
+
+    async def stored_integral(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, IntegralStat], dict[datetime, IntegralStat]]:
+        result: tuple[dict[datetime, IntegralStat], dict[datetime, IntegralStat]] = await self._job(
+            "_fetch_integral_stored",
+            statistic_id,
+            start,
+            end,
+            label="integral rows",
             source=statistic_id,
         )
         return result

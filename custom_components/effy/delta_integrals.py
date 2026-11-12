@@ -189,6 +189,20 @@ class DeltaIntegrals:
                 changed.append(integral)
         return changed
 
+    def invalidate(self, entity_ids: Iterable[str]) -> list[DeltaIntegral]:
+        """Make the named integrals unavailable until a base is handed over; returns those changed.
+
+        Used while the combined integrals are rewritten (ADR-027 decision 9): nothing is booked
+        into an integral without a base, and its sensor shows ``unavailable`` meanwhile.
+        """
+        changed: list[DeltaIntegral] = []
+        for entity_id in entity_ids:
+            integral = self._by_id.get(entity_id)
+            if integral is not None and integral.state is not None:
+                integral.state = None
+                changed.append(integral)
+        return changed
+
     def hand_over(
         self,
         bases: Mapping[str, Base],

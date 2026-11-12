@@ -252,6 +252,32 @@ class TestTheStoredMeansForTheDeltaDerivation:
         assert "stored_means" not in str(cache.snapshot()["observed"])
 
 
+class TestTheStoredIntegralRows:
+    """ADR-027 decisions 6 and 9: Effy's own running-total rows are observed, never reused."""
+
+    @pytest.mark.asyncio
+    async def test_the_cache_asks_the_storage_every_time_and_records_nothing(self) -> None:
+        class _Integral:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def stored_integral(self, *args: Any) -> Any:
+                self.calls += 1
+                return {_at(10, 0): float(self.calls)}, {}
+
+        inner = _Integral()
+        cache = _cache_over(inner)
+        first = await cache.stored_integral(
+            "sensor.effy_x_delta_integral_today", _at(9, 0), _at(11, 0)
+        )
+        second = await cache.stored_integral(
+            "sensor.effy_x_delta_integral_today", _at(9, 0), _at(11, 0)
+        )
+        assert (first[0][_at(10, 0)], second[0][_at(10, 0)]) == (1.0, 2.0)  # not reused
+        assert inner.calls == 2
+        assert "stored_integral" not in str(cache.snapshot()["observed"])
+
+
 class TestTheStoredValuesOfThePvInputsInTheSnapshot:
     """ADR-024 Amendment 2026-11-09 (TASK-0045b): the PV delta's stored values are observed."""
 
@@ -466,6 +492,7 @@ class TestNoReadGoesAroundTheInterface:
         "_fetch_statistics",
         "_fetch_capacity_states",
         "_fetch_integral_source",
+        "_fetch_integral_stored",
         "_unchanged_rows",
         "_unchanged_slots",
         "_get_statistics_units",

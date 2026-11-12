@@ -437,3 +437,35 @@ class TestHandOver:
         assert _state(integrals, TODAY_A) == pytest.approx(110.0)
         assert _state(integrals, COMBINED_TODAY) == pytest.approx(0.6)
         assert _state(integrals, COMBINED_TOTAL) == pytest.approx(20.1)
+
+
+# ---------------------------------------------------------------------------
+# Unavailable on purpose (TASK-0045e: the combined integrals are rewritten)
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidate:
+    def test_the_named_sensors_become_unavailable_and_are_returned(self) -> None:
+        integrals = _all({TODAY_A: 1.0, COMBINED_TODAY: 2.0, COMBINED_TOTAL: 3.0})
+        changed = integrals.invalidate([COMBINED_TODAY, COMBINED_TOTAL])
+        assert {i.entity_id for i in changed} == {COMBINED_TODAY, COMBINED_TOTAL}
+        assert integrals.get(COMBINED_TODAY).available is False
+        assert integrals.get(COMBINED_TOTAL).available is False
+        assert _state(integrals, TODAY_A) == 1.0  # the others are not touched
+
+    def test_a_sensor_that_is_unavailable_already_is_not_reported(self) -> None:
+        integrals = _all({COMBINED_TOTAL: 3.0})
+        changed = integrals.invalidate([COMBINED_TODAY, COMBINED_TOTAL])
+        assert [i.entity_id for i in changed] == [COMBINED_TOTAL]
+
+    def test_an_unknown_sensor_is_ignored(self) -> None:
+        assert _all({}).invalidate(["sensor.nothing"]) == []
+
+    def test_an_unavailable_integral_books_nothing_until_it_has_a_base_again(self) -> None:
+        integrals = _all({TODAY_A: 1.0, COMBINED_TODAY: 2.0, COMBINED_TOTAL: 3.0})
+        integrals.invalidate([COMBINED_TODAY, COMBINED_TOTAL])
+        integrals.book({PV_A: (10.0, "Wh")})
+        assert _state(integrals, COMBINED_TOTAL) is None
+        integrals.hand_over({COMBINED_TOTAL: _Base(5.0, None)}, NOW, BERLIN)
+        integrals.book({PV_A: (1000.0, "Wh")})
+        assert _state(integrals, COMBINED_TOTAL) == pytest.approx(6.0)

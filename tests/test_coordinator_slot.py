@@ -146,6 +146,10 @@ class _FakeStorage:
     def clear(self) -> None:
         _storage_events.append("clear")
 
+    async def statistics_units(self, entity_ids: list[str]) -> dict[str, str]:
+        _delta_flow.append("units")
+        return {i: _stored_units[i] for i in entity_ids if i in _stored_units}
+
     def snapshot(self) -> dict[str, Any]:
         _storage_events.append("snapshot")
         return {"version": 1, "raw": {}, "capacity": {}, "stats": {}, "anchors": [], "observed": {}}
@@ -230,6 +234,7 @@ async def _fake_async_recalculate_history(
 ) -> _RecalcResult:
     _storage_seen.append(("recalculate_history", storage))
     _delta_skip_seen.append(("history", delta_skip))
+    _delta_step("recalculate")
     _history_full_calls.append((hass, entry_options, energy_reading_cache))
     _storage_events.append("history")
     _export_seen.append(extra)
@@ -411,7 +416,57 @@ async def _fake_async_rebuild_battery(
     )
 
 
+# The implicit full recalculation after a change of the formula (TASK-0045e): what the history
+# functions it calls return, the order they were called in and the step that fails, if any.
+_delta_flow: list[str] = []
+_delta_fail_at: list[str | None] = [None]
+_delta_read_return: list[Any] = [({}, {})]
+_derive_return: list[dict[str, Any]] = [{}]
+_rederive_return: list[Any] = [({}, {})]
+_stored_units: dict[str, str] = {}
+_delta_pause: list[Any] = [None]  # an async callable the first step awaits
+
+
+_delta_lock: dict[str, bool] = {}  # per step: whether the recorder lock was held (needs the probe)
+
+
+def _delta_step(name: str) -> None:
+    _delta_flow.append(name)
+    _delta_lock[name] = _lock_probe[0]() if _lock_probe[0] is not None else False
+    if _delta_fail_at[0] == name:
+        raise RuntimeError(f"{name} exploded")
+
+
+async def _fake_async_read_delta_bases(
+    hass: Any, entry_options: Any, *, now: Any = None, storage: Any = None
+) -> Any:
+    _storage_seen.append(("read_delta_bases", storage))
+    _delta_step("read")
+    if _delta_pause[0] is not None:
+        await _delta_pause[0]()
+    return _delta_read_return[0]
+
+
+async def _fake_async_derive_pv_delta_integrals(
+    hass: Any, entry_options: Any, *, now: Any = None, storage: Any = None
+) -> Any:
+    _storage_seen.append(("derive_pv_delta_integrals", storage))
+    _delta_step("derive")
+    return dict(_derive_return[0])
+
+
+async def _fake_async_rederive_pv_combined(
+    hass: Any, entry_options: Any, *, now: Any = None, storage: Any = None
+) -> Any:
+    _storage_seen.append(("rederive_pv_combined", storage))
+    _delta_step("rederive")
+    return _rederive_return[0]
+
+
 _history_stub = ModuleType("effy.history")
+_history_stub.async_read_delta_bases = _fake_async_read_delta_bases  # type: ignore[attr-defined]
+_history_stub.async_derive_pv_delta_integrals = _fake_async_derive_pv_delta_integrals  # type: ignore[attr-defined]
+_history_stub.async_rederive_pv_combined = _fake_async_rederive_pv_combined  # type: ignore[attr-defined]
 _history_stub.async_rewrite_hourly = _fake_async_rewrite_hourly  # type: ignore[attr-defined]
 _history_stub.async_update_standby = _fake_async_update_standby  # type: ignore[attr-defined]
 _history_stub.async_update_efficiency = _fake_async_update_efficiency  # type: ignore[attr-defined]
@@ -499,6 +554,7 @@ class _FakeEntry:
     ) -> None:
         self.options = role_options(input_ids, bms_ids or [], output_ids)
         self.entry_id = "01HZXYENTRYID"
+        self.data: dict[str, Any] = {}
 
 
 class _FakeBus:
@@ -526,10 +582,29 @@ class _FakeConfig:
         return os.path.join(self.directory, *parts)
 
 
+class _FakeConfigEntries:
+    """``hass.config_entries``: ``async_update_entry`` as the entry data is stored."""
+
+    def __init__(self) -> None:
+        self.updates: list[dict[str, Any]] = []
+        self.fail = False
+
+    def async_update_entry(self, entry: Any, *, data: Any = None, options: Any = None) -> bool:
+        if self.fail:
+            raise RuntimeError("the entry cannot be stored")
+        self.updates.append({"data": data, "options": options})
+        if data is not None:
+            entry.data = data
+        if options is not None:
+            entry.options = options
+        return True
+
+
 class _FakeHass:
     def __init__(self) -> None:
         self.bus = _FakeBus()
         self.config = _FakeConfig()
+        self.config_entries = _FakeConfigEntries()
 
     def async_create_task(self, coro: Any) -> asyncio.Task[Any]:
         return asyncio.ensure_future(coro)
@@ -929,6 +1004,14 @@ def _reset_slot_job_fakes() -> None:
     _history_full_calls.clear()
     _delta_skip_seen.clear()
     _deltas_return[0] = {}
+    _delta_flow.clear()
+    _delta_lock.clear()
+    _delta_fail_at[0] = None
+    _delta_read_return[0] = ({}, {})
+    _derive_return[0] = {}
+    _rederive_return[0] = ({}, {})
+    _stored_units.clear()
+    _delta_pause[0] = None
     _export_seen.clear()
     _export_outcomes.clear()
     _probe_calls.clear()

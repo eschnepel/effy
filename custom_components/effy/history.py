@@ -147,7 +147,7 @@ import platform
 import sys
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Collection, Iterator
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -214,6 +214,7 @@ from .calculation import (
     interpolate_slot_gaps,
     pv_delta,
     slot_energy_steps,
+    steps_from_running_totals,
     power_drain_events,
     recent_rewrite_start,
     recent_trigger_from,
@@ -236,7 +237,7 @@ from .cache import Cache
 from .debug_export import ExportOutcome, ExportRecord
 from .effy_exports import EFFY_STANDBY_POWER_ENTITY_ID
 from .recorder_storage import RecorderStorage
-from .storage import Storage
+from .storage import IntegralStat, Storage
 from .inputs import (
     all_input_ids,
     battery_hysteresis,
@@ -2301,6 +2302,46 @@ def _fetch_integral_source(
     return found[0], found[1]
 
 
+def _fetch_integral_stored(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
+) -> tuple[dict[datetime, IntegralStat], dict[datetime, IntegralStat]]:
+    """Blocking, run in the executor: the stored 5-minute and hourly rows of an integral.
+
+    ``state``, ``sum`` and ``last_reset`` of every row that has a ``state`` and a ``sum``
+    (ADR-027 decisions 5 and 9); a row without either is left out.
+    """
+    from homeassistant.components.recorder.statistics import (  # noqa: PLC0415
+        statistics_during_period,
+    )
+
+    def moment(value: Any) -> datetime | None:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        return value if isinstance(value, datetime) else None
+
+    found: list[dict[datetime, IntegralStat]] = []
+    for period in ("5minute", "hour"):
+        result = statistics_during_period(
+            hass,
+            start,
+            end,
+            statistic_ids=[statistic_id],
+            period=period,
+            units=None,
+            types={"state", "sum", "last_reset"},
+        )
+        rows: dict[datetime, IntegralStat] = {}
+        for row in result.get(statistic_id, []):
+            ts = moment(row["start"])
+            if ts is None or row.get("sum") is None or row.get("state") is None:
+                continue
+            rows[ts] = IntegralStat(
+                float(row["state"]), float(row["sum"]), moment(row.get("last_reset"))
+            )
+        found.append(rows)
+    return found[0], found[1]
+
+
 def _integral_statistics(
     rows: list[IntegralRow], settled: datetime
 ) -> tuple[list[StatisticData], list[StatisticData]]:
@@ -2409,6 +2450,142 @@ async def async_derive_pv_delta_integrals(
     # the imports above only queued the work: the rows are in when this returns
     await instance.async_block_till_done()
     return bases
+
+
+# Older than any statistic Effy holds: the start of a read of a whole running-total series.
+_SERIES_START = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
+def _last_integral_row(
+    five: Mapping[datetime, IntegralStat], hourly: Mapping[datetime, IntegralStat]
+) -> IntegralStat | None:
+    """The stored row of a series that ends last: a 5-minute row ends 5 minutes, an hourly one
+    1 hour after its start; the 5-minute row wins a tie (it is the finer reading)."""
+    best: tuple[datetime, int, IntegralStat] | None = None
+    for start, row in five.items():
+        candidate = (start + timedelta(minutes=SLOT_MINUTES), 1, row)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    for start, row in hourly.items():
+        candidate = (start + timedelta(hours=1), 0, row)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    return best[2] if best is not None else None
+
+
+async def async_read_delta_bases(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    storage: Storage | None = None,
+) -> tuple[dict[str, DeltaBase], dict[str, str]]:
+    """The base of every PV delta integral that already has statistics (ADR-027 decision 6).
+
+    A PV input that is removed and added again still has its statistics: nothing is derived for
+    it and its base is its last stored row (``state``, ``last_reset``, running total). The same
+    holds for a combined integral that exists. Returns the bases keyed by statistic ID, with the
+    unit each series is stored in; a series without statistics, or without rows, is absent.
+    Reads only; writes nothing.
+    """
+    pv_inputs = list(pv_input_ids(entry_options))
+    if not pv_inputs:
+        return {}, {}
+    now = now if now is not None else datetime.now(tz=timezone.utc)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+    statistic_ids = [
+        *(_pv_delta_integral_id(entity_id) for entity_id in pv_inputs),
+        PV_DELTA_TODAY_ENTITY_ID,
+        PV_DELTA_TOTAL_ENTITY_ID,
+    ]
+    stored_units = await storage.statistics_units(statistic_ids)
+    bases: dict[str, DeltaBase] = {}
+    units: dict[str, str] = {}
+    for statistic_id in statistic_ids:
+        if statistic_id not in stored_units:
+            continue
+        five, hourly = await storage.stored_integral(
+            statistic_id, _SERIES_START, now + timedelta(days=1)
+        )
+        last = _last_integral_row(five, hourly)
+        if last is not None:
+            bases[statistic_id] = DeltaBase(last.state, last.last_reset, last.total)
+            units[statistic_id] = stored_units[statistic_id]
+    return bases, units
+
+
+async def async_rederive_pv_combined(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    storage: Storage | None = None,
+) -> tuple[dict[str, DeltaBase], dict[str, str]]:
+    """Derive the combined integrals again from the per-input statistics (ADR-027 decision 9).
+
+    Q27 = A: when the set of PV inputs changes, the combined *today* and *total* integrals are
+    the per-slot addition of the per-input statistics of the configured inputs: the energy of
+    an input's slot is the change of its running total (``calculation.steps_from_running_totals``),
+    added up in kWh (``combined_integral_rows``). An input that is removed leaves the combined
+    history; one that is new comes from its own derivation, which must have run first; one
+    without statistics adds nothing.
+
+    A one-time rewrite: the two combined series are cleared (the recorder drops their rows and
+    metadata, so that no row of the earlier composition is left and the running total stays
+    continuous), then written in both tables like the derivation does (5-minute rows only up to
+    the last completed slot, hourly rows only for closed hours). The first row of a series only
+    fixes its starting point, so one step at the far end of the history is not counted. The
+    clear comes after every read: a read that fails clears nothing.
+
+    Returns the delta base of both combined series (the last written row, or zero if there was
+    nothing to write) and their unit; ``({}, {})`` without a PV input, which leaves the
+    combined statistics alone.
+    """
+    pv_inputs = list(pv_input_ids(entry_options))
+    if not pv_inputs:
+        return {}, {}
+    now = now if now is not None else datetime.now(tz=timezone.utc)
+    settled = settled_before(now)
+    tz = _local_tz(hass)
+    instance = get_recorder(hass)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+
+    per_input_ids = [_pv_delta_integral_id(entity_id) for entity_id in pv_inputs]
+    stored_units = await storage.statistics_units(per_input_ids)
+    per_input: list[tuple[list[IntegralStep], str]] = []
+    for statistic_id in per_input_ids:
+        if statistic_id not in stored_units:
+            continue
+        five, hourly = await storage.stored_integral(
+            statistic_id, _SERIES_START, now + timedelta(days=1)
+        )
+        steps = steps_from_running_totals(
+            {start: row.total for start, row in five.items()},
+            {start: row.total for start, row in hourly.items()},
+            SLOT_MINUTES,
+        )
+        per_input.append((steps, "kWh" if stored_units[statistic_id] == "kWh" else "Wh"))
+    today_rows, total_rows = combined_integral_rows(per_input, tz)
+
+    combined_ids = [PV_DELTA_TODAY_ENTITY_ID, PV_DELTA_TOTAL_ENTITY_ID]
+    instance.async_clear_statistics(combined_ids)
+    bases: dict[str, DeltaBase] = {}
+    for statistic_id, rows in zip(combined_ids, (today_rows, total_rows), strict=True):
+        short_stats, hourly_stats = _integral_statistics(rows, settled)
+        metadata = _build_statistic_metadata(statistic_id, "kWh", has_sum=True)
+        if short_stats:
+            instance.async_import_statistics(metadata, short_stats, StatisticsShortTerm)
+        if hourly_stats:
+            instance.async_import_statistics(metadata, hourly_stats, Statistics)
+        last = (short_stats or hourly_stats or [None])[-1]
+        bases[statistic_id] = (
+            DeltaBase(last["state"], last.get("last_reset"), last["sum"])
+            if last is not None
+            else DeltaBase(0.0, None, 0.0)
+        )
+    # the clear and the imports only queued the work: the rows are in when this returns
+    await instance.async_block_till_done()
+    return bases, dict.fromkeys(combined_ids, "kWh")
 
 
 async def async_probe_last_slot_ready(

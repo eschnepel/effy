@@ -16,6 +16,7 @@ not part of it (ADR-025 open point 10).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -28,6 +29,19 @@ RawState = tuple[datetime, str]
 
 # One state of the capacity entity: ``(time, state string, unit or None)``.
 CapacityState = tuple[datetime, str, str | None]
+
+
+@dataclass(frozen=True)
+class IntegralStat:
+    """One stored row of a running-total series (a PV delta integral, ADR-027).
+
+    ``state`` is the recorder's ``state`` column, ``total`` its ``sum`` (the running total) and
+    ``last_reset`` the moment the state restarted from (``None`` for the *total* integral).
+    """
+
+    state: float
+    total: float
+    last_reset: datetime | None = None
 
 
 class Storage(Protocol):
@@ -74,6 +88,18 @@ class Storage(Protocol):
         Effy's own rows: **observed, never reused**. Read once, by the delta derivation
         (ADR-027 decision 5), which is no part of a recorded history run; ``({}, {})`` for a
         series with no rows.
+        """
+        ...
+
+    async def stored_integral(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, IntegralStat], dict[datetime, IntegralStat]]:
+        """The stored 5-minute and hourly rows of one running-total series in ``[start, end)``.
+
+        Rows with a ``sum`` and a ``state`` only; ``({}, {})`` for a series with none. Effy's
+        own rows: **observed, never reused**. Read by the derivation of the combined integrals
+        and for the base of a sensor whose statistics exist (ADR-027 decisions 5, 6 and 9),
+        which are no part of a recorded history run.
         """
         ...
 

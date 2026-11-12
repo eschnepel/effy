@@ -42,7 +42,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .storage import CapacityState, RawState, StatRow, Storage
+    from .storage import CapacityState, IntegralStat, RawState, StatRow, Storage
 
 SNAPSHOT_VERSION = 1
 
@@ -394,6 +394,12 @@ class Cache:
         """Passed through: Effy's own rows are observed, never reused, and the delta derivation
         that reads them once is no part of a recorded history run (ADR-027 decision 5)."""
         return await self._inner.stored_means(statistic_id, start, end)
+
+    async def stored_integral(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> tuple[dict[datetime, IntegralStat], dict[datetime, IntegralStat]]:
+        """Passed through, like ``stored_means``: observed, never reused (ADR-027 decision 9)."""
+        return await self._inner.stored_integral(statistic_id, start, end)
 
     # ------------------------------------------------------------------ observed
     async def statistics_units(self, entity_ids: list[str]) -> dict[str, str]:
