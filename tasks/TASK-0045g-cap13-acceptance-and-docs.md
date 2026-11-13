@@ -6,7 +6,8 @@
 - **Dependencies:** \[TASK-0045a-pv-combined-series, TASK-0045b-pv-delta-values,
   TASK-0045c-delta-derivation, TASK-0045d-pv-delta-integral-sensors,
   TASK-0045e-formula-signature-and-implicit-recalc,
-  TASK-0045f-pv-published-entries, TASK-0046-pv-share-sensor\]
+  TASK-0045f-pv-published-entries, TASK-0046-pv-share-sensor\]. TASK-0045f now
+  also waits for CAP-15 (TASK-0048 to TASK-0050), so this task runs last.
 - **Gate:** Gate 2 approved by the human (2026-11-09, with Q27 = A); re-scoped
   in a design interview on 2026-11-07, split from the held TASK-0045.
 
@@ -31,13 +32,18 @@ and the README describes the sensors and what to expect from them.
     negative) and the combined still equal the per-input ones added up;
   - the `change` of an hour equals the energy booked in it;
   - an entry without a PV input has none of the sensors;
-  - the published list carries the four kinds.
+  - the published list carries the PV kinds (TASK-0045f's model).
 - Given the README, then a section describes: the sensors and their IDs; the PV
   delta and the formula; what the derivation writes and when it runs; the
   formula signature and that every existing entry recalculates once after the
   upgrade; that a period's delta is the `change` of the statistic and is shifted
   by one slot; that today can go below 0 after a correction; the contract table
-  with the four new entries; and the ADR table lists ADR-027 with its title.
+  of ADR-029 (version 2: the grouped `sensors` attribute with `quantity`,
+  `scope`, `span`, `function` on every group, the new `series` values, the YAML
+  example) with every published entry, the CAP-15 household entries included;
+  and the ADR table lists ADR-027 and ADR-029 with their titles.
+- Given the published list, then the acceptance module checks every group of the
+  ADR-029 table that the test entry configures.
 - Given `tasks/adr-summary.md`, then the ADR-027 entry says implemented, with
   the state of decision 9; `GLOSSARY.md` agrees with the built code.
 - Given the translations en and de, then every new text is there.

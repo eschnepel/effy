@@ -119,3 +119,16 @@ option triggers it.
 
 **Decided by:** human (design interview 2026-11-07), formalized by the Lead
 Agent
+
+## Amendment — 2026-11-13 (household meter sensors; in force with ADR-029)
+
+**Reason:** ADR-029 adds two optional sensors, the household import and the
+household export, that are neither inputs, outputs nor additional sensors.
+
+**Decision:** each is a role of its own and a sensor still has one role: a
+sensor that is a PV input, a BMS counter, the EPS sensor, the state of charge or
+capacity entity or an additional sensor is refused as a household sensor, and
+the reverse; so is the same sensor as both. A household export needs a household
+import. Both join the formula signature.
+
+**Decided by:** human (2026-11-13), formalized by the Lead Agent

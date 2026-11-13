@@ -35,6 +35,19 @@ and never a drain source. _Avoid_: EPS counter
 output. **EPS input**: its negative part as a positive number, an input that
 takes a loss share like any other. At most one of them is not zero in a slot.
 
+**Household meter**: The meter at the house's grid connection, on the grid side
+of the battery system's AC port. Its two readings are the **household import**
+(energy the house takes from the grid) and the **household export** (energy it
+gives to the grid). Neither is an input or an output, and neither is the battery
+system's grid import or grid export counter. A power-family household import
+sensor that is the only household sensor is signed: its negative part is the
+household export. _Avoid_: Grid meter, house grid import
+
+**Household consumption**: The energy the house uses, balanced at the battery
+system's AC port: household import minus household export, plus the system's
+grid export counter and the EPS output, minus the system's grid import counter,
+never below zero. _Avoid_: Load, house load
+
 **Source sensor**: The user's original entity that an input or output is read
 from. _Avoid_: Source (unqualified), raw sensor
 
@@ -214,6 +227,19 @@ sensor's short-term statistics offer differs per sensor. _Avoid_: Statistic type
 
 **Live state**: An Effy sensor's current Home Assistant state, which is
 best-effort and not a statistic. _Avoid_: Value (unqualified)
+
+### Published contract
+
+**Quantity**: What the data of a published Effy sensor measures: `power`,
+`energy`, `efficiency` or `share`. _Avoid_: Type, kind
+
+**Scope**: How much of the system a published sensor covers: `source` (one
+configured sensor), `combined` (the addition over several sources of one kind,
+for instance all PV inputs) or `system` (the system as a whole).
+
+**Span**: The time one value of a published sensor covers: `slot` (one slot),
+`today` (since local midnight) or `total` (since the running total began).
+_Avoid_: Period (a slot is not a period)
 
 ### Counter movement
 

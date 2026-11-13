@@ -252,3 +252,20 @@ consequence of it, to be confirmed by the human with TASK-0045d)
 ADR-019 (the signature in the entry's data and the implicit recalculation at
 setup), ADR-021 (the four series values and the `change` aggregation) and
 ADR-024 (the derivation's write mode) each carry an amendment of 2026-11-07.
+
+## Amendment — 2026-11-13 (the mechanism works on any series; in force with ADR-029)
+
+**Reason:** ADR-029 wants today and total energy sensors for the household
+consumption series.
+
+**Decision:** the PV delta, its booking, the midnight reset, the delta base and
+the delta derivation (decisions 2 to 5) are generalised from the effective
+series of the PV inputs to any series Effy writes; the PV inputs and the
+household consumption series are two users of one mechanism, and no behaviour of
+the PV sensors changes. The household sensors join the formula signature
+(decision 6); a change of them clears and derives the consumption sensors again,
+as decision 9 does for the combined PV integrals. The published `series` of the
+PV energy sensors is `effective` (ADR-021 amendment 2026-11-13). TASK-0050
+builds it.
+
+**Decided by:** human (2026-11-13, option A), formalized by the Lead Agent

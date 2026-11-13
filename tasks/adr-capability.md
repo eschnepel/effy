@@ -335,3 +335,35 @@ for these sensors; any influence on the loss; a role other than `other`.
 **Order:** after CAP-13 (shared files `sensor.py`, `catalog.py`, `history.py`,
 `effy_exports.py`, `coordinator.py`, `config_flow.py`, `README.md`, the
 translations), one task at a time.
+
+## CAP-15 — Household consumption *(proposed 2026-11-13 by the human's request, after a design interview; ADR-029 accepted 2026-11-13; tasks not yet released)*
+
+**What the user sees:** two optional pickers, **Household import** and
+**Household export**, for the meter at the house's grid connection. With them
+Effy shows `sensor.effy_household_consumption_now` (W) and the energy sensors
+`sensor.effy_household_consumption_today` and `…_total` (kWh): per slot,
+household import − household export + the system's grid export + the EPS output
+− the system's grid import, never below 0, from the series before the loss is
+distributed. The energy sensors follow every correction Effy makes (the
+mechanism of ADR-027, generalised). The meter sensors get derived power or
+smoothed series of their own. Everything is published in the typed contract of
+ADR-029, which TASK-0045f builds for all Effy sensors.
+
+**End-to-end demonstration:** configure a household import counter and a BMS
+with grid counters and an EPS sensor; the history recalculation gives the power
+and energy sensors a history; the next slot books its energy; a power-family
+import sensor with no export sensor splits its negative part into export; the
+effective rows of the entry are the same with and without the household sensors;
+a sensor that is a PV input or an additional sensor is refused as household
+import; changing the meter sensor recalculates and derives the energy again.
+
+**Scope (in):** `TASK-0048` (pickers, series), `TASK-0049` (power sensor),
+`TASK-0050` (energy sensors, the mechanism generalised); their sensors are
+published by `TASK-0045f`. **Scope (out):** any influence on the loss; a
+per-source household sensor; the EPS input in the formula; effective values for
+the system's grid counters.
+
+**Order:** TASK-0048, TASK-0049, TASK-0050, one at a time (shared files
+`config_flow.py`, `inputs.py`, `history.py`, `coordinator.py`, `sensor.py`,
+`calculation.py`, the translations), then TASK-0045f and TASK-0045g of CAP-13,
+which publish and document them.

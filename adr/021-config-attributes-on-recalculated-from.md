@@ -368,3 +368,26 @@ ignores it. `effy_exports.py` gets `EFFY_ROLE_OTHER`, `EFFY_DIRECTION_UNKNOWN`
 and `EFFY_FUNCTION_UNKNOWN`.
 
 **Decided by:** human (2026-11-09), formalized by the Lead Agent
+
+## Amendment — 2026-11-13 (the typed, grouped contract; in force with ADR-029)
+
+**Reason:** ADR-029 adds household sensors and finds the contract not fit to
+carry more: `series` mixes stage, quantity and scope, and `function` is absent
+for most entries. Nothing reads the contract yet.
+
+**Decision:** `schema_version` becomes **2**. The attribute `sensors` is a list
+of groups, one per distinct combination of `series`, `quantity`, `scope`,
+`span`, `role`, `direction`, `function` and `aggregations`, each with the key
+`sensors`, the sorted entity IDs. The keys `entity_id` and `source_entity_id`
+are gone; a new attribute `sources` maps each configured source sensor to the
+Effy sensors that depend on it. `function` is present in every group. The
+`series` values are renamed (`derived_power` → `derived`, `standby_power` →
+`standby`, the efficiencies → `charge`, `discharge`, `battery`, `roundtrip`,
+`pv_share` → `pv`) and ADR-027's `pv_sum` and `pv_delta_integral*` are replaced
+by `effective` with `quantity`, `scope` and `span`. New values: `role`
+`household`; `function` `pv` (a PV input, was `null`, and the PV sum and energy
+sensors), `standby`, `efficiency`, `share`, `household_import`,
+`household_export`, `consumption`. The full table is in ADR-029. TASK-0045f
+builds it.
+
+**Decided by:** human (2026-11-13), formalized by the Lead Agent

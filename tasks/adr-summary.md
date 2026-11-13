@@ -136,6 +136,20 @@ amendment is in force: four counter pickers, no update listener;
 
 ## Recent ADRs
 
+- **ADR-029 (Accepted 2026-11-13, CAP-15, TASK-0048 to TASK-0050, TASK-0045f;
+  not yet implemented):** household consumption = household import − household
+  export + the system's grid export + the EPS output − the system's grid import,
+  in W per slot, from the series before the loss, clamped at 0, the EPS input
+  not subtracted; two pickers (a signed power import sensor alone splits into
+  export); power sensor and, by ADR-027's mechanism generalised, today and total
+  energy sensors. The published contract is reworked before anyone reads it: the
+  `sensors` attribute is a list of groups keyed by `series`, `quantity`,
+  `scope`, `span`, `role`, `direction`, `function` and `aggregations`, each with
+  a list of entity IDs (a separate attribute `sources`, keyed by source sensor,
+  lists the dependent Effy sensors); `function` on every group, `pv` for the PV
+  sum and PV energy sensors; series renamed, `schema_version` 2; TASK-0045f
+  publishes all sensors.
+
 - **PV share (ADR-027 amendments 2026-11-09 and 2026-11-13, ADR-024 amendment
   2026-11-13, TASK-0046):** the series `sensor.effy_pv_share_now`, per slot
   `100 x (effective PV + EPS input) / all effective inputs` in `%`, 0 when
@@ -145,6 +159,7 @@ amendment is in force: four counter pickers, no update listener;
   rows or those of its source series changed (not for an all-equal hour); the
   slot job's hour rewrite recomputes the share over the whole hour
   (`entry_options`). Not yet published (TASK-0045f).
+
 - **ADR-028 (Accepted 2026-11-12, delivered with TASK-0047, CAP-14):** an
   optional list of **additional sensors** (any `sensor` entity in W, kW, Wh or
   kWh; one that has a role or is listed twice is refused). Each gets the series
@@ -157,6 +172,7 @@ amendment is in force: four counter pickers, no update listener;
   the full recalculation); the entity's unique ID carries `additional-` so that
   removing a sensor removes exactly its entity, never an input's. Published with
   `role` `other`, `direction` and `function` `unknown` (ADR-021 amendment).
+
 - **ADR-027 (Accepted 2026-11-07, decision 9 decided 2026-11-09: Q27 = A; being
   implemented, CAP-13, TASK-0045a to TASK-0045g and TASK-0046, Gate 2 approved
   2026-11-09):** the PV combined series (the effective values of all PV inputs
@@ -179,6 +195,7 @@ amendment is in force: four counter pickers, no update listener;
   collide; the unique IDs follow (`<entry_id>_pv_deltasum_integral_…`, a Lead
   Agent consequence awaiting confirmation); names and published `series` values
   are unchanged.
+
 - **ADR-026 (Accepted, 2026-11-06):** the EPS/UPS port as one optional signed
   power sensor (`eps_sensor`, domain sensor, device class power, state class
   `measurement`, W or kW). Per slot its `mean` is split: positive = EPS output
@@ -199,6 +216,7 @@ amendment is in force: four counter pickers, no update listener;
   ADR-019, ADR-021, ADR-023 are in force. Implemented by CAP-12, TASK-0039 to
   TASK-0044 (acceptance test `tests/test_eps_capability.py`; README formula and
   ADR table updated).
+
 - **ADR-023 (Accepted, 2026-10-27):** four efficiency sensors (charge, battery,
   discharge, roundtrip) from the BMS counters configured by function (four
   single pickers replace the BMS-input and output lists, no migration), SoC and
@@ -227,6 +245,7 @@ amendment is in force: four counter pickers, no update listener;
   charge, discharge, SoC and capacity, no pair; it restores (a dump made with
   another hysteresis is refused), catches up at most 3 days (a longer-open span
   is lost, never miscounted) and is rebuilt after a history recalculation.
+
 - **ADR-024 (Accepted, 2026-10-25):** the write phase is 98 % of a history
   recalculation (104 s of 107 s at 28 days on the Pi, about 1 ms per short-term
   row: Home Assistant's import does one `SELECT` and one `UPDATE`/`INSERT` per
@@ -237,6 +256,7 @@ amendment is in force: four counter pickers, no update listener;
   without `has_sum`, so only `mean`, `min`, `max`, `last_reset` are compared; a
   history run does not read hourly rows, an hour is rewritten only if one of its
   5-minute rows is written; the slot job's hour rewrite is unchanged.
+
 - **ADR-022 (Draft, 2026-10-19):** a history recalculation takes about 5 minutes
   on a Raspberry Pi 5 and the code has no phase timing. Proposed: log the wall
   time of the fetch, compute and write phases first (TASK-0010, done 2026-10-19,
