@@ -475,6 +475,12 @@ class TestTheHistoryRecalculation:
         # an hour is rewritten, without being compared, when a change was written in it:
         # one hourly row per such hour and series, and no other hour is written
         affected = {(sid, ts_.replace(minute=0)) for sid, ts_ in changed_short}
+        # ... and the PV share (TASK-0046), whose hour is energy-weighted: a change in the rows of
+        # an input it is computed from in an hour rewrites its hour, whether or not its own
+        # 5-minute rows changed (the weights may have). No stored hourly row is read for that.
+        share = "sensor.effy_pv_share_now"
+        inputs = {"sensor.effy_pv", "sensor.effy_pv_w"}
+        affected |= {(share, hour) for sid, hour in affected if sid in inputs}
         imported = recorder.imports[imports_before:]
         assert sum(n for t, _s, n in imported if t == "5minute") == len(changed_short)
         assert sum(n for t, _s, n in imported if t == "hour") == len(affected)
@@ -666,7 +672,7 @@ class TestTheTimingRecord:
         jobs = [line.strip() for line in msg.splitlines() if "stored rows sensor." in line]
         # one per series: 2 effective and the PV combined series (TASK-0045a), 2 derived
         # power, 1 smoothed
-        assert len(jobs) == 6
+        assert len(jobs) == 7  # one per series; the PV sum (TASK-0045a), the share (TASK-0046)
         assert all("calls 1" in job for job in jobs)
 
     async def test_the_old_first_line_figures_are_still_there(
@@ -778,7 +784,7 @@ class TestTheCheckExplainsItself:
         lines = [line.strip() for line in msg.splitlines()]
         start = next(i for i, line in enumerate(lines) if line.startswith("stored rows check"))
         checks = [line for line in lines[start + 1 :] if line.startswith("sensor.")]
-        assert len(checks) == 6  # one per series, the PV combined series (TASK-0045a) among them
+        assert len(checks) == 7  # one per series, the PV sum (TASK-0045a), the share (TASK-0046)
         assert all("5minute: read " in c and "equal " in c for c in checks)
         assert not any("hour: read" in c for c in checks)  # a history run reads no hours
         assert "state is not returned by Home Assistant" in msg

@@ -22,7 +22,7 @@ Algorithm (full rationale in ADR-001):
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Literal
@@ -257,6 +257,39 @@ def combined_integral_rows(
             short[step.start] = short.get(step.start, False) or step.short
     combined = [IntegralStep(start, energy[start], short[start]) for start in sorted(energy)]
     return integral_rows(combined, tz, today=True), integral_rows(combined, tz, today=False)
+
+
+def pv_share(numerator_w: float, denominator_w: float) -> float:
+    """The PV share of one slot in %: ``100 x numerator / denominator`` (ADR-027 amendment).
+
+    ``numerator_w`` is the effective PV plus the effective EPS input, ``denominator_w`` all
+    effective inputs, both in W. Nothing fed (a denominator that is not positive) is 0, not an
+    error and not a missing value. Because the effective inputs add up to the outputs
+    (ADR-001), the result lies in 0..100; float noise at either end is snapped to it.
+    """
+    if denominator_w <= 0.0:
+        return 0.0
+    ratio = numerator_w / denominator_w
+    # float noise of the waterfall must not turn "all PV" into 99.99999999999999 %: a ratio
+    # within 1e-12 of an end of the range is that end (this also keeps it inside 0..100)
+    if ratio >= 1.0 - 1e-12:
+        return 100.0
+    if ratio <= 1e-12:
+        return 0.0
+    return 100.0 * ratio
+
+
+def weighted_share(shares: Sequence[float], weights: Sequence[float]) -> float:
+    """The PV share of several slots, energy-weighted (the hourly row).
+
+    ``weights`` are the slots' denominators (all effective inputs, in W); a slot's share times
+    its weight is ``100 x`` its numerator, so this is ``100 x sum(numerators) / sum(denominators)``
+    and **not** the mean of the slot shares. 0 when the weights add up to nothing.
+    """
+    total = sum(weights)
+    if total <= 0.0:
+        return 0.0
+    return min(100.0, max(0.0, sum(s * w for s, w in zip(shares, weights, strict=True)) / total))
 
 
 def distribute_loss(

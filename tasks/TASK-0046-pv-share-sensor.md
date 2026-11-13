@@ -1,6 +1,6 @@
 # Task: The PV share of the effective inputs, the sensor PV share now
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-13 (added 2026-11-09)
 - **Related ADRs:** \[ADR-027 (amendment 2026-11-09), ADR-026, ADR-001, ADR-016,
   ADR-021, ADR-024\]
@@ -139,4 +139,45 @@ A pure function for the ratio (zero-mock tests).
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/calculation.py` →
+  `pv_share(numerator_w, denominator_w) -> float` (0..100, 0 for a denominator
+  that is not positive, float noise at either end snapped) and
+  `weighted_share(shares, weights) -> float`
+  (`100 × Σ numerators / Σ denominators`).
+- `custom_components/effy/const.py` →
+  `PV_SHARE_ENTITY_ID = "sensor.effy_pv_share_now"`,
+  `PV_SHARE_UNIQUE_ID_SUFFIX = "pv_share_now"`,
+  `PV_SHARE_TRANSLATION_KEY = "pv_share_now"` (TASK-0045f moves the literals
+  into `effy_exports.py`).
+- `custom_components/effy/history.py` → `_compute_effective_slots` adds
+  `per_sensor[PV_SHARE_ENTITY_ID] = {"unit": "%", "slot_values", "weights", "sources"}`
+  for an entry with a PV input or an EPS sensor;
+  `_hourly_rows(slot_values, weights=None)` (the one hourly derivation,
+  energy-weighted with weights); `_unchanged_weighted_hours(info, all_series)`
+  and its use at the end of `_mark_unchanged`; the writer and `_mark_unchanged`
+  pass `info["weights"]`; `async_rewrite_hourly(..., entry_options=None)`
+  recomputes the share's hour over the whole hour.
+- `custom_components/effy/coordinator.py` → `_async_rewrite_hour` passes
+  `entry_options=dict(self._entry.options)`.
+- `custom_components/effy/sensor.py` → `pv_share_unique_id(entry)`,
+  `_pv_share_entities(hass, entry, coordinator)` (registered in
+  `async_setup_entry` after the PV sum; with a PV input or an EPS sensor, else a
+  registered entity is removed), class
+  `EffyPvShareSensor(RestoreEntity, SensorEntity)` (entity ID fixed, `%`, state
+  class `measurement`, no device class, live push, restore). Not in the
+  published list.
+- `custom_components/effy/translations/en.json`, `de.json` → entity name
+  `pv_share_now`.
+- Docs: `README.md` (section "PV share now": formula, energy-weighted hour, the
+  battery limit), `adr/027` Amendment 2026-11-13, `adr/024` Amendment
+  2026-11-13.
+- Tests: `tests/test_pv_share_calc.py`, `tests/test_pv_share_series.py`,
+  `tests/test_pv_share_sensor.py` (new); added to
+  `tests/test_coordinator_slot.py` (options passed to the hour rewrite); updated
+  for the one more series/entity: `test_history_compute_edges`,
+  `test_history_detail_timing`, `test_history_recent_equivalence` (split pool:
+  share excluded like the PV sum and checked positively),
+  `test_history_recorder_rollup` (the share in the strict recorder world; the
+  hour rewrite equals a full press), `test_history_write_only_changed`,
+  `test_sensor_setup`.
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).

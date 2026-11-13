@@ -148,6 +148,7 @@ class TestSetupEntry:
             ("EffyDerivedPowerSensor", OUT_E),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvShareSensor", None),  # ... and so is the share (TASK-0046)
             ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
             ("EffyPvDeltaIntegralSensor", None),  # combined today
             ("EffyPvDeltaIntegralSensor", None),  # combined total
@@ -172,6 +173,7 @@ class TestSetupEntry:
             ("EffySmoothedSensor", PV_W),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvShareSensor", None),  # ... and so is the share (TASK-0046)
             ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
             ("EffyPvDeltaIntegralSensor", None),  # combined today
             ("EffyPvDeltaIntegralSensor", None),  # combined total
@@ -213,6 +215,7 @@ class TestEpsSensorSetup:
             ("EffySmoothedSensor", self.EPS),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvShareSensor", None),  # ... and so is the share (TASK-0046)
             ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
             ("EffyPvDeltaIntegralSensor", None),  # combined today
             ("EffyPvDeltaIntegralSensor", None),  # combined total
@@ -248,6 +251,7 @@ class TestEpsSensorSetup:
             ("EffySmoothedSensor", PV_W),
             ("EffyRecalculatedFromSensor", None),
             ("EffyPvSumSensor", None),  # a PV input is configured (TASK-0045a)
+            ("EffyPvShareSensor", None),  # ... and so is the share (TASK-0046)
             ("EffyPvDeltaIntegralSensor", SOURCE),  # the PV input's own (TASK-0045d)
             ("EffyPvDeltaIntegralSensor", None),  # combined today
             ("EffyPvDeltaIntegralSensor", None),  # combined total

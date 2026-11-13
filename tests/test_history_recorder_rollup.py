@@ -38,6 +38,7 @@ EFFY = [
     "sensor.effy_out_power",
     "sensor.effy_pv",
     "sensor.effy_pv_power",
+    "sensor.effy_pv_share_now",  # the PV share (TASK-0046), a recorded sensor with a % unit
     "sensor.effy_pv_w",
     "sensor.effy_pv_w_smoothed",
 ]
@@ -48,6 +49,7 @@ FULL = [
     "sensor.effy_out_power",
     "sensor.effy_pv",
     "sensor.effy_pv_power",
+    "sensor.effy_pv_share_now",  # a share in every slot, the PV input being energy family
 ]
 SOURCES = ["sensor.pv", "sensor.out", "sensor.pv_w"]
 OTHER = "sensor.house_energy"  # an entity of another integration, recorded natively
@@ -184,7 +186,12 @@ class TestTheHistoryRecalculationInsertsNothingTheRecorderHasYetToInsert:
         for sid in FULL:
             row = recorder.rows[("hour", sid, _at(11, 0))]
             slots = [recorder.rows[("5minute", sid, _at(11, m))]["mean"] for m in range(0, 60, 5)]
-            assert row["mean"] == pytest.approx(sum(slots) / 12), sid
+            if sid == "sensor.effy_pv_share_now":
+                # energy-weighted, not the mean of its slots (TASK-0046); the weighting itself is
+                # tested in test_pv_share_series and, against a full run, below
+                assert 0.0 <= row["mean"] <= 100.0, sid
+            else:
+                assert row["mean"] == pytest.approx(sum(slots) / 12), sid
             assert row["state"] == slots[-1], sid
             assert row["min"] is None and row["max"] is None, sid  # the recorder's columns, cleared
             assert slots[-1] != NATIVE, sid  # Effy's value replaced the native one
@@ -373,7 +380,9 @@ class TestTheSlotJobsHourlyRewriteSucceedsAfterTheRollUp:
                 units = {sid: unit for sid, (_value, unit) in last_values.items()}
                 # the rewrite reads the recorder's own 5-minute rows, not the world's sources
                 monkeypatch.setattr(_history, "_fetch_statistics", REAL_FETCH)
-                await _history.async_rewrite_hourly(object(), units, _at(11, 0))
+                await _history.async_rewrite_hourly(
+                    object(), units, _at(11, 0), entry_options=_opts()
+                )
         _no_failure(recorder)
         rewritten = {sid: dict(recorder.rows[("hour", sid, _at(11, 0))]) for sid in FULL}
 

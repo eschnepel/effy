@@ -193,3 +193,20 @@ limit of TASK-0030 stays: the event loop is held at most 1 s.
 
 **Decided by:** human (2026-11-09: "If the rest of the calculation is inside the
 main thread or main loop, then the delta processing should be aligned here")
+
+## Amendment — 2026-11-13 (a weighted hour; in force with ADR-027's amendment of the same date, TASK-0046)
+
+**Reason:** the PV share's hourly row is energy-weighted, so it depends on more
+than its 12 five-minute rows.
+
+**Decision:** The rule of the amendment of 2026-10-26 stands: a history run
+reads no hourly row, and an hour is rewritten only if a change was written in
+it. For a series with `weights` (only the PV share) a change in the 5-minute
+rows of the effective series it is computed from (`sources`) also counts as a
+change in the hour, unless every slot of the hour has the same value. The slot
+job's hour rewrite compares stored hourly rows for every series, as before, with
+the share's expected row energy-weighted; the share's hour is recomputed over
+the whole hour for that, since the stored 5-minute rows cannot give the weights
+back. Details: ADR-027, Amendment 2026-11-13.
+
+**Decided by:** Lead Agent, to be confirmed by the human

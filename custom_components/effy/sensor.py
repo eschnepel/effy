@@ -78,6 +78,9 @@ from .const import (
     PV_DELTA_TOTAL_ENTITY_ID,
     PV_DELTA_TOTAL_TRANSLATION_KEY,
     PV_DELTA_TOTAL_UNIQUE_ID_SUFFIX,
+    PV_SHARE_ENTITY_ID,
+    PV_SHARE_TRANSLATION_KEY,
+    PV_SHARE_UNIQUE_ID_SUFFIX,
     PV_SUM_ENTITY_ID,
     PV_SUM_TRANSLATION_KEY,
     PV_SUM_UNIQUE_ID_SUFFIX,
@@ -114,6 +117,11 @@ from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
 def standby_unique_id(entry: ConfigEntry) -> str:
     """Unique ID of the standby power sensor of one config entry."""
     return f"{entry.entry_id}_standby_power"
+
+
+def pv_share_unique_id(entry: ConfigEntry) -> str:
+    """The unique ID of the PV share now sensor (ADR-027 amendment 2026-11-09)."""
+    return f"{entry.entry_id}_{PV_SHARE_UNIQUE_ID_SUFFIX}"
 
 
 def pv_sum_unique_id(entry: ConfigEntry) -> str:
@@ -239,6 +247,7 @@ async def async_setup_entry(
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
     entities.extend(_pv_sum_entities(hass, entry, coordinator))
+    entities.extend(_pv_share_entities(hass, entry, coordinator))
     entities.extend(_pv_delta_entities(hass, entry, coordinator))
     entities.extend(_standby_entities(hass, entry, coordinator))
     entities.extend(_efficiency_entities(hass, entry, coordinator))
@@ -268,6 +277,24 @@ def _pv_sum_entities(
         return [EffyPvSumSensor(hass, entry, coordinator)]
     registry = er.async_get(hass)
     stale = registry.async_get_entity_id("sensor", DOMAIN, pv_sum_unique_id(entry))
+    if stale is not None:
+        registry.async_remove(stale)
+    return []
+
+
+def _pv_share_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """The PV share now sensor, with a PV input or an EPS sensor (ADR-027 amendment 2026-11-09).
+
+    The EPS input counts on the PV side, so an entry with only an EPS sensor has it too. Without
+    either, an entity registered earlier is removed from the registry, so the sensor does not
+    linger as an orphan; its statistics stay.
+    """
+    if coordinator.pv_input_ids or coordinator.eps_id is not None:
+        return [EffyPvShareSensor(hass, entry, coordinator)]
+    registry = er.async_get(hass)
+    stale = registry.async_get_entity_id("sensor", DOMAIN, pv_share_unique_id(entry))
     if stale is not None:
         registry.async_remove(stale)
     return []
@@ -952,6 +979,79 @@ class EffyPvSumSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     @property
     def entity_id(self) -> str:
         return PV_SUM_ENTITY_ID
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last state, then subscribe to the push after a recalculation.
+
+        The restored value is provisional like the live state ADR-016 pushes; the first
+        ``_on_updated`` replaces it. Restoring comes first, so a push is never overwritten.
+        """
+        await super().async_added_to_hass()
+        value, _unit, _attrs = await _async_restore_measurement(self)
+        if value is not None:
+            self._attr_native_value = value
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as the live state (ADR-016)."""
+        self._attr_native_value = round(value, 3) if value is not None else None
+        self.async_write_ha_state()
+
+
+class EffyPvShareSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """PV share now: the share of the effective inputs that PV and the EPS input make up.
+
+    ``100 x (effective PV + EPS input) / all effective inputs`` of the last completed slot, in
+    percent (ADR-027 amendment 2026-11-09); 0 when nothing fed an output. The series itself
+    (``history._compute_effective_slots``, statistic ID ``const.PV_SHARE_ENTITY_ID``, hourly
+    row energy-weighted) is written by history.py like any effective series; this entity only
+    gives it a place to attach to and a live state. After every recalculation that wrote it,
+    the coordinator pushes the last slot's value (ADR-016, see ``EffySensor._on_updated`` for
+    the tradeoff), and the last state is restored after a restart (ADR-021 section 6). It
+    counts the battery's discharge on the other side, so PV that charged the battery and is
+    discharged later is a discharge in the later slot: the share is slot-local. Not yet in
+    the published list (TASK-0045f).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_translation_key = PV_SHARE_TRANSLATION_KEY
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_native_value: float | None = None
+        self._unsub_updates: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return pv_share_unique_id(self._entry)
+
+    @property
+    def entity_id(self) -> str:
+        return PV_SHARE_ENTITY_ID
 
     @entity_id.setter
     def entity_id(self, value: str) -> None:

@@ -1182,7 +1182,13 @@ class EffyCoordinator:
             return
         hour_start = slot.replace(minute=0, second=0, microsecond=0)
         try:
-            await async_rewrite_hourly(self._hass, units, hour_start, storage=self._storage)
+            await async_rewrite_hourly(
+                self._hass,
+                units,
+                hour_start,
+                storage=self._storage,
+                entry_options=dict(self._entry.options),  # the PV share's hour is recomputed
+            )
         except Exception:
             _LOGGER.exception("Effy: rewriting the hourly statistics of %s failed", hour_start)
 

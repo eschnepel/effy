@@ -178,6 +178,33 @@ Each effective sensor exposes three extra attributes for diagnostics:
 - `total_loss_w` – total system loss in W for the current reading
 - `loss_share_w` – the share of that loss assigned to this sensor in W
 
+### PV share now
+
+With a PV input or an EPS sensor in the configuration, Effy also creates
+`sensor.effy_pv_share_now` ("PV share now"): the part of the outputs that PV and
+the EPS input fed, in percent (0 to 100, unit `%`). For every 5-minute slot
+
+```
+share = 100 × (effective PV + effective EPS input) / (all effective inputs)
+```
+
+where the effective inputs are the effective values of every PV input, the EPS
+input, grid import and discharge, all in W. Because the effective inputs add up
+to the outputs (see "How the algorithm works"), this is the part of what left
+the system that PV and the EPS input supplied. A slot in which nothing fed an
+output is 0 %, not a gap.
+
+- **The hourly value is energy-weighted**: the PV energy of the hour over the
+  energy of all inputs, not the mean of the twelve slot percentages. An hour
+  with 100 % of 100 W and 0 % of 300 W is 25 %, not 50 %.
+- **Slot-local, by design.** Effy cannot observe which input fed which output.
+  PV that charged the battery and comes back as discharge counts as discharge in
+  the slot in which it is discharged, not as PV. The share therefore tells you
+  where each slot's energy came from, not where the energy of the day ultimately
+  came from.
+- The statistics of the series are written like those of an effective sensor,
+  and a history recalculation fills the history of a new entry.
+
 ### Standby power
 
 If at least one **BMS input** is configured, Effy also creates

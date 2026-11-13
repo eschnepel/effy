@@ -925,8 +925,7 @@ class TestAdditionalSensorsValidation:
         assert result["options"][ADDITIONAL] == ["sensor.grid_in", "sensor.house"]
 
     def test_without_the_list_or_with_it_emptied_nothing_is_saved_for_it(self) -> None:
-        extras: tuple[dict[str, Any], ...] = ({}, {ADDITIONAL: []}, {ADDITIONAL: None})
-        for extra in extras:
+        for extra in ({}, {ADDITIONAL: []}, {ADDITIONAL: None}):
             assert ADDITIONAL not in self._submit(extra)["options"]
 
     @pytest.mark.parametrize(

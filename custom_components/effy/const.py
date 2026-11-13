@@ -66,6 +66,15 @@ PV_SUM_ENTITY_ID = "sensor.effy_effective_pv_sum_now"
 PV_SUM_UNIQUE_ID_SUFFIX = "effective_pv_sum_now"
 PV_SUM_TRANSLATION_KEY = "effective_pv_sum_now"
 
+# The PV share series (ADR-027 amendment 2026-11-09, TASK-0046): per slot the percentage of the
+# effective inputs that PV and the EPS input make up, 0..100. Its statistic ID is the entity ID of
+# the sensor "PV share now"; written into ``per_sensor`` like any effective series, with the
+# slot's denominator as the weight of the hourly row. Not yet in the published contract:
+# TASK-0045f moves these literals into ``effy_exports.py``.
+PV_SHARE_ENTITY_ID = "sensor.effy_pv_share_now"
+PV_SHARE_UNIQUE_ID_SUFFIX = "pv_share_now"
+PV_SHARE_TRANSLATION_KEY = "pv_share_now"
+
 # The PV delta integrals (ADR-027 decision 3, TASK-0045c): a per-input one,
 # ``sensor.effy_<slug>_delta_integral_today``, and the combined *today* and *total* ones.
 # The combined IDs read ``deltasum`` so that no slug can make a per-input ID equal to one

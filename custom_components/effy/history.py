@@ -216,6 +216,7 @@ from .calculation import (
     slot_energy_steps,
     steps_from_running_totals,
     power_drain_events,
+    pv_share,
     recent_rewrite_start,
     recent_trigger_from,
     run_feed,
@@ -224,6 +225,7 @@ from .calculation import (
     trapezoidal_jump_windows,
     trapezoidal_slot_contributions,
     valley_feed,
+    weighted_share,
 )
 from .const import (
     CONF_MAX_HISTORY_DAYS,
@@ -231,6 +233,7 @@ from .const import (
     PV_DELTA_INTEGRAL_TODAY_SUFFIX,
     PV_DELTA_TODAY_ENTITY_ID,
     PV_DELTA_TOTAL_ENTITY_ID,
+    PV_SHARE_ENTITY_ID,
     PV_SUM_ENTITY_ID,
 )
 from .cache import Cache
@@ -1667,6 +1670,11 @@ async def _compute_effective_slots(
     # values of all PV inputs added up, in W (``effective_values_w`` is W for every input)
     pv_ids: set[str] = set(pv_input_ids(entry_options))
     pv_sum_results: list[tuple[datetime, float]] = []
+    # pv_share_results: the PV share (ADR-027 amendment 2026-11-09): per slot 100 x (the effective
+    # PV + the effective EPS input) / (all effective inputs), and the denominator of the slot,
+    # the weight of the hourly row. It exists for an entry with a PV input or an EPS sensor.
+    pv_share_results: list[tuple[datetime, float]] = []
+    pv_share_weights: dict[datetime, float] = {}
 
     readings_for_slot = phases.wrap("readings", _readings_for_slot)
     waterfall = phases.wrap("waterfall", distribute_loss)
@@ -1708,6 +1716,20 @@ async def _compute_effective_slots(
             if pv_values:
                 pv_sum_results.append((slot, sum(pv_values)))
 
+            if pv_ids or eps is not None:
+                # the effective values are in W for every input (ADR-008); the EPS input half is
+                # the EPS sensor's entry in ``input_readings`` (``split_eps_readings``)
+                pv_side = sum(
+                    distribution.effective_values_w[reading.entity_id]
+                    for reading in input_readings
+                    if reading.entity_id in pv_ids or reading.entity_id == eps
+                )
+                all_inputs = sum(
+                    distribution.effective_values_w[reading.entity_id] for reading in input_readings
+                )
+                pv_share_results.append((slot, pv_share(pv_side, all_inputs)))
+                pv_share_weights[slot] = all_inputs
+
     per_sensor: dict[str, dict[str, Any]] = {}
     for eid in input_ids:
         if not results[eid]:
@@ -1726,6 +1748,15 @@ async def _compute_effective_slots(
 
     if pv_sum_results:
         per_sensor[PV_SUM_ENTITY_ID] = {"unit": "W", "slot_values": pv_sum_results}
+    if pv_share_results:
+        per_sensor[PV_SHARE_ENTITY_ID] = {
+            "unit": "%",
+            "slot_values": pv_share_results,
+            "weights": pv_share_weights,
+            # the effective series it is computed from: an hour of a history run is unchanged
+            # only if their 5-minute rows are too (``_unchanged_weighted_hours``)
+            "sources": [_effy_entity_id(eid) for eid in input_ids],
+        }
 
     per_sensor_power: dict[str, dict[str, Any]] = {}
     for eid in power_results:
@@ -2265,6 +2296,7 @@ async def async_rewrite_hourly(
     units: dict[str, str],
     hour_start: datetime,
     storage: Storage | None = None,
+    entry_options: dict[str, Any] | None = None,
 ) -> int:
     """Rewrite one hour's long-term statistic from its 12 short-term rows (TASK-0007a).
 
@@ -2281,15 +2313,25 @@ async def async_rewrite_hourly(
     hourly rows with the same writer, and so the same mean/state semantics, as
     the full history recalculation (``include_short_term=False``). A statistic
     without any row in the hour is skipped. Returns the number of statistics
-    rewritten. Exceptions propagate; the caller logs them and does not retry —
-    the next history recalculation corrects the hour.
+    rewritten.
+
+    The PV share (``PV_SHARE_ENTITY_ID``, TASK-0046) is the exception: its hourly row is
+    energy-weighted and the stored 5-minute shares cannot give the weights back, so its hour
+    is recomputed over the whole hour with ``_compute_effective_slots``, the code of the full
+    recalculation, from ``entry_options``. Without them the share is left out (its hour is
+    corrected by the next history recalculation) rather than written as the mean of its slots.
+
+    Exceptions propagate; the caller logs them and does not retry — the next history
+    recalculation corrects the hour.
     """
-    statistic_ids = sorted(units)
-    if not statistic_ids:
+    statistic_ids = sorted(sid for sid in units if sid != PV_SHARE_ENTITY_ID)
+    share_wanted = PV_SHARE_ENTITY_ID in units and entry_options is not None
+    if not statistic_ids and not share_wanted:
         return 0
     storage = _storage_or_default(hass, storage, _NO_TIMINGS)
-    rows: dict[str, list[StatRow]] = await storage.statistics(
-        statistic_ids, hour_start, hour_start + timedelta(hours=1)
+    hour_end = hour_start + timedelta(hours=1)
+    rows: dict[str, list[StatRow]] = (
+        await storage.statistics(statistic_ids, hour_start, hour_end) if statistic_ids else {}
     )
     series: dict[str, dict[str, Any]] = {}
     for statistic_id in statistic_ids:
@@ -2300,6 +2342,12 @@ async def async_rewrite_hourly(
         )
         if slot_values:
             series[statistic_id] = {"unit": units[statistic_id], "slot_values": slot_values}
+    if share_wanted and entry_options is not None:
+        per_sensor, _power, _smoothed = await _compute_effective_slots(
+            hass, entry_options, hour_start, hour_end, storage=storage
+        )
+        if PV_SHARE_ENTITY_ID in per_sensor:
+            series[PV_SHARE_ENTITY_ID] = per_sensor[PV_SHARE_ENTITY_ID]
     if not series:
         return 0
     # An hourly row that is already what the writer would write is not written again.
@@ -3318,17 +3366,33 @@ def _fetch_statistics(
     return result
 
 
-def _hourly_rows(slot_values: list[tuple[datetime, float]]) -> dict[datetime, tuple[float, float]]:
+def _hourly_rows(
+    slot_values: list[tuple[datetime, float]],
+    weights: Mapping[datetime, float] | None = None,
+) -> dict[datetime, tuple[float, float]]:
     """The hourly rows of a series' slots: hour -> (mean, state).
 
     ``mean`` is the average of every slot in the hour, ``state`` the last one
     (``slot_values`` ascend). The single derivation behind both the writer and the
     comparison with what is stored (TASK-0030), so they cannot drift apart.
+
+    A series with ``weights`` (the PV share, TASK-0046: slot -> the slot's denominator) is
+    averaged **energy-weighted**, ``100 x sum(numerators) / sum(denominators)`` of the hour, and
+    0 for an hour whose weights add up to nothing; its ``state`` is still the last slot's value.
     """
-    hourly: dict[datetime, list[float]] = {}
+    hourly: dict[datetime, list[tuple[float, float]]] = {}
     for ts, val in slot_values:
-        hourly.setdefault(ts.replace(minute=0, second=0, microsecond=0), []).append(val)
-    return {hour: (sum(vals) / len(vals), vals[-1]) for hour, vals in hourly.items()}
+        weight = 1.0 if weights is None else weights.get(ts, 0.0)
+        hourly.setdefault(ts.replace(minute=0, second=0, microsecond=0), []).append((val, weight))
+    return {
+        hour: (
+            (sum(v for v, _w in rows) / len(rows))
+            if weights is None
+            else weighted_share([v for v, _w in rows], [w for _v, w in rows]),
+            rows[-1][0],
+        )
+        for hour, rows in hourly.items()
+    }
 
 
 # Columns of a stored row the writer controls: it writes mean and state and clears the
@@ -3484,6 +3548,46 @@ def _unchanged_hours(
     return frozenset(set(hour.values()) - touched)
 
 
+def _unchanged_weighted_hours(
+    info: dict[str, Any], all_series: tuple[dict[str, dict[str, Any]], ...]
+) -> frozenset[datetime]:
+    """The hours of a history run in which a weighted series (the PV share) has no change.
+
+    The hour of the PV share is energy-weighted: it depends on the numerators and the
+    denominators of its slots, so "none of its own 5-minute rows changed" is not enough (a slot
+    whose share stays 0 while its weight changes changes the hour). It is unchanged only if
+    also the 5-minute rows of every effective series it is computed from (``info["sources"]``)
+    are unchanged in that hour, which fixes the numerator and the denominator of every slot.
+    The exception is an hour in which every slot has the same share (a system without a
+    battery or grid input is at 100 % all day): its weighted mean is that value whatever the
+    weights are, so only the share's own rows count there. A series that has no row in a slot
+    adds nothing to it; a row older than the short-term cutoff, which has no stored 5-minute row
+    to compare, counts as changed. No hourly row is read: a history run does not read them
+    (ADR-024 Amendment 2026-10-26).
+    """
+
+    def hour_of(ts: datetime) -> datetime:
+        return ts.replace(minute=0, second=0, microsecond=0)
+
+    unchanged: frozenset[datetime] = info.get("unchanged_short", frozenset())
+    values_of: dict[datetime, set[float]] = {}
+    for ts, value in info["slot_values"]:
+        values_of.setdefault(hour_of(ts), set()).add(value)
+    touched = {hour_of(ts) for ts, _value in info["slot_values"] if ts not in unchanged}
+    for series in all_series:
+        for source_id in info.get("sources", ()):
+            source = series.get(source_id)
+            if source is None:
+                continue
+            source_unchanged: frozenset[datetime] = source.get("unchanged_short", frozenset())
+            touched.update(
+                hour_of(ts)
+                for ts, _value in source["slot_values"]
+                if ts not in source_unchanged and len(values_of.get(hour_of(ts), ())) != 1
+            )
+    return frozenset(set(values_of) - touched)
+
+
 async def _mark_unchanged(
     hass: HomeAssistant,
     all_series: tuple[dict[str, dict[str, Any]], ...],
@@ -3526,8 +3630,11 @@ async def _mark_unchanged(
             )
             # The hour rewrite (no 5-minute rows to go by) compares the stored hourly
             # rows; a history run derives its hours from its 5-minute result below.
+            weights: Mapping[datetime, float] | None = info.get("weights")
             hourly = (
-                _hourly_rows(slot_values) if include_long_term and not include_short_term else {}
+                _hourly_rows(slot_values, weights)
+                if include_long_term and not include_short_term
+                else {}
             )
             if not short and not hourly:
                 continue
@@ -3565,6 +3672,11 @@ async def _mark_unchanged(
                 if include_long_term and include_short_term
                 else found["hourly"]
             )
+    if include_long_term and include_short_term:
+        for series in all_series:
+            for info in series.values():
+                if "weights" in info:
+                    info["unchanged_hourly"] = _unchanged_weighted_hours(info, all_series)
     phases.note_stored_checks(notes)
     return values_read
 
@@ -3796,7 +3908,7 @@ async def _write_recorder_statistics(
 
         long_term_stats: list[StatisticData] = [
             {"start": hour_ts, "mean": mean, "state": state}
-            for hour_ts, (mean, state) in _hourly_rows(slot_values).items()
+            for hour_ts, (mean, state) in _hourly_rows(slot_values, info.get("weights")).items()
             if hour_ts not in unchanged_hourly
             and (settled is None or hour_ts + timedelta(hours=1) <= settled)
         ]

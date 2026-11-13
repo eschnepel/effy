@@ -177,6 +177,49 @@ battery and comes back as discharge counts as "discharge" later; the README
 states this limit. One overall sensor, because Effy cannot observe which input
 fed which output.
 
+## Amendment — 2026-11-13 (TASK-0046 implementation: how the energy-weighted hour is written)
+
+**Reason:** the PV share's hourly row is not the mean of its slots, but every
+place that derives, compares or rewrites an hourly row did exactly that.
+
+**Decision:**
+
+1. **Weights travel with the series.** The share's entry in `per_sensor` has,
+   beside `unit` and `slot_values`, `weights` (slot → the slot's denominator,
+   all effective inputs in W) and `sources` (the statistic IDs of the effective
+   series it is computed from). The one derivation of an hourly row
+   (`history._hourly_rows`) averages energy-weighted when `weights` are given:
+   `100 × Σ numerators / Σ denominators`, 0 for an hour whose weights add up to
+   nothing, `state` the last slot's value.
+1. **A slot's value.** `pv_share(numerator, denominator)`: 0 for a denominator
+   that is not positive; a ratio within 1e-12 of 0 or 1 is exactly 0 or 100 (the
+   waterfall's float noise must not make "all PV" 99.99999999999999 %). A slot
+   in which no input has a row has no row at all, as for every effective series;
+   a slot in which inputs have rows but nothing is fed is 0.
+1. **History run (ADR-024 Amendment 2026-10-26 stands: no hourly row is read).**
+   An hour of the share is unchanged only if its own 5-minute rows are unchanged
+   **and** the 5-minute rows of the effective series in `sources` are unchanged
+   in that hour: together they fix the numerators and the denominators. An hour
+   in which every slot has the same share (PV only: 100 % all day) ignores the
+   sources, since its weighted mean is that value whatever the weights. So a
+   change in an input's data in an hour rewrites the share's one hourly row even
+   when its own 5-minute rows are equal; that costs one row and no read.
+1. **Hour rewrite of the slot job** (`async_rewrite_hourly`). The stored
+   5-minute shares cannot give the weights back. The share's hour is recomputed
+   over the whole hour with `_compute_effective_slots`, the code of the full
+   recalculation, from the entry options (new parameter `entry_options`, passed
+   by the coordinator): one extra fetch and compute of one hour, once an hour.
+   Without options the share is left out and the next history recalculation
+   corrects the hour; it is never written as the mean of its slots. The hourly
+   rows of the other series are rewritten from the stored 5-minute rows as
+   before.
+1. **Entity.** `sensor.effy_pv_share_now` exists with a PV input or an EPS
+   sensor; otherwise a registered entity is removed, its statistics stay (as the
+   PV sum). Unique ID `<entry_id>_pv_share_now`.
+
+**Decided by:** Lead Agent, as the task's open point asked (decided with the
+Lead, not by the worker), to be confirmed by the human
+
 ## Amendment — 2026-11-10 (the combined integrals' entity IDs read `deltasum`)
 
 **Reason:** TASK-0045c found that a PV source whose slug is `pv` (for example

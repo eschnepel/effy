@@ -253,13 +253,19 @@ async def _fake_async_recalculate_history(
 
 
 _hourly_calls: list[tuple[dict[str, str], datetime, bool]] = []
+_options_seen: list[Any] = []  # the entry options each hour rewrite was given (TASK-0046)
 _hourly_raise_next: list[bool] = [False]
 
 
 async def _fake_async_rewrite_hourly(
-    hass: Any, units: dict[str, str], hour_start: datetime, storage: Any = None
+    hass: Any,
+    units: dict[str, str],
+    hour_start: datetime,
+    storage: Any = None,
+    entry_options: Any = None,
 ) -> int:
     """Records the call and whether the recalculation lock was held at that moment."""
+    _options_seen.append(entry_options)
     _storage_seen.append(("rewrite_hourly", storage))
     lock_held = _lock_probe[0]() if _lock_probe[0] is not None else False
     _hourly_calls.append((dict(units), hour_start, lock_held))
@@ -997,6 +1003,7 @@ def _reset_slot_job_fakes() -> None:
     _storage_seen.clear()
     _storage_events.clear()
     _hourly_calls.clear()
+    _options_seen.clear()
     _hourly_raise_next[0] = False
     _standby_calls.clear()
     _standby_raise_next[0] = False
@@ -1437,6 +1444,16 @@ class TestHourlyRewriteInTheSlotJob(_SlotCoordinatorBase):
         await self._drain(coord)
         assert len(_history_calls) == 1
         assert _hourly_calls == [(self.UNITS, _ts(11, 0), True)]  # hour 11:00, under the lock
+
+    @pytest.mark.asyncio
+    async def test_the_rewrite_is_given_the_options_of_the_entry(self) -> None:
+        """TASK-0046: the PV share of the hour is recomputed over the whole hour, which needs
+        the formula's options (the stored 5-minute shares cannot give the weights back)."""
+        coord = self._prepare()
+        coord._now = lambda: _ts(12, 0, 10)  # type: ignore[method-assign]
+        coord._on_recorder_statistics(None)
+        await self._drain(coord)
+        assert _options_seen == [coord._entry.options]
 
     @pytest.mark.asyncio
     async def test_the_rewrite_comes_after_the_recent_recalculation(self) -> None:

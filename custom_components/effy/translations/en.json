@@ -96,6 +96,9 @@
       "effective_pv_sum_now": {
         "name": "Effective PV Sum now"
       },
+      "pv_share_now": {
+        "name": "PV share now"
+      },
       "pv_input_delta_integral_today": {
         "name": "{source_name} delta integral today"
       },

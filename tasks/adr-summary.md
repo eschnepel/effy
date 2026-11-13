@@ -1,11 +1,11 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-11-12 (CAP-14 delivered: the additional sensors, ADR-028;
-CAP-12 delivered: the EPS/UPS port, ADR-026; TASK-0025: the battery feed;
-TASK-0024: the valley and span machine; TASK-0023: SoC, capacity and hysteresis
-options; ADR-023 accepted 2026-10-27; the ADR-019 amendment is in force: four
-counter pickers, no update listener; `effy_exports.py` added). Keep this
-concise; ADRs in `adr/` are authoritative.
+Last updated: 2026-11-13 (TASK-0046, the PV share, delivered; CAP-14 delivered:
+the additional sensors, ADR-028; CAP-12 delivered: the EPS/UPS port, ADR-026;
+TASK-0025: the battery feed; TASK-0024: the valley and span machine; TASK-0023:
+SoC, capacity and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019
+amendment is in force: four counter pickers, no update listener;
+`effy_exports.py` added). Keep this concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -136,6 +136,15 @@ concise; ADRs in `adr/` are authoritative.
 
 ## Recent ADRs
 
+- **PV share (ADR-027 amendments 2026-11-09 and 2026-11-13, ADR-024 amendment
+  2026-11-13, TASK-0046):** the series `sensor.effy_pv_share_now`, per slot
+  `100 x (effective PV + EPS input) / all effective inputs` in `%`, 0 when
+  nothing fed an output, slot-local. Its hourly row is energy-weighted
+  (`weights` travel with the series; one derivation in `_hourly_rows`). A
+  history run reads no hourly row and rewrites the share's hour when its own
+  rows or those of its source series changed (not for an all-equal hour); the
+  slot job's hour rewrite recomputes the share over the whole hour
+  (`entry_options`). Not yet published (TASK-0045f).
 - **ADR-028 (Accepted 2026-11-12, delivered with TASK-0047, CAP-14):** an
   optional list of **additional sensors** (any `sensor` entity in W, kW, Wh or
   kWh; one that has a role or is listed twice is refused). Each gets the series
