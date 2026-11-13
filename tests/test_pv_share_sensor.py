@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,7 +29,7 @@ class _ShareCoordinator(_Coordinator):
         self.eps_id = eps
 
 
-def _share(coordinator: _Coordinator | None = None) -> _sensor.EffyPvShareSensor:
+def _share(coordinator: _Coordinator | None = None) -> Any:
     return _sensor.EffyPvShareSensor(object(), _Entry(), coordinator or _ShareCoordinator())
 
 

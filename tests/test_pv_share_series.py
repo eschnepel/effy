@@ -13,22 +13,17 @@ from typing import Any
 
 import pytest
 
-from tests.test_eps_waterfall import (
-    END,
-    SLOTS,
-    START,
-    _add_power,
+from tests.test_eps_waterfall import END, SLOTS, START, _add_power
+from tests.test_history_recent_equivalence import (
     _const,
+    _equivalent,
     _history,
     _install,
     _options,
-    _World,
-)
-from tests.test_history_recent_equivalence import (
-    _equivalent,
     _run_full_recalc,
     _run_timer_cycles,
     _ts,
+    _World,
 )
 
 PV_A = "sensor.pv_a_w"
@@ -503,5 +498,6 @@ class TestWhichHoursOfTheShareAreUnchangedInAHistoryRun:
         series[SHARE]["weights"] = {self.HOUR: 100.0, self.HOUR + timedelta(minutes=5): 300.0}
         storage = _StoredRows(hourly_unchanged=frozenset({self.HOUR}))
         await self._mark(series, storage, include_short_term=False)
-        assert storage.asked[SHARE] == {self.HOUR: (pytest.approx(25.0), 0.0)}
+        assert list(storage.asked[SHARE]) == [self.HOUR]
+        assert storage.asked[SHARE][self.HOUR] == pytest.approx((25.0, 0.0))
         assert series[SHARE]["unchanged_hourly"] == frozenset({self.HOUR})
