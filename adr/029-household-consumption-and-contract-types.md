@@ -206,3 +206,62 @@ started and takes over the rework.
 
 **Decided by:** the human, 2026-11-13 (chat); text by the Lead Agent, not yet
 read line by line by the human.
+
+## Amendment — 2026-11-14 (implementation, TASK-0048)
+
+**Reason:** the implementation of the household meter inputs had to settle
+points the decisions leave open.
+
+**Decision:**
+
+1. **Role check at read time.** A sensor chosen as household import that also
+   has another role (a PV input, a BMS counter, the EPS sensor, the state of
+   charge, the capacity) is not a household sensor: the options flow refuses it,
+   and `inputs.household_import_id` drops it from a hand-edited entry. The
+   household export is dropped when it has another role, is the household import
+   itself, or there is no valid household import (decision 1: without an import
+   there is no household sensor). A sensor that is both in the additional list
+   and a household sensor is a household sensor; `inputs.additional_ids` drops
+   it from the list at read time (ADR-028 amendment 2026-11-12, point 4,
+   extended).
+1. **Unique ID.** The Effy entity of a household sensor has the unique ID
+   `<entry_id>_household-<slug>_power` (or `_smoothed`); its entity ID is the
+   input's, `sensor.effy_<slug>_power` / `_smoothed`. The marker is not a prefix
+   of ADR-028's `additional-` and the other way round, so each registry cleanup
+   (one shared helper, one call per marker) finds exactly its own entities. A
+   sensor still configured keeps both of its possible entities.
+1. **Not published here.** The household entities are built by the code that
+   builds an input's and an additional sensor's, but are not registered with
+   `register_published`: `describe_source_series` has no household role yet.
+   TASK-0045f registers them.
+1. **The series is the measured one.** The household series are fetched,
+   converted and smoothed with the inputs and kept out of the slot union and the
+   slot loop (ADR-028 amendment points 2 and 3 apply unchanged). A power-family
+   series is never clamped, so the negative part of a power import sensor stays
+   in it, with or without a household export sensor. What decision 2 calls
+   signed concerns how the series is read:
+   `inputs.household_import_is_signed(options)` is true when there is a
+   household import and no (valid) household export; TASK-0049 splits the series
+   only then and clamps both at 0 otherwise, and TASK-0045f gives the smoothed
+   import series the direction `both` only then.
+1. **Formula signature.** The signature of ADR-027 decision 6 holds the
+   household import and export under their option keys `household_import_sensor`
+   and `household_export_sensor`, as `inputs` reads them (`None` when unset or
+   dropped), so an invalid hand edit does not change it. An entry that stored
+   the earlier signature differs from it and recalculates once more.
+1. **Validation.** Role conflicts share the check of ADR-019
+   (`sensor_in_two_roles`); the household import and then the export are checked
+   after the additional list, so the error sits on the household picker, also
+   for a sensor of the additional list. A household export without an import is
+   refused on the export picker (`household_export_needs_import`); a unit other
+   than W, kW, Wh or kWh is refused on the picker of that sensor
+   (`household_unit_not_supported`); a sensor without a unit or without a state
+   is accepted.
+
+**Known limit (not run against a real Home Assistant):** a sensor moved from a
+role to the household meter keeps its old role entity in the registry, as
+ADR-028 recorded for the additional sensors; the new entity has the same entity
+ID and a different unique ID, so the registry may give it another entity ID
+until the old entity is removed by hand.
+
+**Decided by:** Lead Agent (◇ formalization), to be confirmed by the human

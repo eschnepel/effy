@@ -1,6 +1,6 @@
 # Task: Household meter inputs and their series
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-15
 - **Related ADRs:** \[ADR-029, ADR-028, ADR-019, ADR-012, ADR-013, ADR-014,
   ADR-024, ADR-026, ADR-027\]
@@ -8,9 +8,10 @@
   `config_flow.py`, `inputs.py`, `history.py`, `coordinator.py`, `sensor.py` and
   the translations with TASK-0049 and TASK-0050, so the three run one after the
   other: 0048, 0049, 0050.
-- **Gate:** ADR-029 accepted by the human on 2026-11-13 ("ADR is accepted"); the
-  task is not yet released for work. Requested by the human on 2026-11-13;
-  design questions answered in chat the same day.
+- **Gate:** ADR-029 accepted by the human on 2026-11-13 ("ADR is accepted").
+  Released for work by the human on 2026-11-14 ("work on effy task 48").
+  Requested by the human on 2026-11-13; design questions answered in chat the
+  same day.
 
 ## Goal
 
@@ -96,7 +97,7 @@ Human, 2026-11-13, in answer to the questions of this task:
 1. A sensor that is already in the additional sensors list is refused as
    household import or export; the user removes it from the list first.
 
-## Open points for Gate 1 (assumed here; the human can overrule)
+## Open points for Gate 1 (assumed here; the human can overrule; implemented as assumed on 2026-11-14)
 
 - A household export sensor needs a household import sensor (assumed; the human:
   "import required to enable the sensor").
@@ -150,4 +151,72 @@ checks, `formula_signature`), `history.py` (read, convert and smooth like
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/const.py` →
+  `CONF_HOUSEHOLD_IMPORT_SENSOR = "household_import_sensor"`,
+  `CONF_HOUSEHOLD_EXPORT_SENSOR = "household_export_sensor"`,
+  `HOUSEHOLD_UNITS = ADDITIONAL_UNITS` (`("W", "kW", "Wh", "kWh")`),
+  `HOUSEHOLD_UNIQUE_ID_MARKER = "household-"`.
+- `custom_components/effy/inputs.py` →
+  `household_import_id(options) -> str | None`,
+  `household_export_id(options) -> str | None` (`None` without a valid import),
+  `household_ids(options) -> list[str]` (import first),
+  `household_import_is_signed(options) -> bool` (true with an import and no
+  valid export: the smoothed power-family import series is then read with its
+  sign, TASK-0049 splits it and TASK-0045f gives it the direction `both`; the
+  series written is the measured one either way),
+  `series_only_ids(options) -> list[str]` (additional first, then household: the
+  sensors that get the series of an input and are in no formula);
+  `additional_ids` now also drops a household sensor; `formula_signature` gains
+  the keys `CONF_HOUSEHOLD_IMPORT_SENSOR` and `CONF_HOUSEHOLD_EXPORT_SENSOR`
+  (`None` when unset). `signature_pv_inputs` unchanged.
+- `custom_components/effy/config_flow.py` →
+  `_build_schema(..., household_import_sensor=None, household_export_sensor=None)`
+  (two optional single-entity `sensor` pickers, suggested value, no device-class
+  filter), `_HOUSEHOLD_KEYS`, `_validate_household_option(hass, user_input)`,
+  household role-conflict check inside `_validate_user_input` (error
+  `sensor_in_two_roles` on the household picker, after the additional list), new
+  error keys `household_export_needs_import` (on the export picker) and
+  `household_unit_not_supported`; `_normalised` saves each only when set.
+- `custom_components/effy/history.py` → `_compute_effective_slots` reads,
+  converts and smooths `series_only_ids(entry_options)` (was `additional_ids`);
+  `_additional_series` unchanged. Nothing else in `history.py` changed.
+- `custom_components/effy/coordinator.py` →
+  `EffyCoordinator.household_import_id`, `.household_export_id`,
+  `.household_ids` (properties; `household_ids` a copy).
+- `custom_components/effy/sensor.py` →
+  `EffyDerivedPowerSensor(..., additional: bool = False, household: bool = False)`
+  and `EffySmoothedSensor(..., additional=False, household=False)` (unique ID
+  `<entry_id>_household-<slug>_power|_smoothed` when `household`; a household
+  entity is **not** registered with `register_published`);
+  `_build_derived_entities(..., additional=frozenset(), household=frozenset())`,
+  `_add_late_derived_entities(..., additional=None, household=None)`,
+  `_remove_dropped_marked_entities(hass, entry, marker, sources)` (new, shared),
+  `_remove_dropped_additional_entities` (now delegates; unchanged behaviour),
+  `_remove_dropped_household_entities(hass, entry, household)` (new). No
+  effective sensor is built for a household sensor.
+- `custom_components/effy/translations/en.json`, `de.json` → labels
+  `household_import_sensor` and `household_export_sensor` in the user and init
+  steps, errors `household_export_needs_import` and
+  `household_unit_not_supported` in both, a sentence in both step descriptions.
+- Docs: `README.md` (configuration table, a paragraph, ADR table row 029),
+  `adr/029` Amendment 2026-11-14 (implementation), `tasks/adr-summary.md`.
+- Tests: `tests/test_household_inputs_options.py`,
+  `tests/test_household_inputs_series.py`,
+  `tests/test_household_inputs_entities.py` (new); added to
+  `tests/test_config_flow.py`, `tests/test_coordinator_slot.py`; updated
+  `tests/test_formula_signature.py` and
+  `tests/test_additional_sensors_options.py` (the signature's key set),
+  `tests/test_published_sensors.py` (fake coordinator accessors).
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+
+## Review
+
+Reviewer pass (2026-11-14, run inline by the Lead Agent after the worker pass,
+as no sub-agent was available): **PASS.** Acceptance criteria checked one by one
+against the code and the tests; the symbols above exist as declared; the
+Consumed Interfaces are used as declared; the refactored registry cleanup is
+logic-identical to ADR-028's; no dependency changed. Mutation checks (history
+ignoring the household sensors, the household sensors read as inputs, the
+published registration guard removed, the cleanup marker swapped) each fail the
+tests meant to catch them. Not run against a real Home Assistant (see the
+amendment's known limit).

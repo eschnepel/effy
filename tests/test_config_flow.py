@@ -988,3 +988,177 @@ class TestAdditionalSensorsValidation:
         assert errors == {PV: "at_least_one_input"}
         errors = self._errors({CHARGE: None, ADDITIONAL: ["sensor.a"]})
         assert errors == {CHARGE: "at_least_one_output"}
+
+
+HOUSEHOLD_IMPORT = _const.CONF_HOUSEHOLD_IMPORT_SENSOR
+HOUSEHOLD_EXPORT = _const.CONF_HOUSEHOLD_EXPORT_SENSOR
+
+
+class TestHouseholdMeterInTheForm:
+    """TASK-0048: the two optional household meter pickers (ADR-029 decision 1)."""
+
+    def _form(self, step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return TestSchemaHasTheFourCounterPickers()._form(step, options)
+
+    @pytest.mark.parametrize("key", [HOUSEHOLD_IMPORT, HOUSEHOLD_EXPORT])
+    def test_both_flows_offer_an_optional_single_sensor_picker_without_a_class_filter(
+        self, key: str
+    ) -> None:
+        assert key in ("household_import_sensor", "household_export_sensor")
+        for step in ("user", "init"):
+            form = self._form(step)
+            assert not _keys(form)[key].required
+            cfg = {m.schema: c for m, c in form["data_schema"].schema.items()}[key]
+            # one sensor entity, no device class or state class filter
+            assert cfg == {"entity": {"domain": ["sensor"]}}
+
+    def test_the_options_flow_suggests_the_saved_sensors_and_never_defaults_them(self) -> None:
+        saved = self._form(
+            "init",
+            {PV: ["sensor.pv"], HOUSEHOLD_IMPORT: "sensor.hi", HOUSEHOLD_EXPORT: "sensor.he"},
+        )
+        assert _keys(saved)[HOUSEHOLD_IMPORT].description == {"suggested_value": "sensor.hi"}
+        assert _keys(saved)[HOUSEHOLD_EXPORT].description == {"suggested_value": "sensor.he"}
+        bare = self._form("init", {PV: ["sensor.pv"]})
+        for key in (HOUSEHOLD_IMPORT, HOUSEHOLD_EXPORT):
+            assert _keys(bare)[key].description is None
+            assert _keys(bare)[key].default is _MISSING  # a default would revive a cleared picker
+
+
+class TestHouseholdMeterValidation:
+    BASE: dict[str, Any] = {PV: ["sensor.pv"], GRID_IMPORT: "sensor.g", CHARGE: "sensor.charge"}
+
+    def _hass(self, **units: str | None) -> _FakeHass:
+        states = dict(_hass_with_outputs().states._states)
+        for entity_id, unit in units.items():
+            attrs: dict[str, Any] = {} if unit is None else {"unit_of_measurement": unit}
+            states[f"sensor.{entity_id}"] = _FakeState(None, **attrs)
+        return _FakeHass(states)
+
+    def _submit(
+        self, extra: dict[str, Any], step: str = "user", hass: _FakeHass | None = None
+    ) -> dict[str, Any]:
+        return TestAdditionalSensorsValidation()._submit(extra, step=step, hass=hass)
+
+    def _errors(self, extra: dict[str, Any], hass: _FakeHass | None = None) -> dict[str, str]:
+        result = self._submit(extra, hass=hass)
+        return dict(result.get("errors", {})) if result["type"] == "form" else {}
+
+    def test_an_import_alone_and_an_import_with_an_export_are_saved_as_given(self) -> None:
+        only = self._submit({HOUSEHOLD_IMPORT: "sensor.hi"})
+        assert only["type"] == "create_entry"
+        assert only["options"][HOUSEHOLD_IMPORT] == "sensor.hi"
+        assert HOUSEHOLD_EXPORT not in only["options"]
+        both = self._submit({HOUSEHOLD_IMPORT: "sensor.hi", HOUSEHOLD_EXPORT: "sensor.he"})
+        assert both["options"][HOUSEHOLD_IMPORT] == "sensor.hi"
+        assert both["options"][HOUSEHOLD_EXPORT] == "sensor.he"
+
+    def test_without_the_pickers_or_with_them_emptied_nothing_is_saved_for_them(self) -> None:
+        extras: tuple[dict[str, Any], ...] = (
+            {},
+            {HOUSEHOLD_IMPORT: None, HOUSEHOLD_EXPORT: None},
+            {HOUSEHOLD_IMPORT: "", HOUSEHOLD_EXPORT: ""},
+        )
+        for extra in extras:
+            options = self._submit(extra)["options"]
+            assert HOUSEHOLD_IMPORT not in options and HOUSEHOLD_EXPORT not in options
+
+    def test_an_export_without_an_import_is_refused_on_the_export_picker(self) -> None:
+        assert self._errors({HOUSEHOLD_EXPORT: "sensor.he"}) == {
+            HOUSEHOLD_EXPORT: "household_export_needs_import"
+        }
+
+    @pytest.mark.parametrize("key", [HOUSEHOLD_IMPORT, HOUSEHOLD_EXPORT])
+    @pytest.mark.parametrize(
+        "role_input",
+        [
+            {PV: ["sensor.pv", "sensor.x"]},
+            {GRID_IMPORT: "sensor.x"},
+            {DISCHARGE: "sensor.x"},
+            {CHARGE: "sensor.x"},
+            {GRID_EXPORT: "sensor.x"},
+            {EPS: "sensor.x"},
+            {SOC: "sensor.x", CAPACITY: "sensor.cap_kwh"},
+            {SOC: "sensor.soc", CAPACITY: "sensor.x"},
+            {ADDITIONAL: ["sensor.x"]},
+        ],
+    )
+    def test_a_sensor_that_has_a_role_is_refused_on_the_household_field(
+        self, key: str, role_input: dict[str, Any]
+    ) -> None:
+        hass = _hass_with_outputs()
+        for entity_id in ("sensor.x", "sensor.soc"):
+            hass.states._states.setdefault(
+                entity_id, _FakeState(None, state_class="measurement", unit_of_measurement="W")
+            )
+        household = (
+            {HOUSEHOLD_IMPORT: "sensor.x"}
+            if key == HOUSEHOLD_IMPORT
+            else {HOUSEHOLD_IMPORT: "sensor.hi", HOUSEHOLD_EXPORT: "sensor.x"}
+        )
+        errors = self._errors({**role_input, **household}, hass=hass)
+        # the error sits on the later field: the household picker, also against the additional list
+        assert errors == {key: "sensor_in_two_roles"}
+
+    def test_the_same_sensor_as_import_and_export_is_refused_on_the_export_picker(self) -> None:
+        errors = self._errors({HOUSEHOLD_IMPORT: "sensor.hi", HOUSEHOLD_EXPORT: "sensor.hi"})
+        assert errors == {HOUSEHOLD_EXPORT: "sensor_in_two_roles"}
+
+    @pytest.mark.parametrize("key", [HOUSEHOLD_IMPORT, HOUSEHOLD_EXPORT])
+    @pytest.mark.parametrize("unit", ["W", "kW", "Wh", "kWh", None])
+    def test_a_unit_of_power_or_energy_or_no_unit_is_accepted(
+        self, key: str, unit: str | None
+    ) -> None:
+        extra = {HOUSEHOLD_IMPORT: "sensor.hi"}
+        extra[key] = "sensor.m"
+        if key == HOUSEHOLD_EXPORT:
+            extra[HOUSEHOLD_IMPORT] = "sensor.hi"
+        assert self._errors(extra, hass=self._hass(m=unit, hi="W")) == {}
+
+    @pytest.mark.parametrize("key", [HOUSEHOLD_IMPORT, HOUSEHOLD_EXPORT])
+    @pytest.mark.parametrize("unit", ["°C", "%", "V", "A", "MWh"])
+    def test_another_unit_is_refused_on_that_picker(self, key: str, unit: str) -> None:
+        extra = {HOUSEHOLD_IMPORT: "sensor.hi"}
+        extra[key] = "sensor.m"
+        errors = self._errors(extra, hass=self._hass(m=unit, hi="W"))
+        assert errors == {key: "household_unit_not_supported"}
+
+    def test_a_sensor_without_a_state_cannot_be_judged_and_is_accepted(self) -> None:
+        assert self._errors({HOUSEHOLD_IMPORT: "sensor.nowhere"}) == {}
+
+    def test_a_role_conflict_is_reported_before_the_export_and_the_unit_problems(self) -> None:
+        errors = self._errors(
+            {HOUSEHOLD_EXPORT: "sensor.pv"}, hass=self._hass(pv="°C")
+        )  # no import, a role, a bad unit: the role wins
+        assert errors == {HOUSEHOLD_EXPORT: "sensor_in_two_roles"}
+
+    def test_the_household_sensors_are_no_input_and_no_output(self) -> None:
+        errors = self._errors({PV: [], GRID_IMPORT: None, HOUSEHOLD_IMPORT: "sensor.hi"})
+        assert errors == {PV: "at_least_one_input"}
+        errors = self._errors({CHARGE: None, HOUSEHOLD_IMPORT: "sensor.hi"})
+        assert errors == {CHARGE: "at_least_one_output"}
+
+    def test_the_options_flow_validates_and_saves_the_same_way(self) -> None:
+        assert self._submit({HOUSEHOLD_EXPORT: "sensor.he"}, step="init")["errors"] == {
+            HOUSEHOLD_EXPORT: "household_export_needs_import"
+        }
+        assert self._submit({HOUSEHOLD_IMPORT: "sensor.pv"}, step="init")["errors"] == {
+            HOUSEHOLD_IMPORT: "sensor_in_two_roles"
+        }
+        ok = self._submit({HOUSEHOLD_IMPORT: "sensor.hi", HOUSEHOLD_EXPORT: "sensor.he"}, "init")
+        assert ok["type"] == "create_entry"
+        assert ok["data"][HOUSEHOLD_IMPORT] == "sensor.hi"
+        assert ok["data"][HOUSEHOLD_EXPORT] == "sensor.he"
+
+    @pytest.mark.parametrize("lang", ["en", "de"])
+    def test_the_labels_and_the_errors_are_translated_in_both_flows(self, lang: str) -> None:
+        import json
+
+        data = json.loads((_base / "translations" / f"{lang}.json").read_text("utf-8"))
+        for section, step in (("config", "user"), ("options", "init")):
+            labels = data[section]["step"][step]["data"]
+            assert labels[HOUSEHOLD_IMPORT] and labels[HOUSEHOLD_EXPORT]
+            description = data[section]["step"][step]["description"]
+            assert ("household import" if lang == "en" else "Hausbezug") in description
+            for error in ("household_export_needs_import", "household_unit_not_supported"):
+                assert data[section]["error"][error], (lang, section, error)

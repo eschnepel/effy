@@ -25,6 +25,8 @@ from .const import (
     CONF_EPS_SENSOR,
     CONF_GRID_EXPORT_SENSOR,
     CONF_GRID_IMPORT_SENSOR,
+    CONF_HOUSEHOLD_EXPORT_SENSOR,
+    CONF_HOUSEHOLD_IMPORT_SENSOR,
     CONF_PV_INPUT_SENSORS,
     CONF_SOC_SENSOR,
     CONF_VALLEY_HYSTERESIS,
@@ -88,25 +90,91 @@ def eps_id(options: Mapping[str, Any]) -> str | None:
     return _role_id(options, CONF_EPS_SENSOR)
 
 
-def additional_ids(options: Mapping[str, Any]) -> list[str]:
-    """The additional sensors (ADR-028), in the saved order, each once; empty when unset.
-
-    A sensor in the list gets the series of an input (a derived power or a smoothed series) and
-    is in no formula. A sensor that also has a role (a PV input, a BMS counter, the EPS sensor,
-    the state of charge or the capacity) is *not* an additional one: the options flow refuses
-    it, and a hand-edited entry must not give two Effy entities one unique ID (decision 3).
-    """
-    roles = {
+def _roles_other_than_household(options: Mapping[str, Any]) -> set[str]:
+    """Every sensor that has a role of its own: PV inputs, BMS counters, EPS, SoC, capacity."""
+    return {
         *pv_input_ids(options),
         *bms_input_ids(options),
         *output_ids(options),
         *(i for i in (eps_id(options), soc_id(options), capacity_id(options)) if i),
     }
+
+
+def household_import_id(options: Mapping[str, Any]) -> str | None:
+    """The household import sensor (ADR-029), or ``None``.
+
+    The household meter's import reading. A sensor that also has another role (a PV input, a BMS
+    counter, the EPS sensor, the state of charge or the capacity) is *not* a household sensor:
+    the options flow refuses it, and a hand-edited entry must not give two Effy series one
+    statistic ID (ADR-019 amendment 2026-11-13: a sensor has one role).
+    """
+    entity_id = _role_id(options, CONF_HOUSEHOLD_IMPORT_SENSOR)
+    if entity_id is None or entity_id in _roles_other_than_household(options):
+        return None
+    return entity_id
+
+
+def household_export_id(options: Mapping[str, Any]) -> str | None:
+    """The household export sensor (ADR-029), or ``None``.
+
+    Without a household import there is no household sensor at all (decision 1), so a household
+    export beside none is ``None``; so is one that has another role or is the household import
+    itself (a hand-edited entry; the options flow refuses all three).
+    """
+    entity_id = _role_id(options, CONF_HOUSEHOLD_EXPORT_SENSOR)
+    household_import = household_import_id(options)
+    if (
+        entity_id is None
+        or household_import is None
+        or entity_id == household_import
+        or entity_id in _roles_other_than_household(options)
+    ):
+        return None
+    return entity_id
+
+
+def household_ids(options: Mapping[str, Any]) -> list[str]:
+    """The household sensors: the import first, then the export (set ones only)."""
+    return [i for i in (household_import_id(options), household_export_id(options)) if i]
+
+
+def household_import_is_signed(options: Mapping[str, Any]) -> bool:
+    """True when a power-family household import series is signed (ADR-029 decision 2).
+
+    With a household import and no household export sensor, a negative part of the import
+    reading is the household export, so the *smoothed* series of the import sensor is kept
+    signed (not clamped) and TASK-0049 splits it. With a household export sensor each sensor is
+    taken as it is and a negative reading counts as 0 where the series is used. The series
+    Effy writes is the measured one in both cases: the rule only says how it is read. It
+    concerns the smoothed series of a power-family sensor; an energy counter has no sign.
+    """
+    return household_import_id(options) is not None and household_export_id(options) is None
+
+
+def additional_ids(options: Mapping[str, Any]) -> list[str]:
+    """The additional sensors (ADR-028), in the saved order, each once; empty when unset.
+
+    A sensor in the list gets the series of an input (a derived power or a smoothed series) and
+    is in no formula. A sensor that also has a role (a PV input, a BMS counter, the EPS sensor,
+    the state of charge, the capacity or, since ADR-029, a household sensor) is *not* an
+    additional one: the options flow refuses it, and a hand-edited entry must not give two Effy
+    entities one unique ID (decision 3).
+    """
+    roles = {*_roles_other_than_household(options), *household_ids(options)}
     result: list[str] = []
     for entity_id in options.get(CONF_ADDITIONAL_SENSORS) or []:
         if entity_id and entity_id not in roles and entity_id not in result:
             result.append(str(entity_id))
     return result
+
+
+def series_only_ids(options: Mapping[str, Any]) -> list[str]:
+    """Every sensor that gets the series of an input and is in no formula (ADR-028, ADR-029).
+
+    The additional sensors first, then the household sensors. History reads, converts and
+    smooths them with the inputs and keeps them out of the waterfall's slot union.
+    """
+    return [*additional_ids(options), *household_ids(options)]
 
 
 def valley_hysteresis(options: Mapping[str, Any]) -> float:
@@ -160,8 +228,9 @@ def formula_signature(options: Mapping[str, Any]) -> dict[str, Any]:
     """The sensors that make up the formula (ADR-027 decision 6): what a recalculation depends on.
 
     The PV inputs (a sorted list: their order does not matter), grid import, discharge, charge,
-    grid export and the EPS sensor, ``None`` where a role is unset, and the additional sensors
-    (ADR-028, a sorted list, empty when there are none); keyed by the option each comes from. A
+    grid export and the EPS sensor, ``None`` where a role is unset, the additional sensors
+    (ADR-028, a sorted list, empty when there are none) and the household import and export
+    (ADR-029 decision 6, ``None`` when unset); keyed by the option each comes from. A
     change of any of them changes what the history is, so Effy recalculates it by itself at
     setup; a change of anything else (history days, SoC, capacity, valley hysteresis, debug
     export) does not. JSON-safe: it is kept in the entry's data and compared after a round trip
@@ -175,6 +244,8 @@ def formula_signature(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_GRID_EXPORT_SENSOR: grid_export_id(options),
         CONF_EPS_SENSOR: eps_id(options),
         CONF_ADDITIONAL_SENSORS: sorted(additional_ids(options)),
+        CONF_HOUSEHOLD_IMPORT_SENSOR: household_import_id(options),
+        CONF_HOUSEHOLD_EXPORT_SENSOR: household_export_id(options),
     }
 
 

@@ -242,7 +242,6 @@ from .effy_exports import EFFY_STANDBY_POWER_ENTITY_ID
 from .recorder_storage import RecorderStorage
 from .storage import IntegralStat, Storage
 from .inputs import (
-    additional_ids,
     all_input_ids,
     battery_hysteresis,
     bms_input_ids,
@@ -253,6 +252,7 @@ from .inputs import (
     grid_export_id,
     grid_import_id,
     pv_input_ids,
+    series_only_ids,
     soc_id,
 )
 from .inputs import output_ids as configured_output_ids
@@ -1473,11 +1473,13 @@ async def _compute_effective_slots(
     recent recalculation and the button write it the same way, and a full
     recalculation and the recent recalculation give identical rows.
 
-    The additional sensors (ADR-028, ``additional_ids``) are fetched, converted and smoothed
-    with the inputs, and their derived power or smoothed series is added to the second and
-    third result. They are never in the slot union or the slot loop below, so the effective
-    rows are the same with and without them; the rewrite range of the slot job stays global, so
-    a jump of an additional counter extends it for every series, like any other jump.
+    The additional sensors (ADR-028) and the household meter sensors (ADR-029), together
+    ``series_only_ids``, are fetched, converted and smoothed with the inputs, and their derived
+    power or smoothed series is added to the second and third result. A power-family one is
+    smoothed as measured, a negative reading is not clamped (the signed household import of
+    ADR-029 decision 2 relies on it). They are never in the slot union or the slot loop below,
+    so the effective rows are the same with and without them; the rewrite range of the slot job
+    stays global, so a jump of such a counter extends it for every series, like any other jump.
 
     ``phases`` (TASK-0010) books the time of this call to the fetch and compute
     phases; the default does nothing.
@@ -1486,8 +1488,10 @@ async def _compute_effective_slots(
     input_ids: list[str] = all_input_ids(entry_options)
     output_ids: list[str] = configured_output_ids(entry_options)
     all_ids: list[str] = input_ids + output_ids
-    extra_ids: list[str] = additional_ids(entry_options)
-    # every sensor Effy reads; the additional ones only get a series (ADR-028)
+    # the additional sensors (ADR-028) and the household meter sensors (ADR-029): they only get a
+    # series, they are in no formula
+    extra_ids: list[str] = series_only_ids(entry_options)
+    # every sensor Effy reads; the extra ones only get a series
     read_ids: list[str] = all_ids + extra_ids
     max_history_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
 

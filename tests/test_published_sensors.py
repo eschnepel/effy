@@ -44,6 +44,9 @@ class _Coordinator:
     grid_export_id: str | None = None
     eps_id: str | None = None
     additional_ids: list[str] = []
+    household_import_id: str | None = None
+    household_export_id: str | None = None
+    household_ids: list[str] = []
 
     def __init__(self) -> None:
         self.recalculated_from: datetime | None = None

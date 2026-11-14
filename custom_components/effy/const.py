@@ -41,6 +41,22 @@ ADDITIONAL_UNITS = ("W", "kW", "Wh", "kWh")
 # and the registry cleanup of a sensor taken out of the list finds exactly the additional ones.
 ADDITIONAL_UNIQUE_ID_MARKER = "additional-"
 
+# The household meter (ADR-029 decision 1, TASK-0048): the meter at the house's grid connection, a
+# different measuring point from the battery system's grid import and export counters. Two
+# optional pickers, the household import and the household export (a household export needs a
+# household import). Each gets the series an input gets before the loss is distributed and takes
+# part in no formula; TASK-0049 reads the series for the household consumption.
+CONF_HOUSEHOLD_IMPORT_SENSOR = "household_import_sensor"
+CONF_HOUSEHOLD_EXPORT_SENSOR = "household_export_sensor"
+# Their unit, if they report one, is one of these (ADR-002, ADR-029 decision 1): the same as the
+# additional sensors'.
+HOUSEHOLD_UNITS = ADDITIONAL_UNITS
+# The unique ID of a household sensor's Effy entity is ``<entry_id>_household-<slug>_power`` (or
+# ``_smoothed``). Like ``additional-`` the hyphen cannot be part of a slug, so the registry cleanup
+# of a sensor taken out of the options finds exactly the household entities and never an input's
+# or an additional sensor's.
+HOUSEHOLD_UNIQUE_ID_MARKER = "household-"
+
 # Write a debug export file with every history recalculation of the button (TASK-0037,
 # ADR-025 Amendment 2026-11-03). Off unless set.
 CONF_DEBUG_EXPORT = "debug_export"

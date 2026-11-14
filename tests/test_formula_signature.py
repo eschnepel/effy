@@ -66,7 +66,7 @@ def _sig(**changes: Any) -> dict[str, Any]:
 
 
 class TestFormulaSignature:
-    def test_it_holds_the_pv_inputs_and_the_four_counters_and_the_eps_sensor(self) -> None:
+    def test_it_holds_the_roles_the_additional_list_and_the_household_sensors(self) -> None:
         assert _sig() == {
             _const.CONF_PV_INPUT_SENSORS: [PV_A, PV_B],
             _const.CONF_GRID_IMPORT_SENSOR: "sensor.grid_in",
@@ -75,6 +75,8 @@ class TestFormulaSignature:
             _const.CONF_GRID_EXPORT_SENSOR: "sensor.grid_out",
             _const.CONF_EPS_SENSOR: "sensor.eps",
             _const.CONF_ADDITIONAL_SENSORS: [],  # TASK-0047
+            _const.CONF_HOUSEHOLD_IMPORT_SENSOR: None,  # TASK-0048
+            _const.CONF_HOUSEHOLD_EXPORT_SENSOR: None,
         }
 
     def test_the_order_of_the_pv_inputs_does_not_matter(self) -> None:

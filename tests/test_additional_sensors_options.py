@@ -140,7 +140,7 @@ class TestTheListIsPartOfTheFormulaSignature:
         base = self._sig(**{ADDITIONAL: [GRID, "sensor.b"]})
         assert self._sig(**{ADDITIONAL: changed}) != base
 
-    def test_the_old_keys_of_the_signature_are_unchanged(self) -> None:
+    def test_the_old_keys_of_the_signature_are_unchanged_and_the_household_keys_added(self) -> None:
         signature = self._sig(**{ADDITIONAL: [GRID]})
         assert set(signature) == {
             _const.CONF_PV_INPUT_SENSORS,
@@ -150,6 +150,8 @@ class TestTheListIsPartOfTheFormulaSignature:
             _const.CONF_GRID_EXPORT_SENSOR,
             _const.CONF_EPS_SENSOR,
             ADDITIONAL,
+            _const.CONF_HOUSEHOLD_IMPORT_SENSOR,  # TASK-0048
+            _const.CONF_HOUSEHOLD_EXPORT_SENSOR,
         }
 
     def test_a_signature_stored_before_this_task_differs_so_it_recalculates_once(self) -> None:

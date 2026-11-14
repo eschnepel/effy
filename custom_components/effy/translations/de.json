@@ -5,7 +5,7 @@
     "step": {
       "user": {
         "title": "Effy konfigurieren",
-        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese. Optional, für den EPS/USV-Anschluss des Wechselrichters: ein vorzeichenbehafteter Leistungssensor (positiv, wenn Energie über den Anschluss das System verlässt, negativ, wenn sie hineinfließt). Solange der Anschluss genutzt wird, warten die Standby- und Wirkungsgrad-Sensoren auf einen ruhigen bzw. reinen Zeitschlitz. Optional, für jeden weiteren Sensor, auf den Effys Zähler- und Lückenlogik angewendet werden soll (zum Beispiel den Netzbezug des Hauses): die zusätzlichen Sensoren. Jeder erhält eine abgeleitete Leistung (Energiezähler) oder eine geglättete Reihe (Leistungssensor) und geht in keine Verlustberechnung ein; die Historie eines neuen Sensors füllt die Historien-Schaltfläche.",
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese. Optional, für den EPS/USV-Anschluss des Wechselrichters: ein vorzeichenbehafteter Leistungssensor (positiv, wenn Energie über den Anschluss das System verlässt, negativ, wenn sie hineinfließt). Solange der Anschluss genutzt wird, warten die Standby- und Wirkungsgrad-Sensoren auf einen ruhigen bzw. reinen Zeitschlitz. Optional, für jeden weiteren Sensor, auf den Effys Zähler- und Lückenlogik angewendet werden soll (zum Beispiel den Netzbezug des Hauses): die zusätzlichen Sensoren. Jeder erhält eine abgeleitete Leistung (Energiezähler) oder eine geglättete Reihe (Leistungssensor) und geht in keine Verlustberechnung ein; die Historie eines neuen Sensors füllt die Historien-Schaltfläche. Optional, für den eigenen Zähler des Hauses am Netzanschluss (ein anderer Messpunkt als die Netzimport- und Netzexport-Zähler oben): der Hausbezug und, wenn der Zähler einen hat, die Hauseinspeisung. Jeder erhält eine abgeleitete Leistung (Energiezähler) oder eine geglättete Reihe (Leistungssensor) und geht in keine Verlustberechnung ein; ein Leistungssensor nur für den Hausbezug wird mit Vorzeichen gelesen, der negative Teil ist die Einspeisung.",
         "data": {
           "pv_input_sensors": "PV-Eingangs-Sensoren (PV-Strings)",
           "grid_import_sensor": "Netzimport-Zähler (BMS-Eingang: Energie aus dem Netz)",
@@ -14,6 +14,8 @@
           "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
           "eps_sensor": "EPS/USV-Sensor (optional: ein vorzeichenbehafteter Leistungssensor des EPS/USV-Anschlusses; positiv = Energie verlässt das System über den Anschluss, negativ = ein anderer Wechselrichter speist ein)",
           "additional_sensors": "Zusätzliche Sensoren (optional: beliebige Energie- oder Leistungssensoren in W, kW, Wh oder kWh; Effy schreibt für jeden eine abgeleitete Leistung oder geglättete Reihe, keinen effektiven Wert, und verwendet sie in keiner Berechnung)",
+          "household_import_sensor": "Hausbezug (optional: Wert des Hauszählers für Energie, die das Haus aus dem Netz bezieht; ein beliebiger Energie- oder Leistungssensor in W, kW, Wh oder kWh)",
+          "household_export_sensor": "Hauseinspeisung (optional, braucht einen Hausbezug: Wert des Hauszählers für Energie, die das Haus ins Netz abgibt; ohne sie ist ein Leistungssensor für den Hausbezug vorzeichenbehaftet und sein negativer Teil ist die Einspeisung)",
           "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
           "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
           "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
@@ -33,7 +35,9 @@
       "eps_needs_power_class": "Der EPS/USV-Sensor muss ein Leistungssensor sein (Geräteklasse 'power'). Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
       "eps_needs_measurement": "Der EPS/USV-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
       "eps_unit_not_power": "Der EPS/USV-Sensor muss in W oder kW angegeben sein. Bitte einen anderen Sensor wählen oder dessen Einheit korrigieren.",
-      "additional_unit_not_supported": "Ein zusätzlicher Sensor muss W, kW, Wh oder kWh melden. Bitte entfernen oder die Einheit korrigieren."
+      "additional_unit_not_supported": "Ein zusätzlicher Sensor muss W, kW, Wh oder kWh melden. Bitte entfernen oder die Einheit korrigieren.",
+      "household_export_needs_import": "Eine Hauseinspeisung braucht einen Hausbezug. Bitte auch den Hausbezug-Sensor wählen oder die Einspeisung entfernen.",
+      "household_unit_not_supported": "Ein Haushaltssensor muss W, kW, Wh oder kWh melden. Bitte einen anderen Sensor wählen oder die Einheit korrigieren."
     }
   },
   "options": {
@@ -48,13 +52,15 @@
           "grid_export_sensor": "Netzexport-Zähler (BMS-Ausgang: Energie ins Netz)",
           "eps_sensor": "EPS/USV-Sensor (optional: ein vorzeichenbehafteter Leistungssensor des EPS/USV-Anschlusses; positiv = Energie verlässt das System über den Anschluss, negativ = ein anderer Wechselrichter speist ein)",
           "additional_sensors": "Zusätzliche Sensoren (optional: beliebige Energie- oder Leistungssensoren in W, kW, Wh oder kWh; Effy schreibt für jeden eine abgeleitete Leistung oder geglättete Reihe, keinen effektiven Wert, und verwendet sie in keiner Berechnung)",
+          "household_import_sensor": "Hausbezug (optional: Wert des Hauszählers für Energie, die das Haus aus dem Netz bezieht; ein beliebiger Energie- oder Leistungssensor in W, kW, Wh oder kWh)",
+          "household_export_sensor": "Hauseinspeisung (optional, braucht einen Hausbezug: Wert des Hauszählers für Energie, die das Haus ins Netz abgibt; ohne sie ist ein Leistungssensor für den Hausbezug vorzeichenbehaftet und sein negativer Teil ist die Einspeisung)",
           "soc_sensor": "Ladezustand-Sensor (optional, für den Batterie-Wirkungsgrad; zusammen mit der Kapazität setzen)",
           "capacity_entity": "Batteriekapazität-Entität (optional, in Wh oder kWh: ein Sensor, eine Zahl oder input_number; zusammen mit dem Ladezustand setzen)",
           "valley_hysteresis": "Tal-Hysterese (Ladezustand-Punkte, mindestens 15)",
           "max_history_days": "Maximale Historie (Tage)",
           "debug_export": "Bei jeder Historien-Neuberechnung einen Debug-Export schreiben (Datei in effy_debug, für einen Fehlerbericht)"
         },
-        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese. Optional, für den EPS/USV-Anschluss des Wechselrichters: ein vorzeichenbehafteter Leistungssensor (positiv, wenn Energie über den Anschluss das System verlässt, negativ, wenn sie hineinfließt). Solange der Anschluss genutzt wird, warten die Standby- und Wirkungsgrad-Sensoren auf einen ruhigen bzw. reinen Zeitschlitz. Optional, für jeden weiteren Sensor, auf den Effys Zähler- und Lückenlogik angewendet werden soll (zum Beispiel den Netzbezug des Hauses): die zusätzlichen Sensoren. Jeder erhält eine abgeleitete Leistung (Energiezähler) oder eine geglättete Reihe (Leistungssensor) und geht in keine Verlustberechnung ein; die Historie eines neuen Sensors füllt die Historien-Schaltfläche."
+        "description": "Effektive PV-Verlustverteilung einrichten. PV-Eingänge und die vier BMS-Zähler zuordnen: Netzimport und Entladung (Eingänge), Ladung und Netzexport (Ausgänge). Mindestens ein Eingang und ein Ausgang (Ladung oder Netzexport) sind nötig. Optional, für den Batterie-Wirkungsgrad: der Ladezustand-Sensor zusammen mit der Batteriekapazität sowie die Tal-Hysterese. Optional, für den EPS/USV-Anschluss des Wechselrichters: ein vorzeichenbehafteter Leistungssensor (positiv, wenn Energie über den Anschluss das System verlässt, negativ, wenn sie hineinfließt). Solange der Anschluss genutzt wird, warten die Standby- und Wirkungsgrad-Sensoren auf einen ruhigen bzw. reinen Zeitschlitz. Optional, für jeden weiteren Sensor, auf den Effys Zähler- und Lückenlogik angewendet werden soll (zum Beispiel den Netzbezug des Hauses): die zusätzlichen Sensoren. Jeder erhält eine abgeleitete Leistung (Energiezähler) oder eine geglättete Reihe (Leistungssensor) und geht in keine Verlustberechnung ein; die Historie eines neuen Sensors füllt die Historien-Schaltfläche. Optional, für den eigenen Zähler des Hauses am Netzanschluss (ein anderer Messpunkt als die Netzimport- und Netzexport-Zähler oben): der Hausbezug und, wenn der Zähler einen hat, die Hauseinspeisung. Jeder erhält eine abgeleitete Leistung (Energiezähler) oder eine geglättete Reihe (Leistungssensor) und geht in keine Verlustberechnung ein; ein Leistungssensor nur für den Hausbezug wird mit Vorzeichen gelesen, der negative Teil ist die Einspeisung."
       }
     },
     "error": {
@@ -68,7 +74,9 @@
       "eps_needs_power_class": "Der EPS/USV-Sensor muss ein Leistungssensor sein (Geräteklasse 'power'). Bitte einen anderen Sensor wählen oder dessen Geräteklasse korrigieren.",
       "eps_needs_measurement": "Der EPS/USV-Sensor muss die Zustandsklasse 'measurement' haben. Bitte einen anderen Sensor wählen.",
       "eps_unit_not_power": "Der EPS/USV-Sensor muss in W oder kW angegeben sein. Bitte einen anderen Sensor wählen oder dessen Einheit korrigieren.",
-      "additional_unit_not_supported": "Ein zusätzlicher Sensor muss W, kW, Wh oder kWh melden. Bitte entfernen oder die Einheit korrigieren."
+      "additional_unit_not_supported": "Ein zusätzlicher Sensor muss W, kW, Wh oder kWh melden. Bitte entfernen oder die Einheit korrigieren.",
+      "household_export_needs_import": "Eine Hauseinspeisung braucht einen Hausbezug. Bitte auch den Hausbezug-Sensor wählen oder die Einspeisung entfernen.",
+      "household_unit_not_supported": "Ein Haushaltssensor muss W, kW, Wh oder kWh melden. Bitte einen anderen Sensor wählen oder die Einheit korrigieren."
     }
   },
   "entity": {

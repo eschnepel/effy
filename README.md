@@ -91,6 +91,8 @@ All parameters are set via the UI (Config Flow + Options Flow).
 | **Grid export counter** | BMS output: energy the BMS gives to the grid | – |
 | **EPS/UPS sensor** | Optional: one signed power sensor of the inverter's EPS/UPS port, state class `measurement`, in W or kW: positive while energy leaves through the port, negative while another inverter feeds it | – |
 | **Additional sensors** | Optional: a list of any other sensor in W, kW, Wh or kWh; each gets a derived power or a smoothed series, and takes part in no calculation | – |
+| **Household import** | Optional: the house meter's reading of the energy the house takes from the grid, any `sensor` in W, kW, Wh or kWh; it gets a derived power or a smoothed series and takes part in no calculation | – |
+| **Household export** | Optional, needs a household import: the house meter's reading of the energy the house gives to the grid, same rules | – |
 | **State of charge sensor** | Optional, for the battery efficiency: the battery's SoC in %, state class `measurement`; set together with the capacity | – |
 | **Battery capacity entity** | Optional, for the battery efficiency: a sensor, number or input_number in Wh or kWh; set together with the SoC | – |
 | **Valley hysteresis** | Optional, for the battery efficiency: how far the SoC must rise out of a valley (in SoC points, at least 15) before the valley counts | 30 |
@@ -137,6 +139,30 @@ added sensor is filled by the full history recalculation: the list is part of
 Effy's formula signature, so adding or removing a sensor starts that
 recalculation by itself once the entry is set up (the history button does the
 same by hand). An entry without the list changes nothing.
+
+The **household meter** (ADR-029) is the meter at the house's grid connection, a
+different measuring point from the battery system's grid import and grid export
+counters above: the **household import** is the energy the house takes from the
+grid and the optional **household export** the energy it gives to it. Pick any
+`sensor` entity for each; a household export needs a household import. Effy
+gives each the series an input gets before the loss is distributed, chosen by
+its family as for the additional sensors: an energy counter gets the derived
+power sensor `sensor.effy_<n>_power`, a power sensor gets
+`sensor.effy_<n>_smoothed` (a gap of up to two 5-minute slots is bridged). There
+is **no effective sensor** and the sensors are in no formula: the loss, the
+shares, the PV sums, the standby and efficiency sensors are the same with or
+without them. A power sensor that is the only household sensor is read with its
+sign: its negative part is the household export (an energy counter has no sign,
+and with a household export sensor each sensor is taken as it is and a negative
+reading counts as 0). The sign only matters where the series is used; the series
+Effy writes is the measured one. A sensor that has another role, is in the
+additional sensors list, or is chosen as both household import and export is
+refused; if it reports a unit, the unit must be W, kW, Wh or kWh. Taking a
+sensor out of the options removes its Effy sensor from the entity registry; its
+statistics stay. Both are part of Effy's formula signature, so a change starts
+the full recalculation by itself once the entry is set up. These sensors are the
+input of the household consumption sensors that follow (ADR-029); until then
+they are not part of the published list. An entry without them changes nothing.
 
 The **state of charge sensor** and the **battery capacity entity** are for the
 battery efficiency only (ADR-023): they are neither inputs nor outputs, so the
@@ -835,3 +861,4 @@ test suite runs against.
 | [026](adr/026-eps-port-sensor.md) | The EPS/UPS port as a signed power sensor |
 | [027](adr/027-effective-pv-sum-sensors.md) | The Effective PV Sum and the PV delta integrals |
 | [028](adr/028-additional-sensors.md) | Additional sensors with derived power and smoothed series |
+| [029](adr/029-household-consumption-and-contract-types.md) | Household consumption and the typed published contract (the household meter inputs are implemented; the rest follows) |

@@ -20,6 +20,8 @@ from .const import (
     CONF_EPS_SENSOR,
     CONF_GRID_EXPORT_SENSOR,
     CONF_GRID_IMPORT_SENSOR,
+    CONF_HOUSEHOLD_EXPORT_SENSOR,
+    CONF_HOUSEHOLD_IMPORT_SENSOR,
     CONF_MAX_HISTORY_DAYS,
     CONF_PV_INPUT_SENSORS,
     CONF_SOC_SENSOR,
@@ -28,6 +30,7 @@ from .const import (
     DEFAULT_VALLEY_HYSTERESIS,
     DOMAIN,
     EPS_UNITS,
+    HOUSEHOLD_UNITS,
     MIN_VALLEY_HYSTERESIS,
 )
 from .inputs import valley_hysteresis
@@ -53,6 +56,9 @@ _CAPACITY_DOMAINS = ["sensor", "number", "input_number"]
 # The EPS sensor is signed, so only a power sensor can be one: an energy counter cannot be negative
 # (ADR-026 decision 1).
 _EPS_DEVICE_CLASSES = ["power"]
+# The household meter (ADR-029 decision 1): the import first, then the export. Two optional single
+# pickers of any sensor, no device class filter; the export needs the import.
+_HOUSEHOLD_KEYS = (CONF_HOUSEHOLD_IMPORT_SENSOR, CONF_HOUSEHOLD_EXPORT_SENSOR)
 
 
 def _picker(
@@ -92,6 +98,8 @@ def _build_schema(
     valley_hysteresis: float = DEFAULT_VALLEY_HYSTERESIS,
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
     debug_export: bool = False,
+    household_import_sensor: str | None = None,
+    household_export_sensor: str | None = None,
 ) -> vol.Schema:
     # The PV list is an optional key with a *suggested* value: a PV-less system
     # must be able to clear it. "At least one input in total" and "at least one
@@ -119,6 +127,14 @@ def _build_schema(
             CONF_ADDITIONAL_SENSORS, description={"suggested_value": additional_sensors or []}
         )
     ] = selector.selector({"entity": {"multiple": True, "domain": ["sensor"]}})
+    # The household meter (ADR-029): two optional single pickers, any sensor, suggested values
+    # only (a cleared picker must stay cleared).
+    for key, value in (
+        (CONF_HOUSEHOLD_IMPORT_SENSOR, household_import_sensor),
+        (CONF_HOUSEHOLD_EXPORT_SENSOR, household_export_sensor),
+    ):
+        marker, picker = _picker(key, value, device_class=False)
+        schema[marker] = picker
     marker, picker = _picker(CONF_SOC_SENSOR, soc_sensor, device_class=False)
     schema[marker] = picker
     marker, picker = _picker(
@@ -236,6 +252,28 @@ def _validate_additional_option(hass: Any, user_input: dict[str, Any]) -> dict[s
     return {}
 
 
+def _validate_household_option(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
+    """The checks of the household meter sensors (ADR-029 decision 1, ADR-002).
+
+    A household export needs a household import (the error sits on the export picker). A sensor
+    that reports a unit must report W, kW, Wh or kWh: Effy turns it into a power in W. A sensor
+    without a unit, or without a state yet, cannot be judged here and is accepted, as for the
+    additional sensors. That a sensor has one role is checked by ``_validate_user_input``.
+    """
+    household_import = user_input.get(CONF_HOUSEHOLD_IMPORT_SENSOR) or None
+    household_export = user_input.get(CONF_HOUSEHOLD_EXPORT_SENSOR) or None
+    if household_export and not household_import:
+        return {CONF_HOUSEHOLD_EXPORT_SENSOR: "household_export_needs_import"}
+    for key in _HOUSEHOLD_KEYS:
+        entity_id = user_input.get(key) or None
+        if entity_id is None:
+            continue
+        unit = _entity_attribute(hass, entity_id, "unit_of_measurement")
+        if unit is not None and unit not in HOUSEHOLD_UNITS:
+            return {key: "household_unit_not_supported"}
+    return {}
+
+
 def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
     """Validate one submit of the config or the options flow (ADR-019, ADR-023).
 
@@ -243,11 +281,13 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
     raw text — ADR-000 §8. The first failing check wins, in this order: at
     least one input in total (the PV list, grid import or discharge); no entity
     in two roles (the PV list, the four counters, the SoC sensor, the capacity
-    entity, the EPS sensor and the additional sensors; the error sits on the later field, and the
-    additional list is the last); at least one output (charge or grid export); every output has
-    a device class; then the battery options (``_validate_battery_options``), the EPS sensor
-    (``_validate_eps_option``) and the unit of the additional sensors
-    (``_validate_additional_option``). Each
+    entity, the EPS sensor, the additional sensors and the two household sensors; the error sits
+    on the later field, so a sensor in the additional list that is also chosen as household import
+    is refused on the household picker, and the household export is the last); at least one
+    output (charge or grid export); every output has a device class; then the battery options
+    (``_validate_battery_options``), the EPS sensor (``_validate_eps_option``), the unit of the
+    additional sensors (``_validate_additional_option``) and the household meter
+    (``_validate_household_option``: an export needs an import, the unit). Each
     picker alone is optional. The EPS sensor counts for neither minimum: only the PV list and
     the grid import and discharge counters are inputs here, only charge and grid export
     outputs (ADR-026 decision 1).
@@ -278,6 +318,14 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
             errors[CONF_ADDITIONAL_SENSORS] = "sensor_in_two_roles"
             return errors
         seen.add(entity_id)
+    for key in _HOUSEHOLD_KEYS:
+        entity_id = user_input.get(key) or None
+        if entity_id is None:
+            continue
+        if entity_id in seen:
+            errors[key] = "sensor_in_two_roles"
+            return errors
+        seen.add(entity_id)
     outputs = [(k, entity) for k in _OUTPUT_KEYS if (entity := counters[k])]
     if not outputs:
         errors[CONF_CHARGE_SENSOR] = "at_least_one_output"
@@ -292,14 +340,17 @@ def _validate_user_input(hass: Any, user_input: dict[str, Any]) -> dict[str, str
     errors = _validate_eps_option(hass, user_input)
     if errors:
         return errors
-    return _validate_additional_option(hass, user_input)
+    errors = _validate_additional_option(hass, user_input)
+    if errors:
+        return errors
+    return _validate_household_option(hass, user_input)
 
 
 def _normalised(user_input: dict[str, Any]) -> dict[str, Any]:
     """The submitted options: the PV list always present (possibly empty), a counter, the SoC
-    sensor, the capacity entity, the EPS sensor and the additional list only if set; everything
-    else (the hysteresis, the history days) as submitted."""
-    optional = (*_COUNTER_KEYS, *_BATTERY_KEYS, CONF_EPS_SENSOR)
+    sensor, the capacity entity, the EPS sensor, the household sensors and the additional list
+    only if set; everything else (the hysteresis, the history days) as submitted."""
+    optional = (*_COUNTER_KEYS, *_BATTERY_KEYS, CONF_EPS_SENSOR, *_HOUSEHOLD_KEYS)
     result = {
         key: value
         for key, value in user_input.items()
@@ -398,6 +449,8 @@ class EffyOptionsFlow(config_entries.OptionsFlowWithReload):  # type: ignore[mis
                 valley_hysteresis=valley_hysteresis(current),
                 max_history_days=current.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS),
                 debug_export=bool(current.get(CONF_DEBUG_EXPORT, False)),
+                household_import_sensor=current.get(CONF_HOUSEHOLD_IMPORT_SENSOR),
+                household_export_sensor=current.get(CONF_HOUSEHOLD_EXPORT_SENSOR),
             ),
             errors=errors,
         )

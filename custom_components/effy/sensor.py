@@ -67,6 +67,7 @@ from .catalog import (
 )
 from .const import (
     ADDITIONAL_UNIQUE_ID_MARKER,
+    HOUSEHOLD_UNIQUE_ID_MARKER,
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
@@ -229,21 +230,31 @@ async def async_setup_entry(
     # entirely missing from the integration page, not just lacking data).
     # The additional sensors (ADR-028) get the derived entity of an input, and no effective one,
     # so they are "inputs" for the choice between a derived power and a smoothed sensor.
+    # The household meter sensors (ADR-029) are treated the same way, with a marker of their own.
     additional = coordinator.additional_ids
     additional_set = set(additional)
-    input_id_set = set(input_ids) | additional_set
+    household = coordinator.household_ids
+    household_set = set(household)
+    input_id_set = set(input_ids) | additional_set | household_set
     pending_ids: list[str] = []
-    for entity_id in input_ids + output_ids + additional:
+    for entity_id in input_ids + output_ids + additional + household:
         state = hass.states.get(entity_id)
         if state is None:
             pending_ids.append(entity_id)
             continue
         entities.extend(
             _build_derived_entities(
-                hass, entry, coordinator, entity_id, entity_id in input_id_set, additional_set
+                hass,
+                entry,
+                coordinator,
+                entity_id,
+                entity_id in input_id_set,
+                additional_set,
+                household_set,
             )
         )
     _remove_dropped_additional_entities(hass, entry, additional)
+    _remove_dropped_household_entities(hass, entry, household)
 
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
     entities.extend(_pv_sum_entities(hass, entry, coordinator))
@@ -257,7 +268,14 @@ async def async_setup_entry(
 
     if pending_ids:
         _add_late_derived_entities(
-            hass, entry, coordinator, pending_ids, input_id_set, async_add_entities, additional_set
+            hass,
+            entry,
+            coordinator,
+            pending_ids,
+            input_id_set,
+            async_add_entities,
+            additional_set,
+            household_set,
         )
 
     # Trigger one immediate recalculation so sensors have values on first load
@@ -409,20 +427,20 @@ def _battery_efficiency_entities(
     return entities
 
 
-def _remove_dropped_additional_entities(
-    hass: HomeAssistant, entry: ConfigEntry, additional: list[str]
+def _remove_dropped_marked_entities(
+    hass: HomeAssistant, entry: ConfigEntry, marker: str, sources: list[str]
 ) -> None:
-    """Remove the Effy entities of an additional sensor that is no longer in the list.
+    """Remove the Effy entities whose unique ID holds ``marker`` and whose source is gone.
 
-    An additional sensor's unique ID holds ``ADDITIONAL_UNIQUE_ID_MARKER`` (no slug can), so
-    only those entities are looked at: an input's entity is never touched. A sensor still in
-    the list keeps both of its possible entities even when only one exists, for one that has no
-    state yet is built late. The statistics of a removed entity stay (ADR-028).
+    The marker (``additional-``, ``household-``) cannot be part of a slug, so only the entities
+    of that role are looked at: an input's entity, or another role's, is never touched. A sensor
+    still among ``sources`` keeps both of its possible entities even when only one exists, for
+    one that has no state yet is built late. The statistics of a removed entity stay.
     """
-    prefix = f"{entry.entry_id}_{ADDITIONAL_UNIQUE_ID_MARKER}"
+    prefix = f"{entry.entry_id}_{marker}"
     kept = {
         f"{prefix}{slugify(entity_id.split('.')[-1])}{suffix}"
-        for entity_id in additional
+        for entity_id in sources
         for suffix in ("_power", "_smoothed")
     }
     registry = er.async_get(hass)
@@ -435,6 +453,29 @@ def _remove_dropped_additional_entities(
             registry.async_remove(registered.entity_id)
 
 
+def _remove_dropped_additional_entities(
+    hass: HomeAssistant, entry: ConfigEntry, additional: list[str]
+) -> None:
+    """Remove the Effy entities of an additional sensor that is no longer in the list.
+
+    An additional sensor's unique ID holds ``ADDITIONAL_UNIQUE_ID_MARKER`` (no slug can), so
+    only those entities are looked at (ADR-028); see ``_remove_dropped_marked_entities``.
+    """
+    _remove_dropped_marked_entities(hass, entry, ADDITIONAL_UNIQUE_ID_MARKER, additional)
+
+
+def _remove_dropped_household_entities(
+    hass: HomeAssistant, entry: ConfigEntry, household: list[str]
+) -> None:
+    """Remove the Effy entities of a household sensor that is no longer configured.
+
+    A household sensor's unique ID holds ``HOUSEHOLD_UNIQUE_ID_MARKER`` (ADR-029 decision 4,
+    TASK-0048), so removing the household import or export from the options removes exactly
+    their entities, never an input's or an additional sensor's; the statistics stay.
+    """
+    _remove_dropped_marked_entities(hass, entry, HOUSEHOLD_UNIQUE_ID_MARKER, household)
+
+
 def _build_derived_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -442,6 +483,7 @@ def _build_derived_entities(
     entity_id: str,
     is_input: bool,
     additional: frozenset[str] | set[str] = frozenset(),
+    household: frozenset[str] | set[str] = frozenset(),
 ) -> list[SensorEntity]:
     """Return whichever derived entity applies to one source sensor, given
     its now-known state_class/unit.
@@ -452,19 +494,37 @@ def _build_derived_entities(
     EffySmoothedSensor instead (gap-interpolation feature) — output
     sensors and non-input power-family sensors get neither. Shared by the
     initial setup pass and the late-binding listener below so the two
-    paths can't silently diverge. An additional sensor (ADR-028, in ``additional``) is
-    treated as an input here and its entity is marked as an additional one.
+    paths can't silently diverge. An additional sensor (ADR-028, in ``additional``) or a
+    household meter sensor (ADR-029, in ``household``) is treated as an input here and its
+    entity is marked as such (the unique ID marker); neither has an effective entity.
     """
     meta = get_sensor_meta(hass, entity_id)
     state_class = meta.get("state_class")
     unit = meta.get("unit", "W")
     is_additional = entity_id in additional
+    is_household = entity_id in household
     if is_energy_family(state_class, unit):
         return [
-            EffyDerivedPowerSensor(hass, entry, coordinator, entity_id, additional=is_additional)
+            EffyDerivedPowerSensor(
+                hass,
+                entry,
+                coordinator,
+                entity_id,
+                additional=is_additional,
+                household=is_household,
+            )
         ]
     if is_input:
-        return [EffySmoothedSensor(hass, entry, coordinator, entity_id, additional=is_additional)]
+        return [
+            EffySmoothedSensor(
+                hass,
+                entry,
+                coordinator,
+                entity_id,
+                additional=is_additional,
+                household=is_household,
+            )
+        ]
     return []
 
 
@@ -476,6 +536,7 @@ def _add_late_derived_entities(
     input_id_set: set[str],
     async_add_entities: AddEntitiesCallback,
     additional: set[str] | None = None,
+    household: set[str] | None = None,
 ) -> None:
     """Create derived entities whose classification couldn't be resolved
     at initial setup because the source entity had no state yet (see
@@ -500,7 +561,13 @@ def _add_late_derived_entities(
         remaining.discard(entity_id)
 
         new_entities = _build_derived_entities(
-            hass, entry, coordinator, entity_id, entity_id in input_id_set, additional or set()
+            hass,
+            entry,
+            coordinator,
+            entity_id,
+            entity_id in input_id_set,
+            additional or set(),
+            household or set(),
         )
         if new_entities:
             async_add_entities(new_entities)
@@ -732,6 +799,7 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         coordinator: EffyCoordinator,
         source_entity_id: str,
         additional: bool = False,
+        household: bool = False,
     ) -> None:
         self._hass = hass
         self._entry = entry
@@ -739,9 +807,17 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._source_entity_id = source_entity_id
 
         self._slug = slugify(source_entity_id.split(".")[-1])
-        # An additional sensor (ADR-028) marks its unique ID, so that the registry cleanup of a
-        # sensor taken out of the list finds exactly these entities.
-        marker = ADDITIONAL_UNIQUE_ID_MARKER if additional else ""
+        # An additional sensor (ADR-028) or a household sensor (ADR-029) marks its unique ID, so
+        # that the registry cleanup of a sensor taken out of its role finds exactly these
+        # entities. A household entity is not published here (TASK-0045f does).
+        self._household = household
+        marker = (
+            HOUSEHOLD_UNIQUE_ID_MARKER
+            if household
+            else ADDITIONAL_UNIQUE_ID_MARKER
+            if additional
+            else ""
+        )
         self._attr_unique_id = f"{entry.entry_id}_{marker}{self._slug}_power"
         self._attr_native_value: float | None = None
         self._attr_native_unit_of_measurement: str | None = None
@@ -782,15 +858,17 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
             if unit is not None:
                 self._attr_native_unit_of_measurement = unit
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
-        self._unregister_published = self._coordinator.register_published(
-            _source_descriptor(
-                self._entry,
-                self._coordinator,
-                self.entity_id,
-                EFFY_SERIES_DERIVED_POWER,
-                self._source_entity_id,
+        if not self._household:
+            # a household meter series is published by TASK-0045f, not here (ADR-029)
+            self._unregister_published = self._coordinator.register_published(
+                _source_descriptor(
+                    self._entry,
+                    self._coordinator,
+                    self.entity_id,
+                    EFFY_SERIES_DERIVED_POWER,
+                    self._source_entity_id,
+                )
             )
-        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
@@ -860,6 +938,7 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         coordinator: EffyCoordinator,
         source_entity_id: str,
         additional: bool = False,
+        household: bool = False,
     ) -> None:
         self._hass = hass
         self._entry = entry
@@ -867,9 +946,17 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._source_entity_id = source_entity_id
 
         self._slug = slugify(source_entity_id.split(".")[-1])
-        # An additional sensor (ADR-028) marks its unique ID, so that the registry cleanup of a
-        # sensor taken out of the list finds exactly these entities.
-        marker = ADDITIONAL_UNIQUE_ID_MARKER if additional else ""
+        # An additional sensor (ADR-028) or a household sensor (ADR-029) marks its unique ID, so
+        # that the registry cleanup of a sensor taken out of its role finds exactly these
+        # entities. A household entity is not published here (TASK-0045f does).
+        self._household = household
+        marker = (
+            HOUSEHOLD_UNIQUE_ID_MARKER
+            if household
+            else ADDITIONAL_UNIQUE_ID_MARKER
+            if additional
+            else ""
+        )
         self._attr_unique_id = f"{entry.entry_id}_{marker}{self._slug}_smoothed"
         self._attr_native_value: float | None = None
         self._attr_native_unit_of_measurement: str | None = None
@@ -910,15 +997,17 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
             if unit is not None:
                 self._attr_native_unit_of_measurement = unit
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
-        self._unregister_published = self._coordinator.register_published(
-            _source_descriptor(
-                self._entry,
-                self._coordinator,
-                self.entity_id,
-                EFFY_SERIES_SMOOTHED,
-                self._source_entity_id,
+        if not self._household:
+            # a household meter series is published by TASK-0045f, not here (ADR-029)
+            self._unregister_published = self._coordinator.register_published(
+                _source_descriptor(
+                    self._entry,
+                    self._coordinator,
+                    self.entity_id,
+                    EFFY_SERIES_SMOOTHED,
+                    self._source_entity_id,
+                )
             )
-        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:

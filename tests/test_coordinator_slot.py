@@ -676,6 +676,30 @@ class TestEffyCoordinatorShell:
         assert coord._input_ids == ["sensor.pv", "sensor.grid_in"]
         assert coord._output_ids == ["sensor.charge"]
 
+    def test_exposes_the_household_sensors_and_they_are_in_no_input_or_output_list(self) -> None:
+        """ADR-029: a series each, no role in any formula. ``household_ids`` is a copy."""
+        entry = _FakeEntry(["sensor.pv"], ["sensor.charge"], ["sensor.grid_in"])
+        bare = EffyCoordinator(_FakeHass(), entry)
+        assert (bare.household_import_id, bare.household_export_id) == (None, None)
+        assert bare.household_ids == []  # unset: nothing changes
+        entry.options["household_import_sensor"] = "sensor.house_in"
+        entry.options["household_export_sensor"] = "sensor.house_out"
+        coord = EffyCoordinator(_FakeHass(), entry)
+        assert coord.household_import_id == "sensor.house_in"
+        assert coord.household_export_id == "sensor.house_out"
+        assert coord.household_ids == ["sensor.house_in", "sensor.house_out"]
+        coord.household_ids.append("sensor.x")
+        assert coord.household_ids == ["sensor.house_in", "sensor.house_out"]
+        assert coord._input_ids == ["sensor.pv", "sensor.grid_in"]
+        assert coord._output_ids == ["sensor.charge"]
+        assert coord.additional_ids == []
+
+    def test_a_household_export_without_an_import_is_no_household_sensor(self) -> None:
+        entry = _FakeEntry(["sensor.pv"], ["sensor.charge"], ["sensor.grid_in"])
+        entry.options["household_export_sensor"] = "sensor.house_out"
+        coord = EffyCoordinator(_FakeHass(), entry)
+        assert coord.household_export_id is None and coord.household_ids == []
+
     def test_an_unset_role_has_no_entity_and_the_standby_sensor_follows_the_bms_inputs(
         self,
     ) -> None:

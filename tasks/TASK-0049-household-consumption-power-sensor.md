@@ -115,8 +115,21 @@ formula).
      are filled from that task's Delivered Artifacts once it is done; the rest
      exist already (checked 2026-11-13). -->
 
-- The household series and `inputs.household_import_id` / `household_export_id`
-  (→ task: TASK-0048-household-meter-inputs).
+- The household series and `inputs.household_import_id(options)` /
+  `household_export_id(options)` / `household_ids(options)` (→ task:
+  TASK-0048-household-meter-inputs, done): the series are in the 2nd (derived
+  power, energy family) and 3rd (smoothed, power family) result of
+  `history._compute_effective_slots` under `sensor.effy_<slug>_power` and
+  `sensor.effy_<slug>_smoothed` (`history._effy_power_entity_id`,
+  `_effy_smoothed_entity_id`), **as measured and never clamped**; the source
+  family is `world.state_classes`/units at compute time.
+  `inputs.household_import_is_signed(options)` is true exactly when the import
+  series is to be split by sign (a household import and no valid export): a
+  negative reading is then the household export; otherwise each series is taken
+  as it is and a negative reading counts as 0. `inputs.series_only_ids` lists
+  the additional and the household sensors;
+  `EffyCoordinator.household_import_id`, `.household_export_id`,
+  `.household_ids`.
 - `calculation.split_eps_readings`, `history._compute_effective_slots` (the PV
   combined series is the model for a series that is not an input's),
   `sensor.EffyPvSumSensor`, `const.PV_SUM_ENTITY_ID` and its unique ID helper.

@@ -156,6 +156,8 @@ from .inputs import (
     eps_id,
     grid_export_id,
     grid_import_id,
+    household_export_id,
+    household_import_id,
     output_ids,
     pv_input_ids,
     signature_pv_inputs,
@@ -273,6 +275,9 @@ class EffyCoordinator:
         self._eps_id: str | None = eps_id(entry.options)
         # the additional sensors (ADR-028): a series each, in no formula
         self._additional_ids: list[str] = additional_ids(entry.options)
+        # the household meter (ADR-029): a series each, in no formula; TASK-0049 reads them
+        self._household_import_id: str | None = household_import_id(entry.options)
+        self._household_export_id: str | None = household_export_id(entry.options)
 
         # Subscriber registry: entity_id → callback
         self._subscribers: dict[str, SubscriberCallback] = {}
@@ -410,6 +415,21 @@ class EffyCoordinator:
     def additional_ids(self) -> list[str]:
         """The additional sensors (ADR-028), a copy; the catalog describes their series by it."""
         return list(self._additional_ids)
+
+    @property
+    def household_import_id(self) -> str | None:
+        """The household import sensor (ADR-029), or ``None``."""
+        return self._household_import_id
+
+    @property
+    def household_export_id(self) -> str | None:
+        """The household export sensor (ADR-029), or ``None``; never set without an import."""
+        return self._household_export_id
+
+    @property
+    def household_ids(self) -> list[str]:
+        """The household sensors, import first (ADR-029), a copy; the entities are built from it."""
+        return [i for i in (self._household_import_id, self._household_export_id) if i]
 
     @property
     def efficiency_enabled(self) -> bool:

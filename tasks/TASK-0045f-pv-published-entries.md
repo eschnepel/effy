@@ -201,11 +201,21 @@ the YAML example), `adr/021` (amendment), and tests for each (`test_catalog`,
   entity IDs read `deltasum` (ADR-027 Amendment 2026-11-10; the IDs stay); the
   published `statistic_id` of an entry is the sensor's entity ID.
 - The sensors of CAP-15, created and **not** published by their tasks (→ tasks:
-  TASK-0048-household-meter-inputs,
+  TASK-0048-household-meter-inputs (done),
   TASK-0049-household-consumption-power-sensor,
-  TASK-0050-household-consumption-energy-sensors, all `todo`): the household
-  meter series entities, `sensor.effy_household_consumption_now`, `_today` and
-  `_total`.
+  TASK-0050-household-consumption-energy-sensors, the last two `todo`): the
+  household meter series entities, `sensor.effy_household_consumption_now`,
+  `_today` and `_total`. The household meter entities of TASK-0048 are
+  `sensor.EffyDerivedPowerSensor` / `sensor.EffySmoothedSensor` built with
+  `household=True` (unique ID `<entry_id>_household-<slug>_power|_smoothed`,
+  entity ID `sensor.effy_<slug>_power|_smoothed`, `_source_entity_id` the meter
+  sensor); with `household=True` they skip `register_published`, so **this task
+  removes that guard** and gives `catalog.describe_source_series` a household
+  branch (it raises `ValueError` for a household sensor today). Which sensors:
+  `coordinator.household_import_id`, `.household_export_id`; the import series
+  is signed, direction `both`, exactly when
+  `inputs.household_import_is_signed(options)` and its series is the smoothed
+  one.
 - `sensor.EffyPvShareSensor` and the additional sensors' descriptor path
   (`sensor._source_descriptor`,
   `catalog.describe_source_series(..., additional_ids=...)`) (→ tasks:
