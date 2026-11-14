@@ -119,7 +119,19 @@ tests for each.
   `Recorder.async_clear_statistics` use of TASK-0045e (→ tasks: TASK-0045b to
   TASK-0045e, done).
 - The consumption power series and its entity (→ task:
-  TASK-0049-household-consumption-power-sensor).
+  TASK-0049-household-consumption-power-sensor, done): the series is a member of
+  the first result (`per_sensor`) of `history._compute_effective_slots` under
+  `const.HOUSEHOLD_CONSUMPTION_ENTITY_ID`
+  (`sensor.effy_household_consumption_now`), unit `"W"`, one row per slot where
+  the household import has a value, produced by
+  `history._household_consumption_series` from
+  `calculation.household_consumption`; the entity is
+  `sensor.EffyHouseholdConsumptionSensor`, created by
+  `sensor._household_consumption_entities` while
+  `coordinator.household_import_id` is set (statistics and registry removal as
+  the PV sum's). It is **not** an effective series of an input: code that walks
+  the first result and assumes `_effy_entity_id(input)` keys must skip it, as it
+  skips the PV sum and the PV share.
 - `inputs.formula_signature` with the household keys (→ task:
   TASK-0048-household-meter-inputs).
 - `tests/test_delta_*.py`, `tests/test_pv_delta_*.py`,

@@ -265,3 +265,40 @@ ID and a different unique ID, so the registry may give it another entity ID
 until the old entity is removed by hand.
 
 **Decided by:** Lead Agent (◇ formalization), to be confirmed by the human
+
+## Amendment — 2026-11-14 (implementation, TASK-0049)
+
+**Reason:** the implementation of the household consumption power series had to
+settle points that decision 3 leaves open.
+
+**Decision:**
+
+1. **Slots.** The series has one row for every slot in which the household
+   import has a value, not for the waterfall's slots: such a slot may be one
+   that no other sensor has, and the other terms are then 0. It exists for an
+   entry with a household import also when no input or output has a row at all.
+   The first result of `history._compute_effective_slots` therefore holds one
+   series that is not an input's effective series (like the PV sum and the PV
+   share); a test that compares the effective series leaves it out.
+1. **Terms.** `sys_export` is the reading of the grid export counter plus the
+   output half of the EPS sensor (`split_eps_readings`); `sys_import` is the
+   reading of the grid import counter. No other sensor is a term: not the PV
+   inputs, the discharge counter, the charge counter or the EPS input half. The
+   readings are those the waterfall is given, so an input that is a power sensor
+   enters smoothed (gaps of up to two slots bridged) and an output enters as
+   recorded: a gap in a power-family grid export counts as 0 in its slots, as
+   any other missing term does.
+1. **The signed split.** `calculation.household_consumption` takes
+   `signed_import=True` only for a power-family household import with no
+   household export sensor (`inputs.household_import_is_signed`, and the import
+   is not an energy counter); a counter is never read with a sign, so its export
+   is 0. A household export reading is not used when the import is split.
+1. **Entity.** `sensor.effy_household_consumption_now`, unique ID
+   `<entry_id>_household_consumption_now`, exists while `household_import_id` is
+   set (an export alone is no household sensor); otherwise a registered entity
+   is removed from the registry and its statistics stay. It is written like the
+   PV sum (statistic ID = entity ID, unit W, hourly row the mean) and not yet
+   published (TASK-0045f).
+
+**Decided by:** Lead Agent (confirmed by the human with "Proceed" after the
+TASK-0048 hand-over, to be confirmed on review)

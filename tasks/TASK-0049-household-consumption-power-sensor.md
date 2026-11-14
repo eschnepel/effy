@@ -1,15 +1,16 @@
 # Task: Household consumption power sensor
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-15
 - **Related ADRs:** \[ADR-029, ADR-001, ADR-002, ADR-005, ADR-016, ADR-024,
   ADR-026, ADR-027\]
 - **Dependencies:** [TASK-0048-household-meter-inputs]. It shares
   `calculation.py`, `history.py`, `sensor.py`, `coordinator.py` and the
   translations with TASK-0048 and TASK-0050.
-- **Gate:** ADR-029 accepted by the human on 2026-11-13 ("ADR is accepted"); the
-  task is not yet released for work. Requested by the human on 2026-11-13;
-  design questions answered in chat the same day.
+- **Gate:** ADR-029 accepted by the human on 2026-11-13 ("ADR is accepted").
+  Released for work by the human on 2026-11-14 ("Proceed", after the hand-over
+  of TASK-0048 that named this task as the next one). Requested by the human on
+  2026-11-13; design questions answered in chat the same day.
 
 ## Goal
 
@@ -144,4 +145,51 @@ formula).
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/const.py` →
+  `HOUSEHOLD_CONSUMPTION_ENTITY_ID = "sensor.effy_household_consumption_now"`
+  (the statistic ID too),
+  `HOUSEHOLD_CONSUMPTION_UNIQUE_ID_SUFFIX = "household_consumption_now"`,
+  `HOUSEHOLD_CONSUMPTION_TRANSLATION_KEY = "household_consumption_now"`.
+  TASK-0045f moves the literals into `effy_exports.py`.
+- `custom_components/effy/calculation.py` →
+  `household_consumption(household_import: SensorReading | None, household_export: SensorReading | None, system_exports: Sequence[SensorReading], system_imports: Sequence[SensorReading], *, signed_import: bool) -> float | None`
+  (pure; W; `None` without a household import reading; clamped at 0; readings
+  normalised to W; with `signed_import` the import is split by
+  `split_signed_reading` and the export reading is not used).
+- `custom_components/effy/history.py` →
+  `_household_consumption_series(entry_options, indexed, state_classes, units, energy_ids, start, end, system_terms)`
+  (module level, new); `_compute_effective_slots` keeps the system terms per
+  slot in the slot loop (the grid export counter reading and the EPS output
+  half; the grid import counter reading; before the loop's `continue`), and puts
+  the series into the first result under `HOUSEHOLD_CONSUMPTION_ENTITY_ID` with
+  unit `"W"`, also on the path without any slot. Nothing else in `history.py`
+  changed: the writer, the hourly rows (mean), the stored-rows check, the live
+  push and the button treat it like the PV sum.
+- `custom_components/effy/sensor.py` → `household_consumption_unique_id(entry)`,
+  `EffyHouseholdConsumptionSensor(hass, entry, coordinator)` (W, power,
+  `measurement`, live push by `subscribe_updates`, restore, not published),
+  `_household_consumption_entities(hass, entry, coordinator)` (exists while
+  `coordinator.household_import_id` is set, else a registered entity is
+  removed), called in `async_setup_entry`.
+- `custom_components/effy/translations/en.json`, `de.json` →
+  `entity.sensor.household_consumption_now.name`.
+- Docs: `README.md` (section "Household consumption now", configuration
+  paragraph), `adr/029` Amendment 2026-11-14 (implementation, TASK-0049),
+  `tasks/adr-summary.md`.
+- Tests: `tests/test_household_consumption.py` (new, 48),
+  `TestHouseholdConsumption` in `tests/test_calculation.py` (14);
+  `tests/test_household_inputs_series.py` adapted (the first result now holds
+  the consumption series; they compare the effective series without it).
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+
+## Review
+
+Reviewer pass (2026-11-14, run inline by the Lead Agent after the worker pass,
+as no sub-agent was available): **PASS.** Every acceptance criterion checked
+against the code and a test, including the example (450 W), the unit example,
+the signed split, the clamp, the gap rule, the three write paths with the CAP-1
+equivalence, unchanged rows, the hourly mean, the live value and its restore,
+the entity's existence and removal, the translations, the README, and the
+effective-rows pin. Mutation checks (system terms not kept, no clamp, never
+signed, only the waterfall's slots, the grid import dropped) each fail the tests
+meant to catch them. Not run against a real Home Assistant.

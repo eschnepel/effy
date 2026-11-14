@@ -40,6 +40,7 @@ if not TYPE_CHECKING:
 distribute_loss = _calculation.distribute_loss
 split_signed_reading = _calculation.split_signed_reading
 split_eps_readings = _calculation.split_eps_readings
+household_consumption = _calculation.household_consumption
 effective_in_original_unit = _calculation.effective_in_original_unit
 trapezoidal_slot_contributions = _calculation.trapezoidal_slot_contributions
 trapezoidal_jump_windows = _calculation.trapezoidal_jump_windows
@@ -1051,3 +1052,99 @@ class TestInterpolateSlotGaps:
 
     def test_default_matches_interpolation_max_gap_slots_constant(self) -> None:
         assert INTERPOLATION_MAX_GAP_SLOTS == 2
+
+
+class TestHouseholdConsumption:
+    """``household_consumption`` (ADR-029 decision 3, TASK-0049), zero-mock.
+
+    ``max(0, hi - he + system export + EPS output - system import)`` in W.
+    """
+
+    @staticmethod
+    def _value(
+        hi: SensorReading | None,
+        he: SensorReading | None = None,
+        exports: list[SensorReading] | None = None,
+        imports: list[SensorReading] | None = None,
+        *,
+        signed: bool = False,
+    ) -> float | None:
+        result: float | None = household_consumption(
+            hi, he, exports or [], imports or [], signed_import=signed
+        )
+        return result
+
+    def test_the_example_of_the_task(self) -> None:
+        # hi 300 W, he 0, system export 200 W, EPS output 50 W, system import 100 W: 450 W
+        value = self._value(
+            _r("hi", 300),
+            None,
+            [_r("grid_export", 200), _r("eps", 50)],
+            [_r("grid_import", 100)],
+        )
+        assert value == pytest.approx(450.0)
+
+    def test_the_household_export_is_subtracted(self) -> None:
+        assert self._value(_r("hi", 300), _r("he", 120)) == pytest.approx(180.0)
+
+    def test_readings_in_kw_and_in_w_add_up_after_normalisation(self) -> None:
+        value = self._value(_r("hi", 0.3, "kW"), None, [], [_r("grid_import", 100)])
+        assert value == pytest.approx(200.0)
+        value = self._value(_r("hi", 300), _r("he", 0.05, "kW"), [_r("grid_export", 0.2, "kW")])
+        assert value == pytest.approx(450.0)
+
+    def test_a_missing_term_counts_as_zero(self) -> None:
+        assert self._value(_r("hi", 300)) == pytest.approx(300.0)
+        assert self._value(_r("hi", 300), None, [], [_r("grid_import", 100)]) == pytest.approx(
+            200.0
+        )
+
+    def test_no_household_import_reading_is_no_value_whatever_the_other_terms_are(self) -> None:
+        assert self._value(None, _r("he", 50), [_r("grid_export", 200)], [_r("gi", 1)]) is None
+
+    def test_a_negative_sum_is_clamped_to_zero(self) -> None:
+        value = self._value(_r("hi", 100), None, [], [_r("grid_import", 400)])
+        assert value == 0.0
+        assert math.copysign(1.0, value or 0.0) == 1.0  # not a negative zero either
+
+    def test_the_sum_may_be_exactly_zero(self) -> None:
+        assert self._value(_r("hi", 100), None, [], [_r("grid_import", 100)]) == 0.0
+
+    def test_the_eps_output_adds_and_the_eps_input_is_not_subtracted(self) -> None:
+        """Only the output half is passed in ``system_exports`` (the caller selects it); the
+        input half of the EPS sensor is no argument at all."""
+        eps_in, eps_out = split_signed_reading(_r("eps", 60))
+        assert eps_in.raw_value == 0.0
+        assert self._value(_r("hi", 300), None, [eps_out]) == pytest.approx(360.0)
+        eps_in, eps_out = split_signed_reading(_r("eps", -80))
+        assert eps_out.raw_value == 0.0
+        assert self._value(_r("hi", 300), None, [eps_out]) == pytest.approx(300.0)
+
+    def test_a_negative_household_import_counts_as_zero_without_the_signed_rule(self) -> None:
+        assert self._value(_r("hi", -120), None, [_r("grid_export", 200)]) == pytest.approx(200.0)
+
+    def test_a_negative_household_export_counts_as_zero(self) -> None:
+        assert self._value(_r("hi", 300), _r("he", -50)) == pytest.approx(300.0)
+
+    def test_a_signed_import_splits_into_import_and_export(self) -> None:
+        # +300 W is a household import of 300, -120 W is a household export of 120
+        assert self._value(_r("hi", 300), signed=True) == pytest.approx(300.0)
+        value = self._value(_r("hi", -120), None, [_r("grid_export", 200)], signed=True)
+        assert value == pytest.approx(80.0)  # 0 - 120 + 200
+        assert self._value(_r("hi", -120), signed=True) == 0.0  # clamped
+
+    def test_the_signed_split_works_in_kw(self) -> None:
+        value = self._value(_r("hi", -0.12, "kW"), None, [_r("grid_export", 200)], signed=True)
+        assert value == pytest.approx(80.0)
+
+    def test_the_signed_rule_ignores_a_household_export_reading(self) -> None:
+        """``signed_import`` is only true without an export sensor; if a caller passes one all
+        the same, the signed import is split and the export reading is not used twice."""
+        assert self._value(_r("hi", -120), _r("he", 40), [_r("grid_export", 200)], signed=True) == (
+            pytest.approx(80.0)
+        )
+
+    def test_the_inputs_are_not_changed(self) -> None:
+        hi, exports = _r("hi", -120), [_r("grid_export", 200)]
+        self._value(hi, None, exports, signed=True)
+        assert hi.raw_value == -120 and exports[0].raw_value == 200

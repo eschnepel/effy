@@ -210,6 +210,7 @@ from .calculation import (
     distribute_loss,
     effective_in_original_unit,
     energy_drain_events,
+    household_consumption,
     integral_rows,
     interpolate_slot_gaps,
     pv_delta,
@@ -230,6 +231,7 @@ from .calculation import (
 from .const import (
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
+    HOUSEHOLD_CONSUMPTION_ENTITY_ID,
     PV_DELTA_INTEGRAL_TODAY_SUFFIX,
     PV_DELTA_TODAY_ENTITY_ID,
     PV_DELTA_TOTAL_ENTITY_ID,
@@ -251,6 +253,9 @@ from .inputs import (
     eps_id,
     grid_export_id,
     grid_import_id,
+    household_export_id,
+    household_import_id,
+    household_import_is_signed,
     pv_input_ids,
     series_only_ids,
     soc_id,
@@ -1375,6 +1380,56 @@ def _additional_series(
     return per_sensor_power, per_sensor_smoothed
 
 
+def _household_consumption_series(
+    entry_options: dict[str, Any],
+    indexed: dict[str, dict[datetime, StatRow]],
+    state_classes: dict[str, str | None],
+    units: dict[str, str],
+    energy_ids: list[str],
+    start: datetime,
+    end: datetime,
+    system_terms: dict[datetime, tuple[list[SensorReading], list[SensorReading]]],
+) -> list[tuple[datetime, float]]:
+    """The household consumption series, per slot in W (ADR-029 decision 3, TASK-0049).
+
+    One row for every slot in ``[start, end)`` in which the household import sensor has a value
+    (a counter's idle slots have an explicit 0, a power sensor's gap of up to two slots is
+    bridged, a longer one stays a gap): such a slot may be one that no other sensor has, so
+    the slots here are the household import's own, not the waterfall's. The other terms are
+    the readings before the loss that the slot loop kept in ``system_terms`` (the system's
+    grid export counter and the EPS output half, the system's grid import counter); a slot the
+    loop did not visit has none, and a term that is missing counts as 0. ``[]`` without a
+    household import. The formula and the units are ``calculation.household_consumption``.
+    """
+    import_id = household_import_id(entry_options)
+    if import_id is None:
+        return []
+    export_id = household_export_id(entry_options)
+    # a counter is never read with a sign: its negative step would be no export (ADR-029)
+    signed = household_import_is_signed(entry_options) and import_id not in energy_ids
+    series: list[tuple[datetime, float]] = []
+    for slot in sorted(ts for ts in indexed.get(import_id, {}) if start <= ts < end):
+        import_readings = _readings_for_slot(
+            slot, SLOT_MINUTES, [import_id], indexed, state_classes, units
+        )
+        export_readings = (
+            _readings_for_slot(slot, SLOT_MINUTES, [export_id], indexed, state_classes, units)
+            if export_id is not None
+            else []
+        )
+        system_exports, system_imports = system_terms.get(slot, ([], []))
+        value = household_consumption(
+            import_readings[0] if import_readings else None,
+            export_readings[0] if export_readings else None,
+            system_exports,
+            system_imports,
+            signed_import=signed,
+        )
+        if value is not None:
+            series.append((slot, value))
+    return series
+
+
 async def _compute_effective_slots(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
@@ -1472,6 +1527,13 @@ async def _compute_effective_slots(
     computed in the same slot loop as the effective series, so the slot job, the
     recent recalculation and the button write it the same way, and a full
     recalculation and the recent recalculation give identical rows.
+
+    The household consumption series (ADR-029 decision 3, TASK-0049) is one more member of
+    ``per_sensor``, under ``const.HOUSEHOLD_CONSUMPTION_ENTITY_ID``, written like the PV
+    combined series (``_household_consumption_series``): a row for every slot in which the
+    household import has a value, in W, from the series before the loss, never effective values,
+    and in no loss, share or waterfall calculation. It exists for an entry with a household
+    import sensor, also when no input or output has a row at all.
 
     The additional sensors (ADR-028) and the household meter sensors (ADR-029), together
     ``series_only_ids``, are fetched, converted and smoothed with the inputs, and their derived
@@ -1660,9 +1722,22 @@ async def _compute_effective_slots(
         extra_ids, energy_ids, indexed, state_classes, units, smoothed_series, start, end
     )
 
+    # the system's readings before the loss for the household consumption: the grid export
+    # counter and the EPS output half (the system's export side), the grid import counter
+    household_wanted = household_import_id(entry_options) is not None
+    system_export_ids = {i for i in (grid_export_id(entry_options), eps_id(entry_options)) if i}
+    system_import_id = grid_import_id(entry_options)
+    system_terms: dict[datetime, tuple[list[SensorReading], list[SensorReading]]] = {}
+
     if not slots:
         phases.enter(None)
-        return {}, extra_power, extra_smoothed
+        no_slots: dict[str, dict[str, Any]] = {}
+        consumption = _household_consumption_series(
+            entry_options, indexed, state_classes, units, energy_ids, start, end, system_terms
+        )
+        if consumption:
+            no_slots[HOUSEHOLD_CONSUMPTION_ENTITY_ID] = {"unit": "W", "slot_values": consumption}
+        return no_slots, extra_power, extra_smoothed
 
     # results: effective (post-waterfall) values per slot, input sensors only
     results: dict[str, list[tuple[datetime, float]]] = {eid: [] for eid in input_ids}
@@ -1697,6 +1772,14 @@ async def _compute_effective_slots(
                 # pool) and an output half; total_loss = max(0, in + eps_in - out - eps_out)
                 input_readings, output_readings = split_eps_readings(
                     eps, input_readings, output_readings
+                )
+
+            if household_wanted:
+                # before the loss and before the ``continue`` below: a slot with outputs only
+                # has a household consumption all the same
+                system_terms[slot] = (
+                    [r for r in output_readings if r.entity_id in system_export_ids],
+                    [r for r in input_readings if r.entity_id == system_import_id],
                 )
 
             for reading in input_readings + output_readings:
@@ -1752,6 +1835,14 @@ async def _compute_effective_slots(
 
     if pv_sum_results:
         per_sensor[PV_SUM_ENTITY_ID] = {"unit": "W", "slot_values": pv_sum_results}
+    consumption_results = _household_consumption_series(
+        entry_options, indexed, state_classes, units, energy_ids, start, end, system_terms
+    )
+    if consumption_results:
+        per_sensor[HOUSEHOLD_CONSUMPTION_ENTITY_ID] = {
+            "unit": "W",
+            "slot_values": consumption_results,
+        }
     if pv_share_results:
         per_sensor[PV_SHARE_ENTITY_ID] = {
             "unit": "%",

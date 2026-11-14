@@ -202,11 +202,13 @@ the YAML example), `adr/021` (amendment), and tests for each (`test_catalog`,
   published `statistic_id` of an entry is the sensor's entity ID.
 - The sensors of CAP-15, created and **not** published by their tasks (→ tasks:
   TASK-0048-household-meter-inputs (done),
-  TASK-0049-household-consumption-power-sensor,
-  TASK-0050-household-consumption-energy-sensors, the last two `todo`): the
-  household meter series entities, `sensor.effy_household_consumption_now`,
-  `_today` and `_total`. The household meter entities of TASK-0048 are
-  `sensor.EffyDerivedPowerSensor` / `sensor.EffySmoothedSensor` built with
+  TASK-0049-household-consumption-power-sensor (done),
+  TASK-0050-household-consumption-energy-sensors, `todo`): the household meter
+  series entities, `sensor.effy_household_consumption_now`, `_today` and
+  `_total` (`sensor.EffyHouseholdConsumptionSensor` of TASK-0049, statistic ID
+  `const.HOUSEHOLD_CONSUMPTION_ENTITY_ID`, quantity power, function
+  `consumption`, direction `output`). The household meter entities of TASK-0048
+  are `sensor.EffyDerivedPowerSensor` / `sensor.EffySmoothedSensor` built with
   `household=True` (unique ID `<entry_id>_household-<slug>_power|_smoothed`,
   entity ID `sensor.effy_<slug>_power|_smoothed`, `_source_entity_id` the meter
   sensor); with `household=True` they skip `register_published`, so **this task

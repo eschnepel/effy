@@ -25,6 +25,7 @@ from tests.test_additional_sensors_series import (
     _world,
 )
 from tests.test_history_recent_equivalence import (
+    _const,
     _equivalent,
     _FrozenDatetime,
     _history,
@@ -91,6 +92,13 @@ def _with(
 
 
 BASE = _options([PV], [OUT])
+CONSUMPTION = _const.HOUSEHOLD_CONSUMPTION_ENTITY_ID  # TASK-0049: a member of the first result
+
+
+def _effective(per_sensor: dict[str, Any]) -> dict[str, Any]:
+    """The effective series of the first result: the consumption series (TASK-0049) is the
+    household sensors' own and is not one of them."""
+    return {k: v for k, v in per_sensor.items() if k != CONSUMPTION}
 
 
 class TestTheSeriesOfAHouseholdSensor:
@@ -102,7 +110,7 @@ class TestTheSeriesOfAHouseholdSensor:
             monkeypatch, _household_world(), _with(BASE, IMPORT_COUNTER)
         )
         assert set(power) - set(power0) == {IMPORT_COUNTER_POWER}
-        assert eff == eff0  # no effective series, no loss share
+        assert _effective(eff) == eff0  # no effective series, no loss share
         assert smooth == smooth0
         assert _history._effy_entity_id(IMPORT_COUNTER) not in eff
 
@@ -114,7 +122,7 @@ class TestTheSeriesOfAHouseholdSensor:
             monkeypatch, _household_world(), _with(BASE, IMPORT_POWER)
         )
         assert set(smooth) - set(smooth0) == {IMPORT_POWER_SMOOTHED}
-        assert eff == eff0 and power == power0
+        assert _effective(eff) == eff0 and power == power0
 
     async def test_the_derived_power_is_the_series_an_input_gets(
         self, monkeypatch: pytest.MonkeyPatch
@@ -253,7 +261,8 @@ class TestTheSignedImport:
     ) -> None:
         base = await _compute(monkeypatch, self._signed_world(), BASE)
         signed = await _compute(monkeypatch, self._signed_world(), _with(BASE, IMPORT_POWER))
-        assert signed[0] == base[0]  # a negative import loses nothing and takes no share
+        # a negative import loses nothing and takes no share
+        assert _effective(signed[0]) == _effective(base[0])
 
 
 class TestInNoFormula:
@@ -267,7 +276,8 @@ class TestInNoFormula:
             _with(BASE, IMPORT_COUNTER, **{HE: EXPORT_POWER}),
         ):
             eff, power, smooth = await _compute(monkeypatch, _household_world(), options)
-            assert eff and eff == eff0  # every effective row, the PV sum and the PV share included
+            # every effective row, the PV sum and the PV share included
+            assert eff0 and _effective(eff) == eff0
             added = set(power) - set(power0) | set(smooth) - set(smooth0)
             assert added  # the series exist, and everything else is untouched
             assert {k: v for k, v in power.items() if k in power0} == power0
@@ -287,8 +297,8 @@ class TestInNoFormula:
         eff0, _p, _s = await _compute(monkeypatch, world, BASE)
         options = _with(BASE, IMPORT_POWER, **{HE: EXPORT_COUNTER})
         eff, _p, _s = await _compute(monkeypatch, world, options)
-        assert eff == eff0
-        slots = {slot for info in eff.values() for slot, _v in info["slot_values"]}
+        assert _effective(eff) == eff0
+        slots = {slot for info in _effective(eff).values() for slot, _v in info["slot_values"]}
         assert slots and max(slots) == _ts(9, 25)
 
     async def test_household_sensors_alone_still_have_their_series(
@@ -301,7 +311,7 @@ class TestInNoFormula:
         world.state_classes[PV] = world.state_classes[OUT] = _SensorStateClass.MEASUREMENT
         options = _with(BASE, IMPORT_COUNTER, **{HE: EXPORT_POWER})
         eff, power, smooth = await _compute(monkeypatch, world, options)
-        assert eff == {}
+        assert _effective(eff) == {}
         assert set(power) == {IMPORT_COUNTER_POWER} and set(smooth) == {EXPORT_POWER_SMOOTHED}
 
     async def test_no_household_option_changes_nothing(
@@ -446,7 +456,9 @@ class TestUnchangedRowsAreNotWritten:
         effective_before = {
             sid: dict(recorder.short(sid))
             for sid in {k[1] for k in recorder.rows}
-            if sid.startswith("sensor.effy_") and not sid.endswith(("_power", "_smoothed"))
+            if sid.startswith("sensor.effy_")
+            and not sid.endswith(("_power", "_smoothed"))
+            and sid != CONSUMPTION
         }
         assert effective_before  # the effective series and the PV sum exist
 

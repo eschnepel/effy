@@ -21,6 +21,10 @@ EffyPvSumSensor (TASK-0045a, ADR-027 decision 1) is the effective series' siblin
 PV combined series: the effective values of all PV inputs added up, in W. Like the
 effective sensors it only receives the live push after a recalculation and restores its state;
 it exists only while a PV input is configured.
+EffyHouseholdConsumptionSensor (TASK-0049, ADR-029 decision 3) is the PV sum's sibling for the
+household consumption: the power the household used in the last completed slot, in W. It only
+receives the live push after a recalculation and restores its state; it exists only while a
+household import sensor is configured, and is not yet in the published list (TASK-0045f).
 EffyPvDeltaIntegralSensor (TASK-0045d, ADR-027 decision 3) is the PV delta integral: per PV
 input, and combined *today* and *total*. Its state is the coordinator's live integral (booked
 after every write, reset at local midnight, started from the base the derivation wrote);
@@ -67,6 +71,9 @@ from .catalog import (
 )
 from .const import (
     ADDITIONAL_UNIQUE_ID_MARKER,
+    HOUSEHOLD_CONSUMPTION_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TRANSLATION_KEY,
+    HOUSEHOLD_CONSUMPTION_UNIQUE_ID_SUFFIX,
     HOUSEHOLD_UNIQUE_ID_MARKER,
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
@@ -123,6 +130,11 @@ def standby_unique_id(entry: ConfigEntry) -> str:
 def pv_share_unique_id(entry: ConfigEntry) -> str:
     """The unique ID of the PV share now sensor (ADR-027 amendment 2026-11-09)."""
     return f"{entry.entry_id}_{PV_SHARE_UNIQUE_ID_SUFFIX}"
+
+
+def household_consumption_unique_id(entry: ConfigEntry) -> str:
+    """Unique ID of the Household consumption now sensor of one config entry (ADR-029)."""
+    return f"{entry.entry_id}_{HOUSEHOLD_CONSUMPTION_UNIQUE_ID_SUFFIX}"
 
 
 def pv_sum_unique_id(entry: ConfigEntry) -> str:
@@ -259,6 +271,7 @@ async def async_setup_entry(
     entities.append(EffyRecalculatedFromSensor(hass, entry, coordinator))
     entities.extend(_pv_sum_entities(hass, entry, coordinator))
     entities.extend(_pv_share_entities(hass, entry, coordinator))
+    entities.extend(_household_consumption_entities(hass, entry, coordinator))
     entities.extend(_pv_delta_entities(hass, entry, coordinator))
     entities.extend(_standby_entities(hass, entry, coordinator))
     entities.extend(_efficiency_entities(hass, entry, coordinator))
@@ -313,6 +326,24 @@ def _pv_share_entities(
         return [EffyPvShareSensor(hass, entry, coordinator)]
     registry = er.async_get(hass)
     stale = registry.async_get_entity_id("sensor", DOMAIN, pv_share_unique_id(entry))
+    if stale is not None:
+        registry.async_remove(stale)
+    return []
+
+
+def _household_consumption_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """The Household consumption now sensor, only with a household import (ADR-029 decision 5).
+
+    Without one (the household meter was removed in the options, or only an export was left,
+    which is no household sensor) an entity registered earlier is removed from the registry, so
+    the sensor does not linger as an orphan; its statistics stay.
+    """
+    if coordinator.household_import_id is not None:
+        return [EffyHouseholdConsumptionSensor(hass, entry, coordinator)]
+    registry = er.async_get(hass)
+    stale = registry.async_get_entity_id("sensor", DOMAIN, household_consumption_unique_id(entry))
     if stale is not None:
         registry.async_remove(stale)
     return []
@@ -1068,6 +1099,79 @@ class EffyPvSumSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     @property
     def entity_id(self) -> str:
         return PV_SUM_ENTITY_ID
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        pass
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last state, then subscribe to the push after a recalculation.
+
+        The restored value is provisional like the live state ADR-016 pushes; the first
+        ``_on_updated`` replaces it. Restoring comes first, so a push is never overwritten.
+        """
+        await super().async_added_to_hass()
+        value, _unit, _attrs = await _async_restore_measurement(self)
+        if value is not None:
+            self._attr_native_value = value
+        self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_updates is not None:
+            self._unsub_updates()
+            self._unsub_updates = None
+
+    @callback  # type: ignore[untyped-decorator]
+    def _on_updated(self, value: float | None, unit: str | None) -> None:
+        """Push the last-written slot's value as the live state (ADR-016)."""
+        self._attr_native_value = round(value, 3) if value is not None else None
+        self.async_write_ha_state()
+
+
+class EffyHouseholdConsumptionSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """Household consumption now: the power the household used in the last completed slot.
+
+    ``max(0, hi - he + system export + EPS output - system import)`` in W (ADR-029 decision 3),
+    from the series before the loss, never the effective values; the EPS input is not subtracted.
+    The series itself (``history._compute_effective_slots``, statistic ID
+    ``const.HOUSEHOLD_CONSUMPTION_ENTITY_ID``) is written by history.py like the PV sum; this
+    entity only gives it a place to attach to and a live state. After every recalculation that
+    wrote it, the coordinator pushes the last slot's value in W (ADR-016, see
+    ``EffySensor._on_updated`` for the tradeoff), and the last state is restored after a restart
+    (ADR-021 section 6). Always W: the formula adds the readings in W whatever their units are.
+    Not yet in the published list (TASK-0045f).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_translation_key = HOUSEHOLD_CONSUMPTION_TRANSLATION_KEY
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: EffyCoordinator,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_native_value: float | None = None
+        self._unsub_updates: Callable[[], None] | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return household_consumption_unique_id(self._entry)
+
+    @property
+    def entity_id(self) -> str:
+        return HOUSEHOLD_CONSUMPTION_ENTITY_ID
 
     @entity_id.setter
     def entity_id(self, value: str) -> None:

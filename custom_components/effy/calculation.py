@@ -416,6 +416,56 @@ def split_eps_readings(
     return split_inputs, split_outputs
 
 
+def household_consumption(
+    household_import: SensorReading | None,
+    household_export: SensorReading | None,
+    system_exports: Sequence[SensorReading],
+    system_imports: Sequence[SensorReading],
+    *,
+    signed_import: bool,
+) -> float | None:
+    """The household's power in one slot, in W (ADR-029 decision 3, TASK-0049).
+
+    ``max(0, hi - he + sys_export + eps_out - sys_import)``, where ``hi`` and ``he`` are the
+    household import and export, ``sys_export`` and ``eps_out`` the readings of the system's
+    export side (the grid export counter and the positive part of the EPS sensor, which the
+    caller selects out of ``split_eps_readings``) and ``sys_import`` those of the system's grid
+    import counter. All are the readings *before* the loss is distributed. Every reading is
+    normalised to W here (ADR-002), so a reading in kW and one in W add up. The EPS input and
+    every other input and output of the system are not in it: the balance is at the system's
+    AC port.
+
+    ``None`` when there is no household import reading: the slot has no row, and no other
+    term can make one. Any other missing term (``household_export`` is ``None``, a list is
+    empty) counts as 0.
+
+    ``signed_import`` is the signed series of a power-family household import sensor with no
+    household export sensor (ADR-029 decision 2): its positive part is the import, its
+    negative part the export (the split of ``split_signed_reading``, ADR-026); a
+    ``household_export`` reading is then not used, so that the export is never counted twice.
+    Otherwise each of the two is taken as it is and a negative reading counts as 0.
+
+    The result is clamped at 0: meter noise and the timing offset between the household meter
+    and the system's counters can make the sum negative (ADR-005's rule for the loss).
+    """
+    if household_import is None:
+        return None
+    if signed_import:
+        export_half, import_half = split_signed_reading(household_import)
+        import_w = _to_w(import_half.raw_value, import_half.original_unit)
+        export_w = _to_w(export_half.raw_value, export_half.original_unit)
+    else:
+        import_w = max(0.0, _to_w(household_import.raw_value, household_import.original_unit))
+        export_w = (
+            max(0.0, _to_w(household_export.raw_value, household_export.original_unit))
+            if household_export is not None
+            else 0.0
+        )
+    exported_w = sum(_to_w(r.raw_value, r.original_unit) for r in system_exports)
+    imported_w = sum(_to_w(r.raw_value, r.original_unit) for r in system_imports)
+    return max(0.0, import_w - export_w + exported_w - imported_w)
+
+
 # Maximum distribution window for a normal (non-offline) counter jump — see
 # trapezoidal_slot_contributions. Not user-configurable: unlike ADR-009's
 # smoothing, which this replaces, the window width here isn't a tunable

@@ -161,8 +161,8 @@ refused; if it reports a unit, the unit must be W, kW, Wh or kWh. Taking a
 sensor out of the options removes its Effy sensor from the entity registry; its
 statistics stay. Both are part of Effy's formula signature, so a change starts
 the full recalculation by itself once the entry is set up. These sensors are the
-input of the household consumption sensors that follow (ADR-029); until then
-they are not part of the published list. An entry without them changes nothing.
+input of "Household consumption now" (see "Effy sensors"); they are not part of
+the published list yet. An entry without them changes nothing.
 
 The **state of charge sensor** and the **battery capacity entity** are for the
 battery efficiency only (ADR-023): they are neither inputs nor outputs, so the
@@ -230,6 +230,51 @@ output is 0 %, not a gap.
   came from.
 - The statistics of the series are written like those of an effective sensor,
   and a history recalculation fills the history of a new entry.
+
+### Household consumption now
+
+With a household import sensor configured (see "Configuration"), Effy also
+creates `sensor.effy_household_consumption_now` ("Household consumption now"):
+the power the household used, in W (device class power, state class
+`measurement`). For every 5-minute slot
+
+```
+consumption = max(0, hi − he + sys_export + eps_out − sys_import)
+```
+
+where `hi` and `he` are the household import and export, `sys_export` and
+`sys_import` the battery system's grid export and grid import counters and
+`eps_out` the positive part of the EPS sensor (energy that leaves the system
+through the EPS port counts as household use). Every term is converted to W
+first, so a sensor in kW and one in W add up. Example: `hi` 300 W, `he` 0,
+`sys_export` 200 W, `eps_out` 50 W, `sys_import` 100 W: 450 W.
+
+- **The balance is at the system's AC port.** The house sits on the grid side of
+  the port, behind the household meter; what the meter and the port's flows
+  leave over is what the house used. For that reason all terms are the series
+  *before* the loss is distributed (derived power for an energy counter,
+  smoothed for a power sensor), never the effective values: the loss share of an
+  input does not exist at the port. The EPS input is **not** subtracted, and PV,
+  discharge and charge are not in the formula.
+- **A slot without a household import value has no row.** Any other missing term
+  counts as 0. A power sensor that is an input, the household import included,
+  has a gap of up to two 5-minute slots bridged first and a longer one stays a
+  gap; an output is not smoothed, so a gap in the system's grid export counts as
+  0 in its slots.
+- **A result below 0 is 0**, not negative: meter noise and the timing offset
+  between the household meter and the system's counters can make the sum
+  negative.
+- **A signed household import.** A power sensor for the household import with no
+  household export sensor is read with its sign: the positive part is `hi`, the
+  negative part `he`. With a household export sensor each sensor is taken as it
+  is and a negative reading counts as 0; an energy counter with no export sensor
+  has `he = 0`.
+- The sensor is in no loss, effective, share, standby, efficiency or battery
+  calculation: the effective sensors are the same with and without the household
+  sensors. Its statistics are written like those of the PV sum, a history
+  recalculation fills the history of a new entry, and it is removed from the
+  entity registry when the household import is removed from the options (its
+  statistics stay).
 
 ### Standby power
 

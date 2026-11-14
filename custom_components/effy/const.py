@@ -82,6 +82,15 @@ PV_SUM_ENTITY_ID = "sensor.effy_effective_pv_sum_now"
 PV_SUM_UNIQUE_ID_SUFFIX = "effective_pv_sum_now"
 PV_SUM_TRANSLATION_KEY = "effective_pv_sum_now"
 
+# The household consumption series (ADR-029 decision 3, TASK-0049): per slot, in W,
+# ``max(0, hi - he + system export + EPS output - system import)`` from the series before the
+# loss. Its statistic ID is the entity ID of the sensor "Household consumption now"; written into
+# ``per_sensor`` like the PV sum. It exists while a household import is configured. Not yet in
+# the published contract: TASK-0045f moves these literals into ``effy_exports.py``.
+HOUSEHOLD_CONSUMPTION_ENTITY_ID = "sensor.effy_household_consumption_now"
+HOUSEHOLD_CONSUMPTION_UNIQUE_ID_SUFFIX = "household_consumption_now"
+HOUSEHOLD_CONSUMPTION_TRANSLATION_KEY = "household_consumption_now"
+
 # The PV share series (ADR-027 amendment 2026-11-09, TASK-0046): per slot the percentage of the
 # effective inputs that PV and the EPS input make up, 0..100. Its statistic ID is the entity ID of
 # the sensor "PV share now"; written into ``per_sensor`` like any effective series, with the

@@ -107,6 +107,9 @@
       "pv_share_now": {
         "name": "PV-Anteil jetzt"
       },
+      "household_consumption_now": {
+        "name": "Haushaltsverbrauch jetzt"
+      },
       "pv_input_delta_integral_today": {
         "name": "{source_name} Delta-Integral heute"
       },
