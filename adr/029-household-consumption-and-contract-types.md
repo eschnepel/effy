@@ -302,3 +302,52 @@ settle points that decision 3 leaves open.
 
 **Decided by:** Lead Agent (confirmed by the human with "Proceed" after the
 TASK-0048 hand-over, to be confirmed on review)
+
+## Amendment — 2026-11-14 (implementation, TASK-0050)
+
+**Reason:** generalising the delta mechanism of ADR-027 for the household
+consumption energy sensors (decision 5) had to settle points the decisions leave
+open.
+
+**Decision:**
+
+1. **Names stay, general mechanics go underneath.** Every PV-named symbol, ID
+   and key of CAP-13 is unchanged (the entity registry and the tests depend on
+   them). `DeltaIntegrals` knows three kinds of integral: per PV input,
+   combined, and *series* (`DeltaIntegral.series`, the key of the series);
+   `EffyDeltaIntegralSensor` is the one class, `EffyPvDeltaIntegralSensor` its
+   PV case (a subclass that adds nothing); `history._delta_series` and
+   `_series_deltas` replace the two PV-only functions; `_import_integral_series`
+   is the one writer of every delta integral's history. The two derivations stay
+   two entry points (`async_derive_pv_delta_integrals`,
+   `async_derive_household_integrals`); `async_read_delta_bases` reads the bases
+   of both. The glossary adds the general terms (delta, delta integral) and
+   keeps the PV ones as the PV cases.
+1. **The series key.** The delta of the consumption series is keyed by the
+   series' statistic ID (`sensor.effy_household_consumption_now`), as a PV
+   input's is by its source entity ID; `delta_skip` holds the series while
+   neither of its two sensors has a base. One available sensor is enough to book
+   the delta, an unavailable one books nothing.
+1. **Derived again only when the consumption changed (Q27 = A).** The stored
+   signature's household import and export, grid import and export counter and
+   EPS sensor (`inputs.consumption_inputs`, `signature_consumption_inputs`) are
+   compared with the entry's; a difference, or none known, with consumption
+   statistics that exist, derives both sensors again in the same pass as the
+   combined PV ones, after the full recalculation has written the new
+   consumption rows (`async_derive_household_integrals(rewrite=True)`: cleared
+   after the read, written from the stored rows, unavailable meanwhile). Another
+   change of the formula keeps them, and a change of the PV inputs alone does
+   not touch them.
+1. **The source is the stored power series.** There is no per-input layer under
+   the consumption, so a derivation again reads the rows of the consumption
+   power series that exist, 5-minute rows and hourly rows within
+   `max_history_days` (ADR-027 decision 5). The running total of the *total*
+   sensor therefore counts from the start of that window after a derivation, not
+   from the first day Effy ever recorded.
+1. **Lifecycle.** The midnight reset runs while a PV input or a household import
+   exists (`delta_integrals_enabled`). The sensors are created with a household
+   import and removed from the registry without one (an export alone is no
+   household sensor); their statistics stay. Not yet published (TASK-0045f).
+
+**Decided by:** Lead Agent ("Proceed" after the TASK-0049 hand-over), to be
+confirmed by the human

@@ -140,6 +140,9 @@ from .const import (
     CONF_DEBUG_EXPORT,
     CONF_FORMULA_SIGNATURE,
     DOMAIN,
+    HOUSEHOLD_CONSUMPTION_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID,
     PV_DELTA_TODAY_ENTITY_ID,
     PV_DELTA_TOTAL_ENTITY_ID,
 )
@@ -152,6 +155,7 @@ from .inputs import (
     bms_input_ids,
     capacity_id,
     charge_id,
+    consumption_inputs,
     discharge_id,
     eps_id,
     grid_export_id,
@@ -160,11 +164,13 @@ from .inputs import (
     household_import_id,
     output_ids,
     pv_input_ids,
+    signature_consumption_inputs,
     signature_pv_inputs,
     soc_id,
 )
 from .history import (
     _local_tz,
+    async_derive_household_integrals,
     async_derive_pv_delta_integrals,
     async_probe_last_slot_ready,
     async_read_delta_bases,
@@ -565,6 +571,14 @@ class EffyCoordinator:
         """The PV delta integrals exist only with at least one PV input (ADR-027 decision 3)."""
         return bool(self._pv_input_ids)
 
+    @property
+    def delta_integrals_enabled(self) -> bool:
+        """Any delta integral exists: with a PV input, or with a household import (ADR-029).
+
+        The reset of the *today* integrals at local midnight is scheduled while it holds.
+        """
+        return self.pv_delta_enabled or self._household_import_id is not None
+
     def restore_delta_integral(
         self,
         entity_id: str,
@@ -573,12 +587,15 @@ class EffyCoordinator:
         unit: str,
         value: float | None,
         last_reset: datetime | None,
+        series: str | None = None,
     ) -> DeltaIntegral:
         """Register a delta integral sensor with what it restored (ADR-027 decision 5).
 
         ``value`` is ``None`` when nothing was restored (the sensor is then unavailable until
         its base arrives). A *today* integral whose ``last_reset`` is of an earlier local day
-        starts at 0 with today's midnight. Returns the live integral the sensor shows.
+        starts at 0 with today's midnight. ``series`` names the series of a household
+        consumption integral (its statistic ID; ``source`` is then ``None``). Returns the live
+        integral the sensor shows.
         """
         return self._delta_integrals.restore(
             entity_id=entity_id,
@@ -589,6 +606,7 @@ class EffyCoordinator:
             last_reset=last_reset,
             now=self._now(),
             tz=_local_tz(self._hass),
+            series=series,
         )
 
     def subscribe_delta_integral(
@@ -624,7 +642,8 @@ class EffyCoordinator:
         one stored in the entry data, under the recorder lock that the slot jobs and the button
         share. The steps (``_async_formula_steps``): the base of every integral that already has
         statistics, the full recalculation (the button's), the derivation of every integral that
-        has none, and, when the PV inputs changed, the combined integrals derived again. The
+        has none, and, when the PV inputs changed, the combined integrals derived again, and,
+        when an input of the household consumption changed, its integrals derived again. The
         signature is stored in the entry's data last, and only if every step succeeded: a failing
         step logs a warning and stores nothing, the sensors stay unavailable, the slot jobs keep
         working and the next setup tries again. Returns whether it succeeded; a cancellation
@@ -644,7 +663,7 @@ class EffyCoordinator:
         except Exception as err:  # noqa: BLE001 - whatever fails, the next setup retries
             _LOGGER.warning(
                 "Effy: the full recalculation after a change of the formula failed at '%s' "
-                "(%s: %s); the PV delta integrals stay unavailable until the next setup, which "
+                "(%s: %s); the delta integrals stay unavailable until the next setup, which "
                 "tries again",
                 step[0],
                 type(err).__name__,
@@ -663,6 +682,10 @@ class EffyCoordinator:
         options = self._entry.options
         pv_inputs = list(self._pv_input_ids)
         combined_ids = (PV_DELTA_TODAY_ENTITY_ID, PV_DELTA_TOTAL_ENTITY_ID)
+        consumption_ids = (
+            HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID,
+            HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID,
+        )
 
         # An input that was removed and added again still has statistics: nothing is derived,
         # its base is its last stored row, handed over *before* the recalculation so that the
@@ -679,12 +702,26 @@ class EffyCoordinator:
         rewrite_combined = any(statistic_id in existing for statistic_id in combined_ids) and (
             previous is None or set(previous) != set(pv_inputs)
         )
-        if rewrite_combined:
-            self._notify_delta_integrals(self._delta_integrals.invalidate(combined_ids))
+        # The same for the household consumption (ADR-029 decision 5): a changed household
+        # import or export, grid import or export counter or EPS sensor (or none known) with
+        # consumption statistics that exist: both are derived again from the rows the full
+        # recalculation writes, while their sensors are unavailable.
+        previous_consumption = signature_consumption_inputs(
+            self._entry.data.get(CONF_FORMULA_SIGNATURE)
+        )
+        rewrite_consumption = any(
+            statistic_id in existing for statistic_id in consumption_ids
+        ) and (previous_consumption is None or previous_consumption != consumption_inputs(options))
+        rewritten = {
+            *(combined_ids if rewrite_combined else ()),
+            *(consumption_ids if rewrite_consumption else ()),
+        }
+        if rewritten:
+            self._notify_delta_integrals(self._delta_integrals.invalidate(sorted(rewritten)))
         waiting = {
             statistic_id: base
             for statistic_id, base in existing.items()
-            if not (rewrite_combined and statistic_id in combined_ids)
+            if statistic_id not in rewritten
             and (integral := self._delta_integrals.get(statistic_id)) is not None
             and not integral.available
         }
@@ -708,14 +745,28 @@ class EffyCoordinator:
                 self._hass, options, now=self._now(), storage=self._storage
             )
             bases.update(combined)
+        step[0] = "derive the household integrals"
+        bases.update(
+            await async_derive_household_integrals(
+                self._hass,
+                options,
+                rewrite=rewrite_consumption,
+                now=self._now(),
+                storage=self._storage,
+            )
+        )
         if bases:
             step[0] = "hand over the bases"
             units = await self._storage.statistics_units(list(bases))
             self.hand_over_delta_bases(bases, units)
 
     def _delta_skip(self) -> frozenset[str]:
-        """The PV inputs without a base: a run neither computes nor books their deltas."""
-        return self._delta_integrals.skip_sources(self._pv_input_ids)
+        """The PV inputs and the consumption series without a base: a run neither computes nor
+        books their deltas (the series is keyed by its statistic ID)."""
+        sources = list(self._pv_input_ids)
+        if self._household_import_id is not None:
+            sources.append(HOUSEHOLD_CONSUMPTION_ENTITY_ID)
+        return self._delta_integrals.skip_sources(sources)
 
     def _book_deltas(self, deltas: Mapping[str, tuple[float, str]] | None) -> None:
         """Book the deltas of a run whose write has succeeded (ADR-027 decision 2)."""
@@ -763,7 +814,7 @@ class EffyCoordinator:
             EVENT_RECORDER_5MIN_STATISTICS_GENERATED, self._on_recorder_statistics
         )
         self._schedule_next_slot_timer()
-        if self.pv_delta_enabled:
+        if self.delta_integrals_enabled:
             self._schedule_midnight()
 
     @callback  # type: ignore[untyped-decorator]

@@ -203,12 +203,21 @@ the YAML example), `adr/021` (amendment), and tests for each (`test_catalog`,
 - The sensors of CAP-15, created and **not** published by their tasks (→ tasks:
   TASK-0048-household-meter-inputs (done),
   TASK-0049-household-consumption-power-sensor (done),
-  TASK-0050-household-consumption-energy-sensors, `todo`): the household meter
+  TASK-0050-household-consumption-energy-sensors (done)): the household meter
   series entities, `sensor.effy_household_consumption_now`, `_today` and
   `_total` (`sensor.EffyHouseholdConsumptionSensor` of TASK-0049, statistic ID
   `const.HOUSEHOLD_CONSUMPTION_ENTITY_ID`, quantity power, function
-  `consumption`, direction `output`). The household meter entities of TASK-0048
-  are `sensor.EffyDerivedPowerSensor` / `sensor.EffySmoothedSensor` built with
+  `consumption`, direction `output`; the energy sensors of TASK-0050 are
+  `sensor.EffyDeltaIntegralSensor(..., household=True)`, kinds `today` and
+  `total` (`const.HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID` and
+  `..._TOTAL_ENTITY_ID`, unit kWh, device class energy, state class `total`,
+  `last_reset` at local midnight for *today* only, series key
+  `const.HOUSEHOLD_CONSUMPTION_ENTITY_ID`, created by
+  `sensor._household_consumption_integral_entities` while
+  `coordinator.household_import_id` is set; like the PV delta integrals they do
+  not register with `register_published` yet, so **this task registers them
+  too**). The household meter entities of TASK-0048 are
+  `sensor.EffyDerivedPowerSensor` / `sensor.EffySmoothedSensor` built with
   `household=True` (unique ID `<entry_id>_household-<slug>_power|_smoothed`,
   entity ID `sensor.effy_<slug>_power|_smoothed`, `_source_entity_id` the meter
   sensor); with `household=True` they skip `register_published`, so **this task

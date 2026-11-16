@@ -1,13 +1,13 @@
 # ADR Summary — Effy (architectural ground truth for sub-agents)
 
-Last updated: 2026-11-14 (TASK-0049, the household consumption power sensor, and
-TASK-0048, the household meter inputs, delivered; TASK-0046, the PV share,
-delivered; CAP-14 delivered: the additional sensors, ADR-028; CAP-12 delivered:
-the EPS/UPS port, ADR-026; TASK-0025: the battery feed; TASK-0024: the valley
-and span machine; TASK-0023: SoC, capacity and hysteresis options; ADR-023
-accepted 2026-10-27; the ADR-019 amendment is in force: four counter pickers, no
-update listener; `effy_exports.py` added). Keep this concise; ADRs in `adr/` are
-authoritative.
+Last updated: 2026-11-14 (TASK-0050, the household consumption energy sensors,
+TASK-0049, the household consumption power sensor, and TASK-0048, the household
+meter inputs, delivered; TASK-0046, the PV share, delivered; CAP-14 delivered:
+the additional sensors, ADR-028; CAP-12 delivered: the EPS/UPS port, ADR-026;
+TASK-0025: the battery feed; TASK-0024: the valley and span machine; TASK-0023:
+SoC, capacity and hysteresis options; ADR-023 accepted 2026-10-27; the ADR-019
+amendment is in force: four counter pickers, no update listener;
+`effy_exports.py` added). Keep this concise; ADRs in `adr/` are authoritative.
 
 ## Tech stack
 
@@ -139,20 +139,21 @@ authoritative.
 ## Recent ADRs
 
 - **ADR-029 (Accepted 2026-11-13, CAP-15, TASK-0048 to TASK-0050, TASK-0045f;
-  the household meter inputs are delivered with TASK-0048 and the consumption
-  power sensor with TASK-0049, the rest is not yet implemented):** household
-  consumption = household import − household export + the system's grid export +
-  the EPS output − the system's grid import, in W per slot, from the series
-  before the loss, clamped at 0, the EPS input not subtracted; two pickers (a
-  signed power import sensor alone splits into export); power sensor and, by
-  ADR-027's mechanism generalised, today and total energy sensors. The published
-  contract is reworked before anyone reads it: the `sensors` attribute is a list
-  of groups keyed by `series`, `quantity`, `scope`, `span`, `role`, `direction`,
-  `function` and `aggregations`, each with a list of entity IDs (a separate
-  attribute `sources`, keyed by source sensor, lists the dependent Effy
-  sensors); `function` on every group, `pv` for the PV sum and PV energy
-  sensors; series renamed, `schema_version` 2; TASK-0045f publishes all sensors.
-  **Delivered (TASK-0048, amendment 2026-11-14):** the optional pickers
+  the household meter inputs are delivered with TASK-0048, the consumption power
+  sensor with TASK-0049 and the consumption energy sensors with TASK-0050, the
+  rest is not yet implemented):** household consumption = household import −
+  household export + the system's grid export + the EPS output − the system's
+  grid import, in W per slot, from the series before the loss, clamped at 0, the
+  EPS input not subtracted; two pickers (a signed power import sensor alone
+  splits into export); power sensor and, by ADR-027's mechanism generalised,
+  today and total energy sensors. The published contract is reworked before
+  anyone reads it: the `sensors` attribute is a list of groups keyed by
+  `series`, `quantity`, `scope`, `span`, `role`, `direction`, `function` and
+  `aggregations`, each with a list of entity IDs (a separate attribute
+  `sources`, keyed by source sensor, lists the dependent Effy sensors);
+  `function` on every group, `pv` for the PV sum and PV energy sensors; series
+  renamed, `schema_version` 2; TASK-0045f publishes all sensors. **Delivered
+  (TASK-0048, amendment 2026-11-14):** the optional pickers
   `household_import_sensor` and `household_export_sensor` (any `sensor`; W, kW,
   Wh or kWh; an export needs an import; a sensor has one role, also against the
   additional list); each gets a derived power or smoothed series by the code of
@@ -168,7 +169,14 @@ authoritative.
   counter, the EPS output half and the grid import counter, nothing else); a
   missing household import is a gap, any other missing term is 0; written like
   the PV sum, in no loss, effective or share calculation; not yet published
-  (TASK-0045f).
+  (TASK-0045f). **Delivered (TASK-0050, amendment 2026-11-14):**
+  `sensor.effy_household_consumption_today` and `..._total` (kWh, energy,
+  `total`; exist while a household import is set): the delta mechanism of
+  ADR-027 generalised (CAP-13 unchanged) to a series with no inputs under it;
+  booked from the delta of the consumption power rows, history derived once from
+  the stored rows, derived again (Q27 = A) when the household import or export,
+  grid import or export counter or EPS sensor changed; midnight reset while a PV
+  input or a household import exists; not yet published (TASK-0045f).
 
 - **PV share (ADR-027 amendments 2026-11-09 and 2026-11-13, ADR-024 amendment
   2026-11-13, TASK-0046):** the series `sensor.effy_pv_share_now`, per slot

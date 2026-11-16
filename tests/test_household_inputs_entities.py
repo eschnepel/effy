@@ -150,7 +150,8 @@ class TestSetup:
         await platform.setup()
         ids = {e.unique_id for e in platform.added[0] if hasattr(e, "_source_entity_id")}
         assert {"entry1_pv_energy", "entry1_pv_energy_power"} <= ids
-        assert {u for u in ids if "household" in u} == {
+        # the marker of a household *meter* entity, not the consumption sensors' names (TASK-0050)
+        assert {u for u in ids if "household-" in u} == {
             "entry1_household-house_import_power",
             "entry1_household-house_export_smoothed",
         }

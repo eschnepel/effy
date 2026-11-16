@@ -83,6 +83,10 @@ def pv_delta(
 ) -> float:
     """The energy a run changed in the stored rows of one series (ADR-027 decision 2).
 
+    The *delta* of any series: of a PV input's effective series (the PV delta, whose name this
+    keeps) and, since ADR-029 (TASK-0050), of the household consumption power series. The
+    function knows nothing of either.
+
     ``sum((new - stored) * slot_minutes / 60)`` over the rows the run wrote, with
     ``stored`` the value of the row before the run in the same unit as ``new_rows``;
     a slot without a stored row counts with its new value alone. The result is in Wh

@@ -110,6 +110,12 @@
       "household_consumption_now": {
         "name": "Haushaltsverbrauch jetzt"
       },
+      "household_consumption_today": {
+        "name": "Haushaltsverbrauch heute"
+      },
+      "household_consumption_total": {
+        "name": "Haushaltsverbrauch gesamt"
+      },
       "pv_input_delta_integral_today": {
         "name": "{source_name} Delta-Integral heute"
       },

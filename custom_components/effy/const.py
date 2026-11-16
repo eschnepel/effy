@@ -91,6 +91,18 @@ HOUSEHOLD_CONSUMPTION_ENTITY_ID = "sensor.effy_household_consumption_now"
 HOUSEHOLD_CONSUMPTION_UNIQUE_ID_SUFFIX = "household_consumption_now"
 HOUSEHOLD_CONSUMPTION_TRANSLATION_KEY = "household_consumption_now"
 
+# The household consumption energy sensors (ADR-029 decision 5, TASK-0050): the delta mechanism of
+# ADR-027 on the consumption power series. ``today`` has a ``last_reset`` at local midnight,
+# ``total`` none; both kWh, state class ``total``. They exist while a household import is
+# configured. Not yet in the published contract: TASK-0045f moves these literals into
+# ``effy_exports.py``.
+HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID = "sensor.effy_household_consumption_today"
+HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID = "sensor.effy_household_consumption_total"
+HOUSEHOLD_CONSUMPTION_TODAY_UNIQUE_ID_SUFFIX = "household_consumption_today"
+HOUSEHOLD_CONSUMPTION_TOTAL_UNIQUE_ID_SUFFIX = "household_consumption_total"
+HOUSEHOLD_CONSUMPTION_TODAY_TRANSLATION_KEY = "household_consumption_today"
+HOUSEHOLD_CONSUMPTION_TOTAL_TRANSLATION_KEY = "household_consumption_total"
+
 # The PV share series (ADR-027 amendment 2026-11-09, TASK-0046): per slot the percentage of the
 # effective inputs that PV and the EPS input make up, 0..100. Its statistic ID is the entity ID of
 # the sensor "PV share now"; written into ``per_sensor`` like any effective series, with the

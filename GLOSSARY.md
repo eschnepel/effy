@@ -190,32 +190,49 @@ EPS input, divided by all effective inputs; the part of the outputs that PV and
 the EPS input fed. 0 when no input is active. An hour's share is
 energy-weighted. The sensor "PV share now", in %.
 
-**PV delta**: For one PV input and one run, the energy by which the run changed
-the stored rows of its effective series: the added-up `(new − stored) × 5/60 h`
-over the rows the run wrote, the new value alone where there was no row. In Wh
-or kWh by the input's effective unit; positive or negative; booked at the time
-of the write, not at the time of the slot. _Avoid_: undistributed series,
-correction series
+**Delta**: For one series and one run, the energy by which the run changed the
+stored rows of that series: the added-up `(new − stored) × 5/60 h` over the rows
+the run wrote, the new value alone where there was no row. In Wh if the series
+is in W, kWh if in kW; positive or negative; booked at the time of the write,
+not at the time of the slot. Two series have one: the effective series of each
+PV input (the _PV delta_) and the household consumption power series (ADR-027,
+ADR-029). _Avoid_: undistributed series, correction series
 
-**PV delta integral**: A `total` sensor that accumulates PV deltas; Home
-Assistant compiles its statistics. There is one per PV input and one combined
-for all PV inputs, both with a `last_reset` at local midnight that Effy resets
-at wall-clock midnight (_today_), and one combined without `last_reset`
-(_total_). The delta of any period is its change. The entity IDs of the two
-combined ones read `deltasum`, the per-input ones `delta` (ADR-027 Amendment
-2026-11-10). _Avoid_: PV delta sum
+**PV delta**: The delta of one PV input's effective series (the PV case of a
+_delta_); in Wh or kWh by the input's effective unit.
 
-**Delta derivation**: The one-time computation of the history of the PV delta
-integrals from the stored effective rows, after a full history recalculation
-(ADR-027). It writes running-total rows, the only ones Effy writes. _Avoid_:
+**Delta integral**: A `total` sensor that accumulates deltas; Home Assistant
+compiles its statistics. Its _today_ kind has a `last_reset` at local midnight
+that Effy resets at wall-clock midnight, its _total_ kind has none. The delta of
+any period is its change. One mechanism, two users: the _PV delta integrals_ and
+the household consumption energy sensors.
+
+**PV delta integral**: A delta integral of the PV case: one _today_ per PV input
+(Wh or kWh by the input's unit) and one combined for all PV inputs in each kind,
+_today_ and _total_ (kWh). The entity IDs of the two combined ones read
+`deltasum`, the per-input ones `delta` (ADR-027 Amendment 2026-11-10). _Avoid_:
+PV delta sum
+
+**Household consumption energy sensors**: The delta integrals of the household
+consumption power series, `sensor.effy_household_consumption_today` and
+`..._total` (kWh), with no inputs under them: each takes the delta of that one
+series (ADR-029 decision 5). They exist while a household import is configured.
+
+**Delta derivation**: The one-time computation of the history of the delta
+integrals from the stored rows of their series (the effective rows of the PV
+inputs, the consumption power rows), after a full history recalculation
+(ADR-027, ADR-029). It writes running-total rows, the only ones Effy writes.
+When an input of the consumption changed, the household ones are cleared and
+derived again, as the combined PV ones when the PV inputs changed. _Avoid_:
 clone, migration, derived power series
 
-**Delta base**: The last derived row of a PV delta integral: its `state`,
+**Delta base**: The last derived row of a delta integral: its `state`,
 `last_reset` and running total, from which the live bookings continue.
 
 **Formula signature**: The set of configured sensors that influence the
-effective values (PV inputs, grid import, discharge, charge, grid export, EPS),
-kept in the entry's data; a difference at setup triggers a full history
+effective values and the derived series (PV inputs, grid import, discharge,
+charge, grid export, EPS, the additional sensors, the household import and
+export), kept in the entry's data; a difference at setup triggers a full history
 recalculation (ADR-027).
 
 **Statistic**: A 5-minute value Effy writes into the recorder for an Effy

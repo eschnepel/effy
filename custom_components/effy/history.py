@@ -232,6 +232,8 @@ from .const import (
     CONF_MAX_HISTORY_DAYS,
     DEFAULT_MAX_HISTORY_DAYS,
     HOUSEHOLD_CONSUMPTION_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID,
     PV_DELTA_INTEGRAL_TODAY_SUFFIX,
     PV_DELTA_TODAY_ENTITY_ID,
     PV_DELTA_TOTAL_ENTITY_ID,
@@ -265,9 +267,10 @@ from .inputs import output_ids as configured_output_ids
 _LOGGER = logging.getLogger(__name__)
 
 # What a recalculation returns: (short-term rows written, recalculated_from, touched entity
-# IDs, last values, the PV deltas). The PV deltas (ADR-027 decision 2) map the entity ID of
-# each PV input to ``(delta, unit)`` with the unit "Wh" (effective unit W) or "kWh" (kW);
-# ``None`` if the stored rows could not be read: no delta, which is not 0.
+# IDs, last values, the deltas). The deltas (ADR-027 decision 2, ADR-029 decision 5) map the
+# entity ID of each PV input, and the statistic ID of the household consumption series, to
+# ``(delta, unit)`` with the unit "Wh" (series unit W) or "kWh" (kW); ``None`` if the stored
+# rows could not be read: no delta, which is not 0. The name keeps the PV case it began as.
 _PvDeltas = dict[str, tuple[float, str]]
 _RecalcResult = tuple[
     int, datetime | None, set[str], dict[str, tuple[float, str]], _PvDeltas | None
@@ -1973,7 +1976,7 @@ async def async_recalculate_history(
 
     Returns (short_term_rows_written, recalculated_from, touched_entity_ids,
     last_values, deltas); ``deltas`` is the PV delta of every PV input (see
-    ``_pv_deltas``), or ``None`` if the stored rows could not be read.
+    ``_series_deltas``), or ``None`` if the stored rows could not be read.
     A full recalc recomputes every slot in [start, end) but, since TASK-0030
     (ADR-024), writes only the rows that are new or differ from what is
     stored. recalculated_from is the earliest slot whose row was written (a
@@ -2101,7 +2104,7 @@ async def _recalculate_history(
         include_long_term=True,
         phases=phases,
         storage=storage,
-        delta_series=_pv_delta_series(entry_options, delta_skip),
+        delta_series=_delta_series(entry_options, delta_skip),
     )
 
     short_term_written = 0
@@ -2169,7 +2172,7 @@ async def _recalculate_history(
         }
         await _run_export(export, record, phases)
     phases.finish(short_term_written)
-    deltas = _pv_deltas(
+    deltas = _series_deltas(
         per_sensor,
         entry_options,
         delta_skip,
@@ -2336,7 +2339,7 @@ async def _recalculate_recent(
         include_long_term=False,
         phases=phases,
         storage=storage,
-        delta_series=_pv_delta_series(entry_options, delta_skip),
+        delta_series=_delta_series(entry_options, delta_skip),
     )
 
     written = 0
@@ -2376,7 +2379,7 @@ async def _recalculate_recent(
     )
     phases.note_unchanged(unchanged)
     phases.finish(written)
-    deltas = _pv_deltas(
+    deltas = _series_deltas(
         per_sensor,
         entry_options,
         delta_skip,
@@ -2587,6 +2590,37 @@ def _integral_statistics(
     return short, hourly
 
 
+def _import_integral_series(
+    instance: Any,
+    series: Mapping[str, tuple[str, list[IntegralRow]]],
+    settled: datetime,
+) -> dict[str, DeltaBase]:
+    """Queue the running-total rows of delta integrals and return the base of each (ADR-027).
+
+    ``series`` maps a statistic ID to ``(unit, rows)``. Each is written in both tables with
+    ``has_sum`` and no ``has_mean`` (``_integral_statistics`` keeps 5-minute rows to the last
+    completed slot and hourly rows to closed hours). The base is the last row written, or zero
+    if there was nothing to write. The imports are only queued: the caller waits for the
+    recorder. The one writer of every delta integral's history: the derivation of the PV
+    inputs, the derivation again of the combined ones and the household consumption's.
+    """
+    bases: dict[str, DeltaBase] = {}
+    for statistic_id, (unit, rows) in series.items():
+        short_stats, hourly_stats = _integral_statistics(rows, settled)
+        metadata = _build_statistic_metadata(statistic_id, unit, has_sum=True)
+        if short_stats:
+            instance.async_import_statistics(metadata, short_stats, StatisticsShortTerm)
+        if hourly_stats:
+            instance.async_import_statistics(metadata, hourly_stats, Statistics)
+        last = (short_stats or hourly_stats or [None])[-1]
+        bases[statistic_id] = (
+            DeltaBase(last["state"], last.get("last_reset"), last["sum"])
+            if last is not None
+            else DeltaBase(0.0, None, 0.0)
+        )
+    return bases
+
+
 async def async_derive_pv_delta_integrals(
     hass: HomeAssistant,
     entry_options: dict[str, Any],
@@ -2650,21 +2684,68 @@ async def async_derive_pv_delta_integrals(
             if statistic_id in missing:
                 series[statistic_id] = ("kWh", rows)
 
-    bases: dict[str, DeltaBase] = {}
-    for statistic_id, (unit, rows) in series.items():
-        short_stats, hourly_stats = _integral_statistics(rows, settled)
-        metadata = _build_statistic_metadata(statistic_id, unit, has_sum=True)
-        if short_stats:
-            instance.async_import_statistics(metadata, short_stats, StatisticsShortTerm)
-        if hourly_stats:
-            instance.async_import_statistics(metadata, hourly_stats, Statistics)
-        last = (short_stats or hourly_stats or [None])[-1]
-        bases[statistic_id] = (
-            DeltaBase(last["state"], last.get("last_reset"), last["sum"])
-            if last is not None
-            else DeltaBase(0.0, None, 0.0)
-        )
+    bases = _import_integral_series(instance, series, settled)
     # the imports above only queued the work: the rows are in when this returns
+    await instance.async_block_till_done()
+    return bases
+
+
+async def async_derive_household_integrals(
+    hass: HomeAssistant,
+    entry_options: dict[str, Any],
+    *,
+    rewrite: bool = False,
+    now: datetime | None = None,
+    storage: Storage | None = None,
+) -> dict[str, DeltaBase]:
+    """Derive the history of the household consumption energy sensors (ADR-029 decision 5).
+
+    The same derivation as ``async_derive_pv_delta_integrals`` (ADR-027 decision 5) with the
+    stored household consumption power rows as its source: 5-minute rows where they exist,
+    hourly rows further back (``calculation.slot_energy_steps``), the energy of a slot converted
+    from Wh to kWh (``combined_integral_rows`` with one series), written as running-total rows
+    in both tables (``_import_integral_series``). ``sensor.effy_household_consumption_today``
+    and ``..._total`` that already have statistics are skipped, so a second run writes nothing.
+
+    ``rewrite``: the Q27 = A of ADR-027 for the household sensors (ADR-029 decision 5). Both
+    series are cleared (the recorder drops their rows and metadata, so that no row of the
+    earlier composition is left and the running total stays continuous) and derived again from
+    the rows now stored, as the formula changed. The clear comes after the read: a read that
+    fails clears nothing.
+
+    Returns the delta base of every series it wrote, keyed by statistic ID; ``{}`` without a
+    household import (which leaves the statistics alone) or when nothing was missing.
+    """
+    if household_import_id(entry_options) is None:
+        return {}
+    now = now if now is not None else datetime.now(tz=timezone.utc)
+    settled = settled_before(now)
+    tz = _local_tz(hass)
+    instance = get_recorder(hass)
+    storage = _storage_or_default(hass, storage, _NO_TIMINGS)
+
+    targets = [HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID, HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID]
+    if rewrite:
+        missing = targets
+    else:
+        existing = await storage.statistics_units(targets)
+        missing = [statistic_id for statistic_id in targets if statistic_id not in existing]
+        if not missing:
+            return {}
+    max_days: int = entry_options.get(CONF_MAX_HISTORY_DAYS, DEFAULT_MAX_HISTORY_DAYS)
+    five, hourly = await storage.stored_means(
+        HOUSEHOLD_CONSUMPTION_ENTITY_ID, now - timedelta(days=max_days), now
+    )
+    # the consumption series is in W, so its energy is in Wh
+    steps = slot_energy_steps(five, hourly, SLOT_MINUTES)
+    today_rows, total_rows = combined_integral_rows([(steps, "Wh")], tz)
+    rows = dict(zip(targets, (today_rows, total_rows), strict=True))
+    if rewrite:
+        instance.async_clear_statistics(targets)
+    bases = _import_integral_series(
+        instance, {statistic_id: ("kWh", rows[statistic_id]) for statistic_id in missing}, settled
+    )
+    # the clear and the imports only queued the work: the rows are in when this returns
     await instance.async_block_till_done()
     return bases
 
@@ -2697,24 +2778,34 @@ async def async_read_delta_bases(
     now: datetime | None = None,
     storage: Storage | None = None,
 ) -> tuple[dict[str, DeltaBase], dict[str, str]]:
-    """The base of every PV delta integral that already has statistics (ADR-027 decision 6).
+    """The base of every delta integral that already has statistics (ADR-027 decision 6).
 
     A PV input that is removed and added again still has its statistics: nothing is derived for
     it and its base is its last stored row (``state``, ``last_reset``, running total). The same
-    holds for a combined integral that exists. Returns the bases keyed by statistic ID, with the
-    unit each series is stored in; a series without statistics, or without rows, is absent.
-    Reads only; writes nothing.
+    holds for a combined integral that exists and, since ADR-029, for the household consumption
+    ones (``today`` and ``total``) while a household import is configured. Returns the bases
+    keyed by statistic ID, with the unit each series is stored in; a series without statistics,
+    or without rows, is absent. Reads only; writes nothing.
     """
     pv_inputs = list(pv_input_ids(entry_options))
-    if not pv_inputs:
+    statistic_ids = (
+        [
+            *(_pv_delta_integral_id(entity_id) for entity_id in pv_inputs),
+            PV_DELTA_TODAY_ENTITY_ID,
+            PV_DELTA_TOTAL_ENTITY_ID,
+        ]
+        if pv_inputs
+        else []
+    )
+    if household_import_id(entry_options) is not None:
+        statistic_ids += [
+            HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID,
+            HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID,
+        ]
+    if not statistic_ids:
         return {}, {}
     now = now if now is not None else datetime.now(tz=timezone.utc)
     storage = _storage_or_default(hass, storage, _NO_TIMINGS)
-    statistic_ids = [
-        *(_pv_delta_integral_id(entity_id) for entity_id in pv_inputs),
-        PV_DELTA_TODAY_ENTITY_ID,
-        PV_DELTA_TOTAL_ENTITY_ID,
-    ]
     stored_units = await storage.statistics_units(statistic_ids)
     bases: dict[str, DeltaBase] = {}
     units: dict[str, str] = {}
@@ -2786,20 +2877,14 @@ async def async_rederive_pv_combined(
 
     combined_ids = [PV_DELTA_TODAY_ENTITY_ID, PV_DELTA_TOTAL_ENTITY_ID]
     instance.async_clear_statistics(combined_ids)
-    bases: dict[str, DeltaBase] = {}
-    for statistic_id, rows in zip(combined_ids, (today_rows, total_rows), strict=True):
-        short_stats, hourly_stats = _integral_statistics(rows, settled)
-        metadata = _build_statistic_metadata(statistic_id, "kWh", has_sum=True)
-        if short_stats:
-            instance.async_import_statistics(metadata, short_stats, StatisticsShortTerm)
-        if hourly_stats:
-            instance.async_import_statistics(metadata, hourly_stats, Statistics)
-        last = (short_stats or hourly_stats or [None])[-1]
-        bases[statistic_id] = (
-            DeltaBase(last["state"], last.get("last_reset"), last["sum"])
-            if last is not None
-            else DeltaBase(0.0, None, 0.0)
-        )
+    bases = _import_integral_series(
+        instance,
+        {
+            statistic_id: ("kWh", rows)
+            for statistic_id, rows in zip(combined_ids, (today_rows, total_rows), strict=True)
+        },
+        settled,
+    )
     # the clear and the imports only queued the work: the rows are in when this returns
     await instance.async_block_till_done()
     return bases, dict.fromkeys(combined_ids, "kWh")
@@ -3776,20 +3861,27 @@ async def _mark_unchanged(
     return values_read
 
 
-def _pv_delta_series(entry_options: dict[str, Any], delta_skip: frozenset[str]) -> frozenset[str]:
-    """The statistic IDs of the effective series that need their stored values (the PV delta).
+def _delta_series(entry_options: dict[str, Any], delta_skip: frozenset[str]) -> frozenset[str]:
+    """The statistic IDs of the series that need their stored values (the delta).
 
-    Those of the PV inputs (the EPS sensor and the BMS inputs have no delta) except the
-    inputs the caller marks as having no delta base yet (``delta_skip``, source entity IDs).
+    Those of the PV inputs' effective series (the EPS sensor and the BMS inputs have no delta)
+    and the household consumption series (ADR-029 decision 5), except the ones the caller marks
+    as having no delta base yet (``delta_skip``: the source entity ID of a PV input, the
+    statistic ID of the consumption series).
     """
-    return frozenset(
+    series = {
         _effy_entity_id(entity_id)
         for entity_id in pv_input_ids(entry_options)
         if entity_id not in delta_skip
-    )
+    }
+    if household_import_id(entry_options) is not None and (
+        HOUSEHOLD_CONSUMPTION_ENTITY_ID not in delta_skip
+    ):
+        series.add(HOUSEHOLD_CONSUMPTION_ENTITY_ID)
+    return frozenset(series)
 
 
-def _pv_deltas(
+def _series_deltas(
     per_sensor: dict[str, dict[str, Any]],
     entry_options: dict[str, Any],
     delta_skip: frozenset[str],
@@ -3797,23 +3889,28 @@ def _pv_deltas(
     short_term_cutoff: datetime | None,
     values_read: bool,
 ) -> _PvDeltas | None:
-    """The PV delta of this run per PV input (ADR-027 decision 2, glossary "PV delta").
+    """The delta of this run per series (ADR-027 decision 2, ADR-029 decision 5).
 
-    The energy the run changed in the stored rows of the input's effective series: the
-    added-up ``(new - stored) * 5/60`` over the 5-minute rows it wrote, in Wh if the
-    effective unit is W and in kWh if kW. A row counts if it is at or after the short-term
-    cutoff and before ``settled_before``: a slot left to the recorder is not written
-    (ADR-024), so it is no change. An unchanged row adds 0 and the hourly rows do not
-    count. An input without an effective series this run is not reported, and neither is
-    one in ``delta_skip``. ``None`` if the stored values could not be read: no delta for
-    any input, which is not 0.
+    The energy the run changed in the stored rows of a series: the added-up
+    ``(new - stored) * 5/60`` over the 5-minute rows it wrote, in Wh if the series is in W and
+    in kWh if kW (``calculation.pv_delta``, glossary "PV delta" for a PV input's effective
+    series, "delta" for any series). Two users: the effective series of each PV input, keyed by
+    the input's entity ID, and the household consumption series, keyed by its statistic ID.
+    A row counts if it is at or after the short-term cutoff and before ``settled_before``: a
+    slot left to the recorder is not written (ADR-024), so it is no change. An unchanged row
+    adds 0 and the hourly rows do not count. A series without rows this run is not reported,
+    and neither is one in ``delta_skip``. ``None`` if the stored values could not be read: no
+    delta for any series, which is not 0.
     """
     if not values_read:
         return None
+    keyed = [(entity_id, _effy_entity_id(entity_id)) for entity_id in pv_input_ids(entry_options)]
+    if household_import_id(entry_options) is not None:
+        keyed.append((HOUSEHOLD_CONSUMPTION_ENTITY_ID, HOUSEHOLD_CONSUMPTION_ENTITY_ID))
     deltas: _PvDeltas = {}
-    for entity_id in pv_input_ids(entry_options):
-        info = per_sensor.get(_effy_entity_id(entity_id))
-        if entity_id in delta_skip or info is None:
+    for key, statistic_id in keyed:
+        info = per_sensor.get(statistic_id)
+        if key in delta_skip or info is None:
             continue
         settled: datetime | None = info.get("settled_before")
         written = [
@@ -3823,7 +3920,7 @@ def _pv_deltas(
             and (settled is None or ts < settled)
         ]
         stored: dict[datetime, float] = info.get("stored_short", {})
-        deltas[entity_id] = (
+        deltas[key] = (
             pv_delta(written, stored, SLOT_MINUTES),
             "Wh" if info["unit"] == "W" else "kWh",
         )

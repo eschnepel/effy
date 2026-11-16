@@ -461,6 +461,27 @@ async def _fake_async_derive_pv_delta_integrals(
     return dict(_derive_return[0])
 
 
+_household_derive_return: list[dict[str, Any]] = [{}]
+_household_derive_calls: list[dict[str, Any]] = []
+
+
+async def _fake_async_derive_household_integrals(
+    hass: Any,
+    entry_options: Any,
+    *,
+    rewrite: bool = False,
+    now: Any = None,
+    storage: Any = None,
+) -> Any:
+    """Like the real one without a household import: nothing is recorded and ``{}`` returned,
+    so the flow of every entry without household sensors is what it was before TASK-0050."""
+    if not entry_options.get("household_import_sensor"):
+        return {}
+    _household_derive_calls.append({"rewrite": rewrite, "storage": storage})
+    _delta_step("household")
+    return dict(_household_derive_return[0])
+
+
 async def _fake_async_rederive_pv_combined(
     hass: Any, entry_options: Any, *, now: Any = None, storage: Any = None
 ) -> Any:
@@ -473,6 +494,7 @@ _history_stub = ModuleType("effy.history")
 _history_stub.async_read_delta_bases = _fake_async_read_delta_bases  # type: ignore[attr-defined]
 _history_stub.async_derive_pv_delta_integrals = _fake_async_derive_pv_delta_integrals  # type: ignore[attr-defined]
 _history_stub.async_rederive_pv_combined = _fake_async_rederive_pv_combined  # type: ignore[attr-defined]
+_history_stub.async_derive_household_integrals = _fake_async_derive_household_integrals  # type: ignore[attr-defined]
 _history_stub.async_rewrite_hourly = _fake_async_rewrite_hourly  # type: ignore[attr-defined]
 _history_stub.async_update_standby = _fake_async_update_standby  # type: ignore[attr-defined]
 _history_stub.async_update_efficiency = _fake_async_update_efficiency  # type: ignore[attr-defined]
@@ -1053,6 +1075,8 @@ def _reset_slot_job_fakes() -> None:
     _delta_read_return[0] = ({}, {})
     _derive_return[0] = {}
     _rederive_return[0] = ({}, {})
+    _household_derive_return[0] = {}
+    _household_derive_calls.clear()
     _stored_units.clear()
     _delta_pause[0] = None
     _export_seen.clear()

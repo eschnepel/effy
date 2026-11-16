@@ -238,3 +238,112 @@ class TestTheSensorsAreInTheFormulaSignature:
         signature = self._sig(**{HI: IMPORT})
         assert _inputs.signature_pv_inputs(signature) == ["sensor.pv_a"]
         assert signature[ADDITIONAL] == []
+
+
+class TestTheConsumptionInputs:
+    """``consumption_inputs`` and ``signature_consumption_inputs`` (TASK-0050, ADR-029)."""
+
+    GRID_IN = "sensor.bms_grid_in"
+    GRID_OUT = "sensor.grid_out"
+    EPS = "sensor.eps"
+
+    def _inputs_of(self, **changes: Any) -> tuple[str | None, ...]:
+        result: tuple[str | None, ...] = _inputs.consumption_inputs(_options(**changes))
+        return result
+
+    def test_the_five_sensors_in_a_fixed_order(self) -> None:
+        assert self._inputs_of(**{HI: IMPORT, HE: EXPORT}) == (
+            IMPORT,
+            EXPORT,
+            self.GRID_IN,
+            self.GRID_OUT,
+            self.EPS,
+        )
+
+    def test_unset_sensors_are_none(self) -> None:
+        options = _options()
+        for key in (
+            _const.CONF_GRID_IMPORT_SENSOR,
+            _const.CONF_GRID_EXPORT_SENSOR,
+            _const.CONF_EPS_SENSOR,
+        ):
+            options.pop(key)
+        assert _inputs.consumption_inputs(options) == (None, None, None, None, None)
+
+    def test_the_household_sensors_are_as_inputs_reads_them(self) -> None:
+        """An export without an import, or a role sensor as import, is none (ADR-029)."""
+        assert self._inputs_of(**{HE: EXPORT})[:2] == (None, None)
+        assert self._inputs_of(**{HI: "sensor.pv_a", HE: EXPORT})[:2] == (None, None)
+
+    def test_the_pv_inputs_the_discharge_and_the_charge_counter_are_no_input_of_it(self) -> None:
+        base = self._inputs_of(**{HI: IMPORT})
+        changed = self._inputs_of(
+            **{
+                HI: IMPORT,
+                _const.CONF_PV_INPUT_SENSORS: ["sensor.other_pv"],
+                _const.CONF_DISCHARGE_SENSOR: "sensor.other_discharge",
+                _const.CONF_CHARGE_SENSOR: "sensor.other_charge",
+                ADDITIONAL: ["sensor.extra"],
+            }
+        )
+        assert changed == base
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {HI: "sensor.other_import"},
+            {HI: IMPORT, HE: "sensor.other_export"},
+            {_const.CONF_GRID_IMPORT_SENSOR: "sensor.other_grid_in"},
+            {_const.CONF_GRID_EXPORT_SENSOR: "sensor.other_grid_out"},
+            {_const.CONF_EPS_SENSOR: "sensor.other_eps"},
+        ],
+    )
+    def test_each_of_the_five_changes_it(self, change: dict[str, str]) -> None:
+        assert self._inputs_of(**{HI: IMPORT, HE: EXPORT}) != self._inputs_of(
+            **{HI: IMPORT, HE: EXPORT, **change}
+        )
+
+    def test_the_stored_signature_says_what_the_entry_reads_now(self) -> None:
+        options = _options(**{HI: IMPORT, HE: EXPORT})
+        signature = _inputs.formula_signature(options)
+        assert _inputs.signature_consumption_inputs(signature) == _inputs.consumption_inputs(
+            options
+        )
+
+    def test_it_survives_the_json_store_of_the_entry_data(self) -> None:
+        options = _options(**{HI: IMPORT})
+        signature = json.loads(json.dumps(_inputs.formula_signature(options)))
+        assert _inputs.signature_consumption_inputs(signature) == _inputs.consumption_inputs(
+            options
+        )
+
+    def test_a_signature_without_a_household_key_does_not_say(self) -> None:
+        """Stored before the household sensors existed, or never: unknown, not 'none set'."""
+        assert _inputs.signature_consumption_inputs(None) is None
+        assert _inputs.signature_consumption_inputs({}) is None
+        assert _inputs.signature_consumption_inputs({"pv_input_sensors": ["sensor.pv_a"]}) is None
+        assert _inputs.signature_consumption_inputs("not a mapping") is None
+
+    def test_a_signature_with_the_key_and_no_sensors_says_none_were_set(self) -> None:
+        signature = {
+            HI: None,
+            HE: None,
+            _const.CONF_GRID_IMPORT_SENSOR: None,
+            _const.CONF_GRID_EXPORT_SENSOR: None,
+            _const.CONF_EPS_SENSOR: None,
+        }
+        assert _inputs.signature_consumption_inputs(signature) == (None, None, None, None, None)
+
+    def test_a_missing_sensor_key_in_a_signature_counts_as_none(self) -> None:
+        assert _inputs.signature_consumption_inputs({HI: IMPORT}) == (
+            IMPORT,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    def test_values_are_compared_as_strings(self) -> None:
+        signature = {HI: IMPORT, HE: None, _const.CONF_GRID_IMPORT_SENSOR: self.GRID_IN}
+        result = _inputs.signature_consumption_inputs(signature)
+        assert result is not None and all(v is None or isinstance(v, str) for v in result)

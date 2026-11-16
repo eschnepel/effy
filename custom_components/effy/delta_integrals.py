@@ -1,7 +1,14 @@
-"""The live state of the PV delta integrals (ADR-027 decisions 3 to 5, TASK-0045d).
+"""The live state of the delta integrals (ADR-027 decisions 3 to 5, TASK-0045d; ADR-029, TASK-0050).
 
 Pure logic, no Home Assistant imports (ADR-000 §3). The coordinator owns one
 ``DeltaIntegrals``; the sensors read its entries and the coordinator pushes the changes.
+
+There are three kinds of integral, all booked the same way. The *per-input* one of a PV input
+and the two *combined* ones (the addition over the PV inputs) are the PV case of ADR-027. Since
+ADR-029 a *series* integral is a *today* or a *total* integral of one series with no inputs
+under it (the household consumption power series): its deltas arrive under the key of the
+series and land in its own integrals only. The mechanism is the same for all of them; what a
+delta belongs to is the only thing that differs.
 
 What it keeps, per integral: the state (``None`` while the sensor is *unavailable*, that is
 until it has a base), the ``last_reset`` of a *today* integral, and the unit. What it does:
@@ -9,10 +16,10 @@ until it has a base), the ``last_reset`` of a *today* integral, and the unit. Wh
 - ``restore``: a sensor that restarts hands over what it restored. A *today* integral whose
   ``last_reset`` is not of the current local day is reset (state 0, ``last_reset`` the local
   midnight of today), the way the midnight timer would have.
-- ``book``: the PV deltas of one run (TASK-0045b) are added to the states. Attribution is by
-  the time of the write: whatever slot a row belongs to, the delta lands in the live state,
-  with any sign and without a clamp. An integral that is unavailable books nothing, and
-  neither does the combined one for an input that has no base.
+- ``book``: the deltas of one run (TASK-0045b; for a series, TASK-0050) are added to the
+  states. Attribution is by the time of the write: whatever slot a row belongs to, the delta
+  lands in the live state, with any sign and without a clamp. An integral that is unavailable
+  books nothing, and neither does the combined one for an input that has no base.
 - ``reset_today``: at local midnight the *today* integrals go to 0 with the midnight as their
   ``last_reset``. The *total* is never reset.
 - ``hand_over``: the base the derivation of TASK-0045c wrote becomes the state, exactly.
@@ -49,9 +56,12 @@ class Base(Protocol):
 
 @dataclass
 class DeltaIntegral:
-    """One PV delta integral: a per-input *today* one, or the combined *today* or *total* one.
+    """One delta integral: a per-input *today* one, the combined *today* or *total* one, or the
+    *today* or *total* one of a series.
 
-    ``source`` is the PV input of a per-input integral, ``None`` for the combined ones.
+    ``source`` is the PV input of a per-input integral, ``None`` for the others. ``series`` is
+    the key of the series a series integral belongs to (the statistic ID of the series), ``None``
+    for the PV ones; an integral with neither is a combined one.
     ``state`` is ``None`` while there is no base: the sensor is then unavailable.
     """
 
@@ -61,6 +71,7 @@ class DeltaIntegral:
     unit: str
     state: float | None = None
     last_reset: datetime | None = None
+    series: str | None = None
 
     @property
     def available(self) -> bool:
@@ -92,12 +103,13 @@ def _of_the_current_day(
 
 
 class DeltaIntegrals:
-    """The live PV delta integrals of one config entry."""
+    """The live delta integrals of one config entry."""
 
     def __init__(self) -> None:
         self._by_id: dict[str, DeltaIntegral] = {}
         self._inputs: dict[str, DeltaIntegral] = {}
         self._combined: list[DeltaIntegral] = []
+        self._series: dict[str, list[DeltaIntegral]] = {}
         # a base handed over before its sensor restored; applied when it does
         self._pending: dict[str, tuple[Base, str | None]] = {}
 
@@ -118,13 +130,19 @@ class DeltaIntegrals:
         last_reset: datetime | None,
         now: datetime,
         tz: tzinfo,
+        series: str | None = None,
     ) -> DeltaIntegral:
-        """Register a sensor with what it restored (``value`` ``None``: nothing restored)."""
+        """Register a sensor with what it restored (``value`` ``None``: nothing restored).
+
+        ``series`` names the series of a series integral (``source`` is then ``None``).
+        """
         state, reset = _of_the_current_day(kind, value, last_reset, now, tz)
-        integral = DeltaIntegral(entity_id, kind, source, unit, state, reset)
+        integral = DeltaIntegral(entity_id, kind, source, unit, state, reset, series)
         self._forget(entity_id)
         self._by_id[entity_id] = integral
-        if source is not None:
+        if series is not None:
+            self._series.setdefault(series, []).append(integral)
+        elif source is not None:
             self._inputs[source] = integral
         else:
             self._combined.append(integral)
@@ -137,27 +155,41 @@ class DeltaIntegrals:
         old = self._by_id.pop(entity_id, None)
         if old is None:
             return
-        if old.source is not None:
+        if old.series is not None:
+            remaining = [i for i in self._series.get(old.series, []) if i is not old]
+            if remaining:
+                self._series[old.series] = remaining
+            else:
+                self._series.pop(old.series, None)
+        elif old.source is not None:
             self._inputs.pop(old.source, None)
         else:
             self._combined = [i for i in self._combined if i is not old]
 
     def has_base(self, source: str) -> bool:
-        """Whether the per-input integral of a PV input exists and is available."""
+        """Whether the integral of a PV input, or an integral of a series, is there and available.
+
+        A series has two integrals (*today* and *total*); one that is available is enough to
+        book the series' delta, which an unavailable one then simply does not take.
+        """
         integral = self._inputs.get(source)
-        return integral is not None and integral.available
+        if integral is not None:
+            return integral.available
+        return any(own.available for own in self._series.get(source, ()))
 
     def skip_sources(self, sources: Iterable[str]) -> frozenset[str]:
-        """The PV inputs without a base: their deltas are neither computed nor booked."""
+        """The PV inputs and series without a base: their deltas are neither computed nor booked."""
         return frozenset(source for source in sources if not self.has_base(source))
 
     def book(self, deltas: Mapping[str, tuple[float, str]] | None) -> list[DeltaIntegral]:
         """Add the deltas of one run to the states; returns the integrals that changed.
 
-        ``deltas`` maps a PV input to ``(delta, "Wh" | "kWh")``. Each per-input state grows by
-        its input's delta, converted into the sensor's unit; the combined *today* and *total*
-        by the addition of the booked deltas in kWh. Nothing is booked for an unavailable
-        integral, for an input without a sensor or base, or when there is no delta.
+        ``deltas`` maps a PV input, or the key of a series, to ``(delta, "Wh" | "kWh")``. Each
+        per-input state grows by its input's delta, converted into the sensor's unit; the
+        combined *today* and *total* by the addition of the booked deltas in kWh; the integrals
+        of a series by the delta of the series alone, converted into their unit, and the
+        combined ones are not touched by it. Nothing is booked for an unavailable integral, for
+        an input or series without a sensor or base, or when there is no delta.
         """
         if not deltas:
             return []
@@ -166,7 +198,13 @@ class DeltaIntegrals:
         booked = False
         for source, (delta, unit) in deltas.items():
             integral = self._inputs.get(source)
-            if integral is None or integral.state is None:
+            if integral is None:
+                for own in self._series.get(source, ()):
+                    if own.state is not None:
+                        own.state += convert_unit(delta, unit, own.unit)
+                        changed.append(own)
+                continue
+            if integral.state is None:
                 continue
             integral.state += convert_unit(delta, unit, integral.unit)
             changed.append(integral)

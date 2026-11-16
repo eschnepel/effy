@@ -25,7 +25,10 @@ EffyHouseholdConsumptionSensor (TASK-0049, ADR-029 decision 3) is the PV sum's s
 household consumption: the power the household used in the last completed slot, in W. It only
 receives the live push after a recalculation and restores its state; it exists only while a
 household import sensor is configured, and is not yet in the published list (TASK-0045f).
-EffyPvDeltaIntegralSensor (TASK-0045d, ADR-027 decision 3) is the PV delta integral: per PV
+EffyDeltaIntegralSensor (TASK-0045d, ADR-027 decision 3; TASK-0050, ADR-029 decision 5) is the
+delta integral: for PV, per PV input and combined (its subclass EffyPvDeltaIntegralSensor, the
+name CAP-13 knows); for the household consumption, its *today* and *total* energy sensors.
+The PV delta integral: per PV
 input, and combined *today* and *total*. Its state is the coordinator's live integral (booked
 after every write, reset at local midnight, started from the base the derivation wrote);
 Home Assistant compiles its statistics. Not yet in the published list (TASK-0045f).
@@ -72,6 +75,12 @@ from .catalog import (
 from .const import (
     ADDITIONAL_UNIQUE_ID_MARKER,
     HOUSEHOLD_CONSUMPTION_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TODAY_TRANSLATION_KEY,
+    HOUSEHOLD_CONSUMPTION_TODAY_UNIQUE_ID_SUFFIX,
+    HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID,
+    HOUSEHOLD_CONSUMPTION_TOTAL_TRANSLATION_KEY,
+    HOUSEHOLD_CONSUMPTION_TOTAL_UNIQUE_ID_SUFFIX,
     HOUSEHOLD_CONSUMPTION_TRANSLATION_KEY,
     HOUSEHOLD_CONSUMPTION_UNIQUE_ID_SUFFIX,
     HOUSEHOLD_UNIQUE_ID_MARKER,
@@ -273,6 +282,7 @@ async def async_setup_entry(
     entities.extend(_pv_share_entities(hass, entry, coordinator))
     entities.extend(_household_consumption_entities(hass, entry, coordinator))
     entities.extend(_pv_delta_entities(hass, entry, coordinator))
+    entities.extend(_household_consumption_integral_entities(hass, entry, coordinator))
     entities.extend(_standby_entities(hass, entry, coordinator))
     entities.extend(_efficiency_entities(hass, entry, coordinator))
     entities.extend(_battery_efficiency_entities(hass, entry, coordinator))
@@ -381,6 +391,32 @@ def _pv_delta_entities(
         if registered.domain == "sensor" and is_delta and unique_id not in wanted:
             registry.async_remove(registered.entity_id)
     return entities
+
+
+def _household_consumption_integral_entities(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EffyCoordinator
+) -> list[SensorEntity]:
+    """The household consumption energy sensors, only with a household import (ADR-029).
+
+    *Today* and *total*, the delta mechanism of ADR-027 on the consumption power series. Without
+    a household import (it was removed in the options, or only an export was left, which is no
+    household sensor) an entity registered earlier is removed from the registry, so the
+    sensors do not linger as orphans; their statistics stay.
+    """
+    if coordinator.household_import_id is not None:
+        return [
+            EffyDeltaIntegralSensor(hass, entry, coordinator, TODAY, household=True),
+            EffyDeltaIntegralSensor(hass, entry, coordinator, TOTAL, household=True),
+        ]
+    registry = er.async_get(hass)
+    for suffix in (
+        HOUSEHOLD_CONSUMPTION_TODAY_UNIQUE_ID_SUFFIX,
+        HOUSEHOLD_CONSUMPTION_TOTAL_UNIQUE_ID_SUFFIX,
+    ):
+        stale = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_{suffix}")
+        if stale is not None:
+            registry.async_remove(stale)
+    return []
 
 
 def _standby_entities(
@@ -1292,13 +1328,15 @@ def _parse_last_reset(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-class EffyPvDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
-    """A PV delta integral: the energy the recalculations added to or took from the PV history.
+class EffyDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
+    """A delta integral: the energy the recalculations added to or took from a series' history.
 
-    Three kinds (ADR-027 decision 3), all device class energy and state class ``total``: the
-    *today* integral of one PV input (``source_entity_id`` given; Wh if its effective unit is
-    W, kWh if kW), and the combined *today* and *total* ones (kWh, no source). *Today* has a
-    ``last_reset`` at local midnight, *total* none.
+    Two users of one mechanism, all device class energy and state class ``total``. The PV case
+    (ADR-027 decision 3, glossary "PV delta integral"): the *today* integral of one PV input
+    (``source_entity_id`` given; Wh if its effective unit is W, kWh if kW), and the combined
+    *today* and *total* ones (kWh, no source). The household consumption (ADR-029 decision 5,
+    ``household=True``): its *today* and *total* energy sensors (kWh), whose series is the
+    consumption power series. *Today* has a ``last_reset`` at local midnight, *total* none.
 
     The state is the coordinator's live integral, shown at full precision: the coordinator
     books each run's PV delta after its write, resets *today* at local midnight and hands over
@@ -1321,14 +1359,30 @@ class EffyPvDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[mi
         coordinator: EffyCoordinator,
         kind: Kind,
         source_entity_id: str | None = None,
+        *,
+        household: bool = False,
     ) -> None:
         self._hass = hass
         self._entry = entry
         self._coordinator = coordinator
         self._source_entity_id = source_entity_id
+        # the key of the series of a household consumption integral, ``None`` for a PV one
+        self._kind: Kind
+        self._series: str | None = HOUSEHOLD_CONSUMPTION_ENTITY_ID if household else None
         self._slug = slugify(source_entity_id.split(".")[-1]) if source_entity_id else ""
-        if source_entity_id is not None:
-            self._kind: Kind = TODAY  # a PV input has a *today* integral only
+        if household:
+            if kind == TODAY:
+                self._kind = TODAY
+                self._entity_id = HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID
+                self._unique_id = f"{entry.entry_id}_{HOUSEHOLD_CONSUMPTION_TODAY_UNIQUE_ID_SUFFIX}"
+                self._attr_translation_key = HOUSEHOLD_CONSUMPTION_TODAY_TRANSLATION_KEY
+            else:
+                self._kind = TOTAL
+                self._entity_id = HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID
+                self._unique_id = f"{entry.entry_id}_{HOUSEHOLD_CONSUMPTION_TOTAL_UNIQUE_ID_SUFFIX}"
+                self._attr_translation_key = HOUSEHOLD_CONSUMPTION_TOTAL_TRANSLATION_KEY
+        elif source_entity_id is not None:
+            self._kind = TODAY  # a PV input has a *today* integral only
             self._entity_id = f"sensor.effy_{self._slug}{PV_DELTA_INTEGRAL_TODAY_SUFFIX}"
             self._unique_id = f"{entry.entry_id}_{self._slug}{PV_DELTA_INTEGRAL_TODAY_SUFFIX}"
             self._attr_translation_key = PV_DELTA_INPUT_TRANSLATION_KEY
@@ -1416,6 +1470,8 @@ class EffyPvDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[mi
         await super().async_added_to_hass()
         value, unit, attrs = await _async_restore_measurement(self)
         last_reset = _parse_last_reset(attrs.get("last_reset")) if self._kind == TODAY else None
+        # the series is passed only by a household integral: a PV integral's call is unchanged
+        series = {"series": self._series} if self._series is not None else {}
         self._integral = self._coordinator.restore_delta_integral(
             self.entity_id,
             self._kind,
@@ -1423,6 +1479,7 @@ class EffyPvDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[mi
             self._unit_for(unit),
             value,
             last_reset,
+            **series,
         )
         self._unsub_integral = self._coordinator.subscribe_delta_integral(
             self.entity_id, self._on_integral
@@ -1438,6 +1495,14 @@ class EffyPvDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[mi
         """The integral changed (a booking, the midnight, the base): publish its state as is."""
         self._integral = integral
         self.async_write_ha_state()
+
+
+class EffyPvDeltaIntegralSensor(EffyDeltaIntegralSensor):
+    """The PV case of the delta integral (ADR-027, CAP-13): per PV input and combined.
+
+    The class keeps the name the glossary and the tests of CAP-13 know it by; it adds nothing.
+    The household consumption integrals are ``EffyDeltaIntegralSensor`` with ``household=True``.
+    """
 
 
 class EffyRecalculatedFromSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]

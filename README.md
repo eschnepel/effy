@@ -276,6 +276,42 @@ first, so a sensor in kW and one in W add up. Example: `hi` 300 W, `he` 0,
   entity registry when the household import is removed from the options (its
   statistics stay).
 
+### Household consumption today and total
+
+With a household import sensor configured, Effy also creates two energy sensors
+for the consumption above, `sensor.effy_household_consumption_today` ("Household
+consumption today") and `sensor.effy_household_consumption_total` ("Household
+consumption total"). Both are in kWh, device class energy, state class `total`,
+so Home Assistant compiles their statistics and the Energy dashboard can use
+them: the energy of any period is the change of its statistics.
+
+- **Today** has a `last_reset` at local midnight that Effy resets at wall-clock
+  midnight; **total** has none and only grows (or is corrected).
+- **How they are booked.** They are not an integral of the power sensor's
+  states. Whenever Effy writes rows of the consumption power series, the energy
+  by which it changed the stored rows, `(new − stored) × 5/60 h`, is added to
+  both at the time of the write; a row that is already what Effy would write
+  adds nothing and a run that writes nothing books nothing. A slot's energy is
+  therefore booked when its row is written, after the slot has ended: the
+  sensors are **one slot late**, as are the live value of the power sensor and
+  the PV delta integrals. The energy of an hour shows in the change of that
+  hour.
+- **They follow corrections.** A recalculation (the button, the recalculation
+  after a change of the formula) that changes rows of the consumption series
+  books the difference: more energy for a slot that turned out higher, less for
+  one that turned out lower. *Today* may therefore go below 0 for a while.
+- **History.** At the first full recalculation Effy derives the history of both
+  from the stored consumption rows, once: 5-minute rows where they exist, hourly
+  rows further back, hourly rows only for closed hours. The sensors are
+  `unavailable` until that is written. A change of the household import or
+  export, the grid import or export counter or the EPS sensor changes the whole
+  consumption series, so the full recalculation starts by itself and both are
+  cleared and derived again from the new rows (unavailable meanwhile, then the
+  new base); another change of the formula keeps them.
+- They exist while a household import is configured and are removed from the
+  entity registry when it is removed (their statistics stay). They are not part
+  of the published list yet.
+
 ### Standby power
 
 If at least one **BMS input** is configured, Effy also creates
@@ -906,4 +942,4 @@ test suite runs against.
 | [026](adr/026-eps-port-sensor.md) | The EPS/UPS port as a signed power sensor |
 | [027](adr/027-effective-pv-sum-sensors.md) | The Effective PV Sum and the PV delta integrals |
 | [028](adr/028-additional-sensors.md) | Additional sensors with derived power and smoothed series |
-| [029](adr/029-household-consumption-and-contract-types.md) | Household consumption and the typed published contract (the household meter inputs are implemented; the rest follows) |
+| [029](adr/029-household-consumption-and-contract-types.md) | Household consumption and the typed published contract (the household meter inputs, the consumption power and energy sensors are implemented; the published contract follows) |

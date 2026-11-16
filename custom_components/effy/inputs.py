@@ -263,6 +263,44 @@ def signature_pv_inputs(signature: Mapping[str, Any] | None) -> list[str] | None
     return [str(entity_id) for entity_id in pv]
 
 
+def consumption_inputs(options: Mapping[str, Any]) -> tuple[str | None, ...]:
+    """The sensors the household consumption depends on, as ``inputs`` reads them (ADR-029).
+
+    The household import and export, the system's grid import and grid export counters and the
+    EPS sensor, ``None`` where one is unset. A change of any of them changes the consumption
+    series over the whole history, so the consumption energy sensors are derived again
+    (TASK-0050); the PV inputs, the discharge and the charge counter are not in the formula.
+    """
+    return (
+        household_import_id(options),
+        household_export_id(options),
+        grid_import_id(options),
+        grid_export_id(options),
+        eps_id(options),
+    )
+
+
+def signature_consumption_inputs(
+    signature: Mapping[str, Any] | None,
+) -> tuple[str | None, ...] | None:
+    """The consumption inputs a stored signature was made for; ``None`` when it does not say.
+
+    ``None`` is *unknown*: an entry that never stored a signature, or one stored before the
+    household sensors existed (no household key), has no consumption energy sensor either.
+    Otherwise the five values of ``consumption_inputs`` in the same order.
+    """
+    if not isinstance(signature, Mapping) or CONF_HOUSEHOLD_IMPORT_SENSOR not in signature:
+        return None
+    keys = (
+        CONF_HOUSEHOLD_IMPORT_SENSOR,
+        CONF_HOUSEHOLD_EXPORT_SENSOR,
+        CONF_GRID_IMPORT_SENSOR,
+        CONF_GRID_EXPORT_SENSOR,
+        CONF_EPS_SENSOR,
+    )
+    return tuple(None if signature.get(key) is None else str(signature.get(key)) for key in keys)
+
+
 def legacy_inputs_were_moved(options: Mapping[str, Any]) -> bool:
     """True when ``migrate_legacy_input_options`` moves the old list into the PV list.
 
