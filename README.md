@@ -365,75 +365,118 @@ is slow to appear.
 Besides its state (the earliest slot touched by the latest recalculation) it
 publishes Effy's configuration as attributes, so another integration can find
 Effy's sensors and the history length by reading a single entity instead of
-asking the person to pick them (ADR-021):
+asking the person to pick them (ADR-021, ADR-029). The sensors are published as
+**groups**: one group per distinct combination of attributes, with the entity
+IDs of the sensors that have exactly these attributes. A reader picks the group
+that describes what it needs and takes the entity IDs from it:
 
 ```yaml
-schema_version: 1
+schema_version: 2
 max_history_days: 28
 sensors:
-  - entity_id: sensor.effy_pv_south
-    series: effective
-    source_entity_id: sensor.pv_south
+  - series: derived
+    quantity: power
+    scope: source
+    span: slot
+    role: household
     direction: input
+    function: household_import
+    aggregations: [mean, state]
+    sensors: [sensor.effy_house_import_power]
+  - series: effective
+    quantity: power
+    scope: source
+    span: slot
     role: pv
-    function:
-    aggregations: [mean, state]
-  - entity_id: sensor.effy_bms_discharge
-    series: effective
-    source_entity_id: sensor.bms_discharge
     direction: input
-    role: bms
-    function: discharge
+    function: pv
     aggregations: [mean, state]
-  - entity_id: sensor.effy_eps_port
-    series: effective
-    source_entity_id: sensor.eps_port
+    sensors: [sensor.effy_pv_north, sensor.effy_pv_south]
+  - series: effective
+    quantity: power
+    scope: combined
+    span: slot
+    role: pv
     direction: input
-    role: eps
-    function: eps
+    function: pv
     aggregations: [mean, state]
-  - entity_id: sensor.effy_eps_port_smoothed
-    series: smoothed
-    source_entity_id: sensor.eps_port
-    direction: both
-    role: eps
-    function: eps
+    sensors: [sensor.effy_effective_pv_sum_now]
+  - series: effective
+    quantity: energy
+    scope: combined
+    span: today
+    role: pv
+    direction: input
+    function: pv
+    aggregations: [state, sum, change]
+    sensors: [sensor.effy_pv_deltasum_integral_today]
+  - series: consumption
+    quantity: power
+    scope: system
+    span: slot
+    role: household
+    direction: output
+    function: consumption
     aggregations: [mean, state]
-  - entity_id: sensor.effy_standby_power
-    series: standby_power
-    source_entity_id:
-    direction: output
+    sensors: [sensor.effy_household_consumption_now]
+  - series: charge
+    quantity: efficiency
+    scope: system
+    span: slot
     role: bms
-    aggregations: [mean, min, max]
-  - entity_id: sensor.effy_charge_efficiency
-    series: charge_efficiency
-    source_entity_id:
     direction: output
-    role: bms
+    function: efficiency
     aggregations: [mean, min, max]
+    sensors: [sensor.effy_charge_efficiency]
+sources:
+  sensor.house_import: [sensor.effy_house_import_power]
+  sensor.pv_north: [sensor.effy_pv_north]
+  sensor.pv_south: [sensor.effy_pv_south]
 ```
+
+(An excerpt: a real list has a group for every kind of Effy sensor that exists.)
+Every group has every key, always. Groups are sorted by the values of their
+attributes in the order below, and the entity IDs in a group and in a `sources`
+list are sorted too.
 
 | Key | Meaning |
 | -- | -- |
-| `schema_version` | Raised only when an existing key or its meaning changes; new keys and new values (`eps`, `both`, `other`, `unknown`) do not raise it |
+| `schema_version` | Raised only when an existing key or its meaning changes; new keys and new values do not raise it. Version 2 is the grouped contract described here; version 1, a flat list with one entry per sensor, was never read by anybody |
 | `max_history_days` | The configured number of history days |
-| `series` | `effective`, `derived_power`, `smoothed`, `standby_power`, `charge_efficiency`, `battery_efficiency`, `discharge_efficiency` or `roundtrip_efficiency` |
-| `source_entity_id` | The configured source sensor; `null` for the standby and the efficiency sensors |
-| `direction` | `input` or `output`; the standby and efficiency sensors are `output`. `both` is the signed smoothed series of the EPS/UPS sensor: positive while energy leaves the system through the port, negative while it enters. `unknown` is a series of an additional sensor: Effy does not know which way its energy flows |
-| `role` | `pv`, `bms`, `eps` or `other`; every output is `bms`. `eps` is the EPS/UPS sensor, neither a PV string nor a BMS counter; `other` is an additional sensor |
-| `function` | Source series only (`effective`, `derived_power`, `smoothed`): which counter of the battery system the source is: `grid_import`, `discharge`, `charge` or `grid_export`; `null` for a PV input, `eps` for the EPS/UPS sensor, `unknown` for an additional sensor (the key is there, the value is `unknown`). The standby and efficiency entries have no `function` key, and neither has an entry published before this key existed. Pick a counter by its function |
-| `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`; Effy's written series have `mean` and `state` (never `sum`), while standby and efficiency sensors have `mean`, `min` and `max` |
+| `series` | Which stage or estimate of the data the sensor stands for: `effective` (the value after the loss is distributed, and the energy booked from it), `derived` (power derived from an energy counter), `smoothed` (a power sensor with short gaps bridged), `standby`, `charge`, `discharge`, `battery`, `roundtrip` (the estimates of the battery system), `pv` (the PV share) or `consumption` (the household's consumption). The value never repeats the quantity |
+| `quantity` | What the sensor measures: `power` (W), `energy` (kWh), `efficiency` or `share` |
+| `scope` | How much of the system it covers: `source` (one configured sensor, listed under it in `sources`), `combined` (the addition over several sources of one kind, for example all PV inputs) or `system` (the system as a whole). `combined` and `system` sensors are in no `sources` list |
+| `span` | The time one value covers: `slot` (one slot), `today` (since local midnight) or `total` (since the running total began) |
+| `role` | `pv`, `bms`, `eps`, `other` or `household`; every output of the battery system is `bms`. `eps` is the EPS/UPS sensor, neither a PV string nor a BMS counter; `other` is an additional sensor; `household` is a household meter and everything computed from it |
+| `direction` | `input` or `output`. `both` is a *signed* series: the smoothed series of the EPS/UPS sensor (positive while energy leaves the system through the port, negative while it enters) and the smoothed series of a household import meter that has no household export sensor (positive from the grid, negative to it). `unknown` is a series of an additional sensor: Effy does not know which way its energy flows |
+| `function` | Which counter or kind of sensor it is: `grid_import`, `discharge`, `charge`, `grid_export` (the counters of the battery system; pick a counter by this), `pv` (a PV input and the sums and energies made from PV), `eps`, `household_import`, `household_export`, `consumption`, `standby`, `efficiency`, `share`, or `unknown` for an additional sensor |
+| `aggregations` | The aggregations the sensor's **short-term** statistics offer, i.e. the `types` to pass to `statistics_during_period`: `mean` and `state` for the series Effy writes, `mean`, `min` and `max` for the standby and efficiency sensors, `state`, `sum` and `change` for every energy sensor |
+| `sensors` | The sorted entity IDs of the sensors of the group |
 
-- **The EPS/UPS sensor** (ADR-026) has two entries, both with role and function
-  `eps`. Its `effective` series (`direction` `input`) is the effective value of
+`sources` maps each configured source sensor to the Effy sensors that depend on
+it, so a reader that holds a source sensor finds its Effy sensors without
+searching the groups. A source with no Effy sensor has no key.
+
+- **The EPS/UPS sensor** (ADR-026) has two sensors, both with role and function
+  `eps`: its `effective` series (`direction` `input`) is the effective value of
   the input half, never negative and 0 while the port exports; its `smoothed`
   series (`direction` `both`) is the signed value with short gaps bridged. A
-  reader that does not know the values `eps` and `both` ignores these entries.
-- **An additional sensor** (ADR-028) has one entry: `series` `derived_power` (an
-  energy counter) or `smoothed` (a power sensor), `source_entity_id` the sensor,
-  `role` `other`, `direction` `unknown`, `function` `unknown`. A reader that
-  picks by role, direction or function never selects it; one that does not know
-  these values ignores the entry.
+  reader that does not know the values `eps` and `both` ignores them.
+- **An additional sensor** (ADR-028) has one sensor: `series` `derived` (an
+  energy counter) or `smoothed` (a power sensor), `role` `other`, `direction`
+  `unknown`, `function` `unknown`. A reader that picks by role, direction or
+  function never selects it; one that does not know these values ignores it.
+- **The household** (ADR-029): the import and export meter sensors have role
+  `household` and function `household_import` and `household_export`, the
+  consumption power and the two consumption energies (since midnight and in
+  total) series `consumption`, function `consumption`, scope `system`.
+- **The PV energy** (ADR-027) is quantity `energy` with series `effective`: one
+  sensor per PV input (scope `source`, span `today`) and two for all PV together
+  (scope `combined`, spans `today` and `total`).
+- **The fixed entity IDs** of the sensors there is one of are symbols of
+  `effy_exports.py` (the PV sum, the PV share, the PV energy, the standby power,
+  the efficiencies and the household consumption); a reader may name them
+  directly instead of picking a group.
 - **Which sensors are listed:** every Effy sensor that exists, except
   `sensor.effy_recalculated_from` itself. A sensor that is created late (its
   source had no state at startup) is listed from the next recalculation on.
@@ -446,9 +489,14 @@ sensors:
   sensor also keeps its attributes and marks them with `restored_as_of` (when
   the data was last written) and `restored_at` (when it was restored) until the
   next recalculation, normally within five minutes. The very first start has no
-  `sensors` attribute: read its absence as "not ready yet".
+  `sensors` or `sources` attribute: read its absence as "not ready yet". After
+  the update to version 2 the restored attributes are still the old ones until
+  that first recalculation; compare `schema_version` with your copy.
 - **Size:** the attributes are recorded; Home Assistant stores no attribute set
-  above 16 KiB (roughly 35 sources).
+  above 16 KiB. A fully configured system (all four counters of the battery
+  system, the EPS sensor, a household import and export, and entity IDs of 40 to
+  50 characters) reaches that at roughly 30 configured sources; shorter entity
+  IDs fit more. Every source is listed twice, in its group and in `sources`.
 
 ### Charge and discharge efficiency
 

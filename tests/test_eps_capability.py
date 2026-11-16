@@ -270,17 +270,20 @@ class TestThePublishedListCarriesBothEntries:
             for entity_id, (series, source) in written.items()
         ]
         attributes = catalog.published_attributes(descriptors, 5)
-        by_id = {entry["entity_id"]: entry for entry in attributes["sensors"]}
+        # a group lists the sensors that share its attributes; find the group of one sensor
+        by_id = {
+            entity_id: group for group in attributes["sensors"] for entity_id in group["sensors"]
+        }
 
-        assert attributes["schema_version"] == exports.EFFY_PUBLISHED_SCHEMA_VERSION == 1
-        assert [entry["entity_id"] for entry in attributes["sensors"]] == sorted(by_id)
+        assert attributes["schema_version"] == exports.EFFY_PUBLISHED_SCHEMA_VERSION == 2
         effective, smoothed = by_id[EPS_EFF], by_id[EPS_SMOOTHED]
         assert (effective["role"], effective["function"]) == ("eps", "eps")
         assert (smoothed["role"], smoothed["function"]) == ("eps", "eps")
         assert effective["direction"] == "input" and smoothed["direction"] == "both"
-        assert effective["source_entity_id"] == smoothed["source_entity_id"] == EPS
         assert effective["series"] == "effective" and smoothed["series"] == "smoothed"
-        assert by_id[PV_EFF]["role"] == "pv" and by_id[PV_EFF]["function"] is None  # unchanged
+        # both series are of the EPS sensor: they are in its ``sources`` list, sorted
+        assert attributes["sources"][EPS] == sorted([EPS_EFF, EPS_SMOOTHED])
+        assert by_id[PV_EFF]["role"] == "pv" and by_id[PV_EFF]["function"] == "pv"
 
 
 class TestTheReadmeExample:

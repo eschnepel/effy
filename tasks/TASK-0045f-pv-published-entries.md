@@ -1,6 +1,6 @@
 # Task: The typed published contract, and every sensor in it
 
-- **Status:** todo
+- **Status:** done
 - **Capability:** CAP-13 (re-scoped 2026-11-13: the contract rework of ADR-029
   and the publication of CAP-13 and CAP-15 sensors)
 - **Related ADRs:** [ADR-027, ADR-021, ADR-029]
@@ -237,4 +237,68 @@ the YAML example), `adr/021` (amendment), and tests for each (`test_catalog`,
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `custom_components/effy/effy_exports.py` →
+  `EFFY_PUBLISHED_SCHEMA_VERSION = 2`; keys `EFFY_KEY_SERIES`,
+  `EFFY_KEY_QUANTITY`, `EFFY_KEY_SCOPE`, `EFFY_KEY_SPAN`, `EFFY_KEY_ROLE`,
+  `EFFY_KEY_DIRECTION`, `EFFY_KEY_FUNCTION`, `EFFY_KEY_AGGREGATIONS`,
+  `EFFY_KEY_SENSORS` (the keys `EFFY_KEY_ENTITY_ID` and
+  `EFFY_KEY_SOURCE_ENTITY_ID` are gone); attribute `EFFY_ATTR_SOURCES`; series
+  `EFFY_SERIES_EFFECTIVE`, `_DERIVED`, `_SMOOTHED`, `_STANDBY`, `_CHARGE`,
+  `_DISCHARGE`, `_BATTERY`, `_ROUNDTRIP`, `_PV`, `_CONSUMPTION` (the old
+  `EFFY_SERIES_DERIVED_POWER`, `_STANDBY_POWER` and `_*_EFFICIENCY` are gone);
+  `EFFY_QUANTITY_{POWER,ENERGY,EFFICIENCY,SHARE}`,
+  `EFFY_SCOPE_{SOURCE,COMBINED,SYSTEM}`, `EFFY_SPAN_{SLOT,TODAY,TOTAL}`;
+  `EFFY_ROLE_HOUSEHOLD`;
+  `EFFY_FUNCTION_{PV,STANDBY,EFFICIENCY,SHARE, HOUSEHOLD_IMPORT,HOUSEHOLD_EXPORT,CONSUMPTION}`;
+  `EFFY_AGGREGATION_SUM`, `EFFY_AGGREGATION_CHANGE`, `EFFY_ENERGY_AGGREGATIONS`;
+  entity IDs `EFFY_PV_SUM_ENTITY_ID`, `EFFY_PV_ENERGY_TODAY_ENTITY_ID`,
+  `EFFY_PV_ENERGY_TOTAL_ENTITY_ID`, `EFFY_PV_SHARE_ENTITY_ID`,
+  `EFFY_HOUSEHOLD_CONSUMPTION_ENTITY_ID`, `…_TODAY_ENTITY_ID`,
+  `…_TOTAL_ENTITY_ID`; types `EffySeries`, `EffyQuantity`, `EffyScope`,
+  `EffySpan`, `EffyRole`, `EffyFunction`, `EffyDirection`, TypedDict
+  `EffyPublishedGroup` (replaces `EffyPublishedSensor`),
+  `EffyPublishedAttributes` (now with `sources`).
+- `custom_components/effy/catalog.py` (rewritten) → `EffyDescriptor` (TypedDict:
+  the group attributes plus `entity_id`, `source_entity_id`),
+  `describe_source_series(entity_id, series, source_entity_id, *, pv_input_ids, grid_import_id, discharge_id, charge_id, grid_export_id, eps_id=None, additional_ids=(), household_import_id=None, household_export_id=None, household_import_signed=False)`,
+  `describe_standby(entity_id)`, `describe_efficiency(entity_id, series)`,
+  `describe_pv_sum(entity_id)`,
+  `describe_pv_energy(entity_id, span, source_entity_id=None)`,
+  `describe_pv_share(entity_id)`,
+  `describe_household_consumption(entity_id, quantity, span)`,
+  `base_attributes(max_history_days)`, `group_sensors(descriptors)`,
+  `source_map(descriptors)`,
+  `published_attributes(descriptors, max_history_days)` (now also returns
+  `sources`).
+- `custom_components/effy/sensor.py` → every Effy sensor registers its
+  descriptor in `async_added_to_hass` and unregisters it in
+  `async_will_remove_from_hass`: `EffyPvSumSensor`,
+  `EffyHouseholdConsumptionSensor`, `EffyPvShareSensor`,
+  `EffyDeltaIntegralSensor` (and so `EffyPvDeltaIntegralSensor`, through the new
+  `_descriptor()`), and the household series of `EffyDerivedPowerSensor` and
+  `EffySmoothedSensor` (the "not published here" guards are gone);
+  `_source_descriptor` passes the household meters and
+  `household_import_is_signed(entry.options)`; the recalculated-from sensor
+  restores a well-formed `sources` map; `_EFFICIENCY_KINDS` is now
+  `(entity ID, unique ID key, series, name)`.
+- `custom_components/effy/const.py` → imports the seven published entity IDs of
+  the PV sum, the PV share, the combined PV energy and the household consumption
+  from `effy_exports.py` (`PV_SUM_ENTITY_ID`, `PV_SHARE_ENTITY_ID`,
+  `PV_DELTA_TODAY_ENTITY_ID`, `PV_DELTA_TOTAL_ENTITY_ID`,
+  `HOUSEHOLD_CONSUMPTION_ENTITY_ID`, `…_TODAY_ENTITY_ID`, `…_TOTAL_ENTITY_ID`
+  keep their names); new `CHARGE_EFFICIENCY_KEY`, `DISCHARGE_EFFICIENCY_KEY`,
+  `BATTERY_EFFICIENCY_KEY`, `ROUNDTRIP_EFFICIENCY_KEY` (unique ID suffix and
+  translation key, unchanged values). `const.py` now has a relative import.
+- Docs: `README.md` (contract section, example, table, size), `adr/029`
+  (amendment 2026-11-15: the fixed entity IDs are contract symbols), `adr/021`
+  amendment of 2026-11-13 unchanged and matching.
+- Tests: `tests/test_catalog.py`, `test_effy_exports.py` (rewritten),
+  `test_published_sensors.py` (v2 shapes, `sources` restore, v1 restore, a
+  structural guard that every sensor class registers), and the publication tests
+  of the PV sum, PV share, PV delta, household consumption, household energy,
+  household entities, additional sensors, efficiency and EPS; `tests/support.py`
+  → `GROUP_KEYS`; `tests/test_standby_sensor._Entry` has `options`;
+  `tests/test_valley_spans.py` loads `const.py` through a package.
+- Measured size (README): a full configuration reaches 16 KiB at roughly 30
+  sources (was about 35 in version 1: every source is now also in `sources`).
+- External dependencies added: none; `tasks/DEPENDENCIES.md` unchanged.

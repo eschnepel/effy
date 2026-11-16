@@ -351,3 +351,33 @@ open.
 
 **Decided by:** Lead Agent ("Proceed" after the TASK-0049 hand-over), to be
 confirmed by the human
+
+## Amendment — 2026-11-15 (implementation, TASK-0045f)
+
+**Reason:** Decision 8 keeps the words delta, integral and sum out of the
+contract values, and said "entity IDs are unchanged". It did not say whether the
+fixed entity IDs of the sensors with exactly one instance (the PV sum, the
+combined PV energy, the PV share, the household consumption) belong to the
+contract. `effy_exports.py` listed the standby and efficiency IDs but not these,
+so `const.py` kept their literals.
+
+**Decision:** Every Effy sensor with a fixed entity ID is part of the contract:
+its entity ID is a symbol of `effy_exports.py` (`EFFY_PV_SUM_ENTITY_ID`,
+`EFFY_PV_ENERGY_TODAY_ENTITY_ID`, `EFFY_PV_ENERGY_TOTAL_ENTITY_ID`,
+`EFFY_PV_SHARE_ENTITY_ID`, `EFFY_HOUSEHOLD_CONSUMPTION_ENTITY_ID`,
+`EFFY_HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID`,
+`EFFY_HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID`, next to the existing standby and
+efficiency ones), and `const.py` imports them. The IDs are values, not words of
+the contract's vocabulary, so the combined PV energy keeps `deltasum` in its ID.
+A reader may find these sensors by their attributes or by their ID. The entity
+IDs of sensors per source (their slug is the user's) have no symbol.
+`schema_version` stays 2: the IDs are additive.
+
+**Decided by:** human (2026-11-15).
+
+**Also settled in TASK-0045f (no change of decision):** the efficiency sensors'
+unique ID suffix and translation key were the published series values and are
+now literals of their own in `const.py` (`charge_efficiency`, ...), because
+renaming the series must not change a unique ID. The household import meter's
+smoothed series has direction `both` exactly when `household_import_is_signed`
+holds, a counter's derived series never does.

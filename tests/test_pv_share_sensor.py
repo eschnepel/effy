@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from tests.support import GROUP_KEYS
 from tests.test_published_sensors import _Coordinator, _Entry, _last
 from tests.test_sensor_setup import ENERGY, POWER, _Platform, _SetupEntry, _state
 from tests.test_standby_sensor import _Registry, _registry, _sensor
@@ -138,10 +139,23 @@ class TestLiveStateAndRestore:
         await entity.async_added_to_hass()
         assert entity._attr_native_value is None
 
-    async def test_it_is_not_published_yet_and_unsubscribes_on_removal(self) -> None:
+    async def test_it_is_published_as_the_pv_share_and_unregisters_on_removal(self) -> None:
         coordinator = _ShareCoordinator()
         entity = _share(coordinator)
         await entity.async_added_to_hass()
-        assert coordinator.registry == {}  # TASK-0045f publishes it, not this task
+        # ADR-029: a share of the whole system, series ``pv``, function ``share``
+        descriptor = coordinator.registry[SHARE]
+        assert [descriptor[k] for k in GROUP_KEYS] == [
+            "pv",
+            "share",
+            "system",
+            "slot",
+            "pv",
+            "input",
+            "share",
+            ["mean", "state"],
+        ]
+        assert descriptor["source_entity_id"] is None
         assert SHARE in coordinator.updates
         await entity.async_will_remove_from_hass()
+        assert coordinator.registry == {}

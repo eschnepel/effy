@@ -80,6 +80,21 @@ and the README describes the sensors and what to expect from them.
   (`tests/test_eps_capability.py` is the model for this module),
   `tests/test_history_recent_equivalence.py`.
 - Everything the other CAP-13 tasks deliver (→ task: TASK-0045a to TASK-0045f).
+- From TASK-0045f-pv-published-entries (done 2026-11-15), exact: the contract
+  `custom_components/effy/effy_exports.py` (`EFFY_PUBLISHED_SCHEMA_VERSION` = 2,
+  `EFFY_KEY_*` including `EFFY_KEY_SENSORS`, `EFFY_ATTR_SOURCES`,
+  `EFFY_SERIES_*`, `EFFY_QUANTITY_*`, `EFFY_SCOPE_*`, `EFFY_SPAN_*`,
+  `EFFY_FUNCTION_PV`, `EFFY_FUNCTION_SHARE`, `EFFY_ENERGY_AGGREGATIONS`,
+  `EFFY_PV_SUM_ENTITY_ID`, `EFFY_PV_ENERGY_TODAY_ENTITY_ID`,
+  `EFFY_PV_ENERGY_TOTAL_ENTITY_ID`, `EFFY_PV_SHARE_ENTITY_ID`,
+  `EffyPublishedGroup`, `EffyPublishedAttributes`) and
+  `custom_components/effy/catalog.py` (`describe_pv_sum`, `describe_pv_energy`,
+  `describe_pv_share`, `published_attributes` returning `sensors` as groups and
+  `sources`). The PV sum, the PV energy sensors and the PV share are published:
+  PV sum = series `effective`, quantity `power`, scope `combined`; PV energy =
+  `effective`, `energy`, scope `source` (span `today`) or `combined` (`today`,
+  `total`); PV share = series `pv`, quantity `share`, scope `system`, function
+  `share`.
 
 ## Delivered Artifacts
 

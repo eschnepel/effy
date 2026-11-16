@@ -441,3 +441,17 @@ class FakeStorage:
 
     def set_timing(self, timings: Any) -> None:
         self.timing = timings
+
+
+# The keys of a published group, in the order a group is sorted by (ADR-029 decision 7); a
+# registered descriptor has them besides ``entity_id`` and ``source_entity_id``.
+GROUP_KEYS = (
+    "series",
+    "quantity",
+    "scope",
+    "span",
+    "role",
+    "direction",
+    "function",
+    "aggregations",
+)

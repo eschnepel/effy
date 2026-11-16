@@ -24,14 +24,14 @@ it exists only while a PV input is configured.
 EffyHouseholdConsumptionSensor (TASK-0049, ADR-029 decision 3) is the PV sum's sibling for the
 household consumption: the power the household used in the last completed slot, in W. It only
 receives the live push after a recalculation and restores its state; it exists only while a
-household import sensor is configured, and is not yet in the published list (TASK-0045f).
+household import sensor is configured, and is published (TASK-0045f, ADR-029).
 EffyDeltaIntegralSensor (TASK-0045d, ADR-027 decision 3; TASK-0050, ADR-029 decision 5) is the
 delta integral: for PV, per PV input and combined (its subclass EffyPvDeltaIntegralSensor, the
 name CAP-13 knows); for the household consumption, its *today* and *total* energy sensors.
 The PV delta integral: per PV
 input, and combined *today* and *total*. Its state is the coordinator's live integral (booked
 after every write, reset at local midnight, started from the base the derivation wrote);
-Home Assistant compiles its statistics. Not yet in the published list (TASK-0045f).
+Home Assistant compiles its statistics. Published as an energy sensor (TASK-0045f, ADR-029).
 EffyStandbyPowerSensor (TASK-0005 Stage 2, ADR-018) is the one sensor with a real
 live state of its own: the battery system's standby power, estimated by the
 coordinator's standby machine after every slot job. It exists only when at
@@ -66,14 +66,23 @@ from .calculation import (
     valley_restore_data,
 )
 from .catalog import (
+    EffyDescriptor,
     base_attributes,
     describe_efficiency,
+    describe_household_consumption,
+    describe_pv_energy,
+    describe_pv_share,
+    describe_pv_sum,
     describe_source_series,
     describe_standby,
     published_attributes,
 )
 from .const import (
     ADDITIONAL_UNIQUE_ID_MARKER,
+    BATTERY_EFFICIENCY_KEY,
+    CHARGE_EFFICIENCY_KEY,
+    DISCHARGE_EFFICIENCY_KEY,
+    ROUNDTRIP_EFFICIENCY_KEY,
     HOUSEHOLD_CONSUMPTION_ENTITY_ID,
     HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID,
     HOUSEHOLD_CONSUMPTION_TODAY_TRANSLATION_KEY,
@@ -110,23 +119,29 @@ from .effy_exports import (
     EFFY_ATTR_RESTORED_AT,
     EFFY_ATTR_SCHEMA_VERSION,
     EFFY_ATTR_SENSORS,
+    EFFY_ATTR_SOURCES,
     EFFY_BATTERY_EFFICIENCY_ENTITY_ID,
     EFFY_CHARGE_EFFICIENCY_ENTITY_ID,
     EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID,
+    EFFY_QUANTITY_ENERGY,
+    EFFY_QUANTITY_POWER,
     EFFY_RECALCULATED_FROM_ENTITY_ID,
     EFFY_ROUNDTRIP_EFFICIENCY_ENTITY_ID,
-    EFFY_SERIES_BATTERY_EFFICIENCY,
-    EFFY_SERIES_CHARGE_EFFICIENCY,
-    EFFY_SERIES_DERIVED_POWER,
-    EFFY_SERIES_DISCHARGE_EFFICIENCY,
+    EFFY_SERIES_BATTERY,
+    EFFY_SERIES_CHARGE,
+    EFFY_SERIES_DERIVED,
+    EFFY_SERIES_DISCHARGE,
     EFFY_SERIES_EFFECTIVE,
-    EFFY_SERIES_ROUNDTRIP_EFFICIENCY,
+    EFFY_SERIES_ROUNDTRIP,
     EFFY_SERIES_SMOOTHED,
+    EFFY_SPAN_SLOT,
+    EFFY_SPAN_TODAY,
+    EFFY_SPAN_TOTAL,
     EFFY_STANDBY_POWER_ENTITY_ID,
-    EffyPublishedSensor,
     EffySeries,
+    EffySpan,
 )
-from .inputs import all_input_ids
+from .inputs import all_input_ids, household_import_is_signed
 from .inputs import output_ids as configured_output_ids
 from .sensor_utils import effective_unit_for, get_sensor_meta, is_energy_family
 
@@ -204,7 +219,7 @@ def _source_descriptor(
     entity_id: str,
     series: EffySeries,
     source_entity_id: str,
-) -> EffyPublishedSensor:
+) -> EffyDescriptor:
     """The published description of an Effy sensor that is a series of a source."""
     return describe_source_series(
         entity_id,
@@ -217,6 +232,9 @@ def _source_descriptor(
         grid_export_id=coordinator.grid_export_id,
         eps_id=coordinator.eps_id,
         additional_ids=coordinator.additional_ids,
+        household_import_id=coordinator.household_import_id,
+        household_export_id=coordinator.household_export_id,
+        household_import_signed=household_import_is_signed(entry.options),
     )
 
 
@@ -876,8 +894,7 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._slug = slugify(source_entity_id.split(".")[-1])
         # An additional sensor (ADR-028) or a household sensor (ADR-029) marks its unique ID, so
         # that the registry cleanup of a sensor taken out of its role finds exactly these
-        # entities. A household entity is not published here (TASK-0045f does).
-        self._household = household
+        # entities.
         marker = (
             HOUSEHOLD_UNIQUE_ID_MARKER
             if household
@@ -925,17 +942,15 @@ class EffyDerivedPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
             if unit is not None:
                 self._attr_native_unit_of_measurement = unit
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
-        if not self._household:
-            # a household meter series is published by TASK-0045f, not here (ADR-029)
-            self._unregister_published = self._coordinator.register_published(
-                _source_descriptor(
-                    self._entry,
-                    self._coordinator,
-                    self.entity_id,
-                    EFFY_SERIES_DERIVED_POWER,
-                    self._source_entity_id,
-                )
+        self._unregister_published = self._coordinator.register_published(
+            _source_descriptor(
+                self._entry,
+                self._coordinator,
+                self.entity_id,
+                EFFY_SERIES_DERIVED,
+                self._source_entity_id,
             )
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
@@ -1015,8 +1030,7 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._slug = slugify(source_entity_id.split(".")[-1])
         # An additional sensor (ADR-028) or a household sensor (ADR-029) marks its unique ID, so
         # that the registry cleanup of a sensor taken out of its role finds exactly these
-        # entities. A household entity is not published here (TASK-0045f does).
-        self._household = household
+        # entities.
         marker = (
             HOUSEHOLD_UNIQUE_ID_MARKER
             if household
@@ -1064,17 +1078,15 @@ class EffySmoothedSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
             if unit is not None:
                 self._attr_native_unit_of_measurement = unit
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
-        if not self._household:
-            # a household meter series is published by TASK-0045f, not here (ADR-029)
-            self._unregister_published = self._coordinator.register_published(
-                _source_descriptor(
-                    self._entry,
-                    self._coordinator,
-                    self.entity_id,
-                    EFFY_SERIES_SMOOTHED,
-                    self._source_entity_id,
-                )
+        self._unregister_published = self._coordinator.register_published(
+            _source_descriptor(
+                self._entry,
+                self._coordinator,
+                self.entity_id,
+                EFFY_SERIES_SMOOTHED,
+                self._source_entity_id,
             )
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
@@ -1106,7 +1118,7 @@ class EffyPvSumSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     that wrote it, the coordinator pushes the last slot's value in W (ADR-016, see
     ``EffySensor._on_updated`` for the tradeoff), and the last state is restored after a
     restart (ADR-021 section 6). Always W: the series adds the effective values in W
-    whatever the units of the PV inputs are. Not yet in the published list (TASK-0045f).
+    whatever the units of the PV inputs are. Published as the PV sum: scope ``combined`` (ADR-029).
     """
 
     _attr_should_poll = False
@@ -1127,6 +1139,7 @@ class EffyPvSumSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_native_value: float | None = None
         self._unsub_updates: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -1155,11 +1168,17 @@ class EffyPvSumSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         if value is not None:
             self._attr_native_value = value
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+        self._unregister_published = self._coordinator.register_published(
+            describe_pv_sum(self.entity_id)
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
             self._unsub_updates()
             self._unsub_updates = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_updated(self, value: float | None, unit: str | None) -> None:
@@ -1179,7 +1198,7 @@ class EffyHouseholdConsumptionSensor(RestoreEntity, SensorEntity):  # type: igno
     wrote it, the coordinator pushes the last slot's value in W (ADR-016, see
     ``EffySensor._on_updated`` for the tradeoff), and the last state is restored after a restart
     (ADR-021 section 6). Always W: the formula adds the readings in W whatever their units are.
-    Not yet in the published list (TASK-0045f).
+    Published (TASK-0045f, ADR-029).
     """
 
     _attr_should_poll = False
@@ -1200,6 +1219,7 @@ class EffyHouseholdConsumptionSensor(RestoreEntity, SensorEntity):  # type: igno
         self._coordinator = coordinator
         self._attr_native_value: float | None = None
         self._unsub_updates: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -1228,11 +1248,17 @@ class EffyHouseholdConsumptionSensor(RestoreEntity, SensorEntity):  # type: igno
         if value is not None:
             self._attr_native_value = value
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+        self._unregister_published = self._coordinator.register_published(
+            describe_household_consumption(self.entity_id, EFFY_QUANTITY_POWER, EFFY_SPAN_SLOT)
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
             self._unsub_updates()
             self._unsub_updates = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_updated(self, value: float | None, unit: str | None) -> None:
@@ -1252,8 +1278,8 @@ class EffyPvShareSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
     the coordinator pushes the last slot's value (ADR-016, see ``EffySensor._on_updated`` for
     the tradeoff), and the last state is restored after a restart (ADR-021 section 6). It
     counts the battery's discharge on the other side, so PV that charged the battery and is
-    discharged later is a discharge in the later slot: the share is slot-local. Not yet in
-    the published list (TASK-0045f).
+    discharged later is a discharge in the later slot: the share is slot-local.
+    Published (TASK-0045f, ADR-029).
     """
 
     _attr_should_poll = False
@@ -1273,6 +1299,7 @@ class EffyPvShareSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_native_value: float | None = None
         self._unsub_updates: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
 
     @property
     def unique_id(self) -> str:
@@ -1301,11 +1328,17 @@ class EffyPvShareSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         if value is not None:
             self._attr_native_value = value
         self._unsub_updates = self._coordinator.subscribe_updates(self.entity_id, self._on_updated)
+        self._unregister_published = self._coordinator.register_published(
+            describe_pv_share(self.entity_id)
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_updates is not None:
             self._unsub_updates()
             self._unsub_updates = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_updated(self, value: float | None, unit: str | None) -> None:
@@ -1343,8 +1376,9 @@ class EffyDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[misc
     the base the derivation wrote (``DeltaIntegrals``). The sensor is *unavailable* until it
     has a base, restored or handed over; Home Assistant compiles its statistics from the
     states (decision 4). The last state, with its ``last_reset``, is restored after a restart
-    (ADR-021 section 6); a *today* state of an earlier day is reset by the coordinator. Not yet
-    in the published list (TASK-0045f).
+    (ADR-021 section 6); a *today* state of an earlier day is reset by the coordinator. It is
+    published as an energy sensor (ADR-029): span *today* or *total*, scope ``source`` for a PV
+    input and ``combined`` or ``system`` otherwise.
     """
 
     _attr_should_poll = False
@@ -1398,6 +1432,18 @@ class EffyDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[misc
             self._attr_translation_key = PV_DELTA_TOTAL_TRANSLATION_KEY
         self._integral: DeltaIntegral | None = None
         self._unsub_integral: Callable[[], None] | None = None
+        self._unregister_published: Callable[[], None] | None = None
+
+    def _descriptor(self) -> EffyDescriptor:
+        """The published description (ADR-029): energy, span *today* or *total*.
+
+        A household integral is the household consumption energy; a PV one is the PV energy of
+        one input (scope ``source``, listed under the input) or of all PV (scope ``combined``).
+        """
+        span: EffySpan = EFFY_SPAN_TODAY if self._kind == TODAY else EFFY_SPAN_TOTAL
+        if self._series is not None:
+            return describe_household_consumption(self.entity_id, EFFY_QUANTITY_ENERGY, span)
+        return describe_pv_energy(self.entity_id, span, self._source_entity_id)
 
     @property
     def unique_id(self) -> str:
@@ -1484,11 +1530,15 @@ class EffyDeltaIntegralSensor(RestoreEntity, SensorEntity):  # type: ignore[misc
         self._unsub_integral = self._coordinator.subscribe_delta_integral(
             self.entity_id, self._on_integral
         )
+        self._unregister_published = self._coordinator.register_published(self._descriptor())
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_integral is not None:
             self._unsub_integral()
             self._unsub_integral = None
+        if self._unregister_published is not None:
+            self._unregister_published()
+            self._unregister_published = None
 
     @callback  # type: ignore[untyped-decorator]
     def _on_integral(self, integral: DeltaIntegral) -> None:
@@ -1609,9 +1659,17 @@ class EffyRecalculatedFromSensor(RestoreEntity, SensorEntity):  # type: ignore[m
         max_history_days = last.attributes.get(EFFY_ATTR_MAX_HISTORY_DAYS)
         if isinstance(max_history_days, int) and not isinstance(max_history_days, bool):
             attrs[EFFY_ATTR_MAX_HISTORY_DAYS] = max_history_days
+        # A set stored before version 2 comes back as it was (its flat list of sensors, no
+        # ``sources``); the next closing step writes the version 2 shapes (ADR-021 section 6).
         sensors = last.attributes.get(EFFY_ATTR_SENSORS)
         if isinstance(sensors, list) and all(isinstance(s, dict) for s in sensors):
             attrs[EFFY_ATTR_SENSORS] = [dict(s) for s in sensors]
+        sources = last.attributes.get(EFFY_ATTR_SOURCES)
+        if isinstance(sources, dict) and all(
+            isinstance(k, str) and isinstance(v, list) and all(isinstance(i, str) for i in v)
+            for k, v in sources.items()
+        ):
+            attrs[EFFY_ATTR_SOURCES] = {k: list(v) for k, v in sources.items()}
         # The data age: a state restored twice (a second reboot before any closing step)
         # still says when the data was last written for real, not when it was restored.
         as_of = last.attributes.get(EFFY_ATTR_RESTORED_AS_OF)
@@ -1762,18 +1820,20 @@ class EffyStandbyPowerSensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self.async_write_ha_state()
 
 
-# What distinguishes the two efficiency sensors: (entity ID, series, name). The
-# machine's kinds are ``charging`` and ``discharging`` (calculation.py); the unique ID
-# is the entry ID and the series, like ``{entry_id}_standby_power``.
-_EFFICIENCY_KINDS = {
+# What distinguishes the two efficiency sensors: (entity ID, unique ID key, published series,
+# name). The machine's kinds are ``charging`` and ``discharging`` (calculation.py); the unique
+# ID is the entry ID and the key, like ``{entry_id}_standby_power``.
+_EFFICIENCY_KINDS: dict[str, tuple[str, str, EffySeries, str]] = {
     "charging": (
         EFFY_CHARGE_EFFICIENCY_ENTITY_ID,
-        EFFY_SERIES_CHARGE_EFFICIENCY,
+        CHARGE_EFFICIENCY_KEY,
+        EFFY_SERIES_CHARGE,
         "Charge efficiency",
     ),
     "discharging": (
         EFFY_DISCHARGE_EFFICIENCY_ENTITY_ID,
-        EFFY_SERIES_DISCHARGE_EFFICIENCY,
+        DISCHARGE_EFFICIENCY_KEY,
+        EFFY_SERIES_DISCHARGE,
         "Discharge efficiency",
     ),
 }
@@ -1822,7 +1882,7 @@ class EffyEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         self._entry = entry
         self._coordinator = coordinator
         self._kind = kind
-        self._entity_id, self._series, self._attr_name = _EFFICIENCY_KINDS[kind]
+        self._entity_id, _key, self._series, self._attr_name = _EFFICIENCY_KINDS[kind]
         self._attr_unique_id = _efficiency_unique_id(entry, kind)
         self._machine: RunState | None = None
         self._unsub_coordinator: Callable[[], None] | None = None
@@ -1909,7 +1969,7 @@ class EffyEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
         # The standby sensor's first value makes this one available (ADR-023 §2).
         self._unsub_standby = self._coordinator.subscribe_standby(self._on_standby)
         self._unregister_published = self._coordinator.register_published(
-            describe_efficiency(self.entity_id, self._series)  # type: ignore[arg-type]
+            describe_efficiency(self.entity_id, self._series)
         )
 
     async def async_will_remove_from_hass(self) -> None:
@@ -1932,11 +1992,11 @@ class EffyEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[misc]
 
 
 def _battery_efficiency_unique_id(entry: ConfigEntry) -> str:
-    return f"{entry.entry_id}_{EFFY_SERIES_BATTERY_EFFICIENCY}"
+    return f"{entry.entry_id}_{BATTERY_EFFICIENCY_KEY}"
 
 
 def _roundtrip_efficiency_unique_id(entry: ConfigEntry) -> str:
-    return f"{entry.entry_id}_{EFFY_SERIES_ROUNDTRIP_EFFICIENCY}"
+    return f"{entry.entry_id}_{ROUNDTRIP_EFFICIENCY_KEY}"
 
 
 class _BatteryEfficiencyExtraData(ExtraStoredData):  # type: ignore[misc]
@@ -1952,7 +2012,7 @@ class EffyBatteryEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[
 
     _attr_should_poll = False
     _attr_has_entity_name = True
-    _attr_translation_key = EFFY_SERIES_BATTERY_EFFICIENCY
+    _attr_translation_key = BATTERY_EFFICIENCY_KEY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "%"
 
@@ -2041,7 +2101,7 @@ class EffyBatteryEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignore[
         self._machine = self._coordinator.restore_battery(last.as_dict() if last else None)
         self._unsub_coordinator = self._coordinator.subscribe_battery(self._on_battery)
         self._unregister_published = self._coordinator.register_published(
-            describe_efficiency(self.entity_id, EFFY_SERIES_BATTERY_EFFICIENCY)
+            describe_efficiency(self.entity_id, EFFY_SERIES_BATTERY)
         )
 
     async def async_will_remove_from_hass(self) -> None:
@@ -2071,7 +2131,7 @@ class EffyRoundtripEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignor
 
     _attr_should_poll = False
     _attr_has_entity_name = True
-    _attr_translation_key = EFFY_SERIES_ROUNDTRIP_EFFICIENCY
+    _attr_translation_key = ROUNDTRIP_EFFICIENCY_KEY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "%"
 
@@ -2196,7 +2256,7 @@ class EffyRoundtripEfficiencySensor(RestoreEntity, SensorEntity):  # type: ignor
             self._coordinator.subscribe_standby(self._on_standby),
         ]
         self._unregister_published = self._coordinator.register_published(
-            describe_efficiency(self.entity_id, EFFY_SERIES_ROUNDTRIP_EFFICIENCY)
+            describe_efficiency(self.entity_id, EFFY_SERIES_ROUNDTRIP)
         )
 
     async def async_will_remove_from_hass(self) -> None:

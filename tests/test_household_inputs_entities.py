@@ -5,9 +5,9 @@ A household sensor has a derived power sensor (energy family) or a smoothed sens
 family), built by the code that builds them for an input and for an additional sensor, and no
 effective sensor. Their unique IDs carry the marker ``household-`` (no slug can hold it, and it is
 not ``additional-``), so the registry cleanup of a sensor taken out of the options finds exactly
-the household entities. They are *not* registered for the published contract here: TASK-0045f
-does. ``sensor.py`` is the real module loaded by ``tests/test_standby_sensor.py`` with Home
-Assistant stubbed.
+the household entities. They are registered for the published contract (TASK-0045f, ADR-029)
+with role ``household``. ``sensor.py`` is the real module loaded by
+``tests/test_standby_sensor.py`` with Home Assistant stubbed.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from tests.support import GROUP_KEYS
 from tests.test_published_sensors import _Coordinator, _last
 from tests.test_sensor_setup import (
     ENERGY,
@@ -237,54 +238,126 @@ class TestRegistryCleanup:
         assert _registry[0].removed == []
 
 
+def _household_coordinator(import_id: str | None = IMPORT, export_id: str | None = None) -> Any:
+    coordinator = _Coordinator()
+    coordinator.household_import_id = import_id
+    coordinator.household_export_id = export_id
+    coordinator.household_ids = [i for i in (import_id, export_id) if i is not None]
+    return coordinator
+
+
+def _household_entry(import_id: str | None = IMPORT, export_id: str | None = None) -> Any:
+    entry = _Entry()
+    entry.options = {
+        key: value
+        for key, value in (
+            ("household_import_sensor", import_id),
+            ("household_export_sensor", export_id),
+        )
+        if value is not None
+    }
+    return entry
+
+
 class TestIdentityAndPublication:
-    def _make(self, cls: str, source: str, coordinator: _Coordinator, **flags: bool) -> Any:
-        return getattr(_sensor, cls)(object(), _Entry(), coordinator, source, **flags)
+    def _make(
+        self, cls: str, source: str, coordinator: _Coordinator, entry: Any = None, **flags: bool
+    ) -> Any:
+        return getattr(_sensor, cls)(object(), entry or _Entry(), coordinator, source, **flags)
 
     @pytest.mark.parametrize(
-        ("cls", "source", "entity_id", "unique_id"),
+        ("cls", "source", "entity_id", "unique_id", "series", "direction", "function"),
         [
             (
                 "EffyDerivedPowerSensor",
                 IMPORT,
                 "sensor.effy_house_import_power",
                 "entry1_household-house_import_power",
+                "derived",
+                "input",
+                "household_import",
             ),
             (
                 "EffySmoothedSensor",
                 EXPORT,
                 "sensor.effy_house_export_smoothed",
                 "entry1_household-house_export_smoothed",
+                "smoothed",
+                "output",
+                "household_export",
             ),
         ],
     )
-    async def test_a_household_entity_has_the_inputs_entity_id_and_is_not_published_here(
-        self, cls: str, source: str, entity_id: str, unique_id: str
+    async def test_a_household_entity_is_published_as_a_household_series_of_its_meter(
+        self,
+        cls: str,
+        source: str,
+        entity_id: str,
+        unique_id: str,
+        series: str,
+        direction: str,
+        function: str,
     ) -> None:
-        coordinator = _Coordinator()
-        entity = self._make(cls, source, coordinator, household=True)
+        coordinator = _household_coordinator(IMPORT, EXPORT)
+        entity = self._make(
+            cls, source, coordinator, _household_entry(IMPORT, EXPORT), household=True
+        )
         assert entity.entity_id == entity_id and entity.unique_id == unique_id
 
         await entity.async_added_to_hass()
 
-        # not registered with ``register_published``: TASK-0045f publishes the household series
-        assert coordinator.registry == {}
-        # but it gets the live push of the slot job, like any series
+        # ADR-029: role household, a power series of one source, in that source's list
+        descriptor = coordinator.registry[entity_id]
+        assert [descriptor[k] for k in GROUP_KEYS] == [
+            series,
+            "power",
+            "source",
+            "slot",
+            "household",
+            direction,
+            function,
+            ["mean", "state"],
+        ]
+        assert descriptor["source_entity_id"] == source
+        # and it gets the live push of the slot job, like any series
         assert entity_id in coordinator.updates
 
-    @pytest.mark.parametrize("cls", ["EffyDerivedPowerSensor", "EffySmoothedSensor"])
-    async def test_removing_the_entity_leaves_nothing_behind(self, cls: str) -> None:
-        coordinator = _Coordinator()
-        entity = self._make(cls, IMPORT, coordinator, household=True)
+    @pytest.mark.parametrize(
+        ("cls", "export_id", "direction"),
+        [
+            # an import with no export sensor is signed: its smoothed series is ``both``
+            ("EffySmoothedSensor", None, "both"),
+            # with an export sensor each meter is taken as it is
+            ("EffySmoothedSensor", EXPORT, "input"),
+            # a counter has no sign, whatever the configuration
+            ("EffyDerivedPowerSensor", None, "input"),
+        ],
+    )
+    async def test_the_import_series_is_both_exactly_when_it_is_signed(
+        self, cls: str, export_id: str | None, direction: str
+    ) -> None:
+        coordinator = _household_coordinator(IMPORT, export_id)
+        entity = self._make(
+            cls, IMPORT, coordinator, _household_entry(IMPORT, export_id), household=True
+        )
         await entity.async_added_to_hass()
-        await entity.async_will_remove_from_hass()  # must not raise with nothing registered
+        assert coordinator.registry[entity.entity_id]["direction"] == direction
+
+    @pytest.mark.parametrize("cls", ["EffyDerivedPowerSensor", "EffySmoothedSensor"])
+    async def test_removing_the_entity_unregisters_its_description(self, cls: str) -> None:
+        coordinator = _household_coordinator()
+        entity = self._make(cls, IMPORT, coordinator, _household_entry(), household=True)
+        await entity.async_added_to_hass()
+        assert entity.entity_id in coordinator.registry
+        await entity.async_will_remove_from_hass()
+        assert coordinator.registry == {}
 
     @pytest.mark.parametrize("cls", ["EffyDerivedPowerSensor", "EffySmoothedSensor"])
     async def test_the_live_value_is_the_pushed_slot_value_and_is_restored_after_a_restart(
         self, cls: str
     ) -> None:
-        coordinator = _Coordinator()
-        entity = self._make(cls, IMPORT, coordinator, household=True)
+        coordinator = _household_coordinator()
+        entity = self._make(cls, IMPORT, coordinator, _household_entry(), household=True)
         entity.last_state = _last("123.4", {"unit_of_measurement": "W"})  # before the restart
 
         await entity.async_added_to_hass()

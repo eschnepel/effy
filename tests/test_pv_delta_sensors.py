@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from tests.support import GROUP_KEYS
 from tests.test_delta_integrals import BERLIN, MIDNIGHT, NOW, YESTERDAY, _di
 from tests.test_history_recent_equivalence import _const, _history
 from tests.test_sensor_setup import POWER, _Platform, _SetupEntry, _state
@@ -220,15 +221,28 @@ class TestIdentity:
         assert names[_const.PV_DELTA_TODAY_TRANSLATION_KEY]["name"] == "PV delta integral today"
         assert names[_const.PV_DELTA_TOTAL_TRANSLATION_KEY]["name"] == "PV delta integral total"
 
-    def test_the_sensors_are_not_in_the_published_list_yet(self) -> None:
-        """TASK-0045f publishes them; until then no descriptor is registered."""
+    def test_the_sensors_are_published_as_pv_energy(self) -> None:
+        """ADR-029: energy of series ``effective``, role and function ``pv``; the per-input
+        one is of scope ``source`` and depends on its input, the combined ones are not."""
         coordinator = _DeltaCoordinator()
         import asyncio
 
         for kind, source in (("today", SOURCE), ("today", None), ("total", None)):
             entity = _sensor_for(kind, source, coordinator=coordinator)
             asyncio.run(entity.async_added_to_hass())
-        assert coordinator.published == []
+        energy = ["state", "sum", "change"]
+        common = ["effective", "energy"]
+        tail = ["pv", "input", "pv", energy]
+        expected = {
+            TODAY_ID: (common + ["source", "today"] + tail, SOURCE),
+            _const.PV_DELTA_TODAY_ENTITY_ID: (common + ["combined", "today"] + tail, None),
+            _const.PV_DELTA_TOTAL_ENTITY_ID: (common + ["combined", "total"] + tail, None),
+        }
+        published = {d["entity_id"]: d for d in coordinator.published}
+        assert set(published) == set(expected)
+        for entity_id, (attributes, source) in expected.items():
+            assert [published[entity_id][k] for k in GROUP_KEYS] == attributes
+            assert published[entity_id]["source_entity_id"] == source
 
 
 # ---------------------------------------------------------------------------

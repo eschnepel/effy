@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from tests.support import GROUP_KEYS
 from tests.test_delta_integrals import BERLIN, MIDNIGHT, NOW
 from tests.test_history_recent_equivalence import _const
 from tests.test_pv_delta_sensors import (
@@ -152,12 +153,26 @@ class TestIdentity:
         assert _today().entity_id == _const.HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID
         assert _total().entity_id == _const.HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID
 
-    def test_the_sensors_are_not_in_the_published_list_yet(self) -> None:
-        """TASK-0045f publishes them; until then no descriptor is registered."""
+    def test_the_sensors_are_published_as_the_household_consumption_energy(self) -> None:
+        """ADR-029: energy of series ``consumption``, scope ``system``, an output with role
+        ``household``; no source, so in no ``sources`` list."""
         coordinator = _HouseholdCoordinator()
         for kind in ("today", "total"):
             asyncio.run(_household(kind, coordinator).async_added_to_hass())
-        assert coordinator.published == []
+        published = {d["entity_id"]: d for d in coordinator.published}
+        assert set(published) == {TODAY_ID, TOTAL_ID}
+        for entity_id, span in ((TODAY_ID, "today"), (TOTAL_ID, "total")):
+            assert [published[entity_id][k] for k in GROUP_KEYS] == [
+                "consumption",
+                "energy",
+                "system",
+                span,
+                "household",
+                "output",
+                "consumption",
+                ["state", "sum", "change"],
+            ]
+            assert published[entity_id]["source_entity_id"] is None
 
     def test_the_pv_class_keeps_its_name_and_is_the_same_mechanism(self) -> None:
         assert issubclass(_sensor.EffyPvDeltaIntegralSensor, _sensor.EffyDeltaIntegralSensor)

@@ -200,6 +200,10 @@ _sensor, _calc = _load()
 class _Entry:
     entry_id = "entry1"
 
+    def __init__(self) -> None:
+        # read by the published description of a household import (signed or not, ADR-029)
+        self.options: dict[str, Any] = {}
+
 
 class _FakeCoordinator:
     def __init__(self, enabled: bool = True) -> None:

@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from tests.support import GROUP_KEYS
 from tests.test_history_recent_equivalence import (
     _const,
     _energy_world,
@@ -407,10 +408,25 @@ class TestLiveStateAndRestore:
         await entity.async_added_to_hass()
         assert entity._attr_native_value is None
 
-    async def test_it_is_not_published_yet_and_unsubscribes_on_removal(self) -> None:
+    async def test_it_is_published_as_the_combined_pv_power_and_unregisters_on_removal(
+        self,
+    ) -> None:
         coordinator = _PvCoordinator()
         entity = _pv_sum(coordinator)
         await entity.async_added_to_hass()
-        assert coordinator.registry == {}  # TASK-0045f publishes it, not this task
+        # ADR-029: the PV sum is the effective power of all PV, per slot, in no source list
+        descriptor = coordinator.registry[PV_SUM]
+        assert [descriptor[k] for k in GROUP_KEYS] == [
+            "effective",
+            "power",
+            "combined",
+            "slot",
+            "pv",
+            "input",
+            "pv",
+            ["mean", "state"],
+        ]
+        assert descriptor["source_entity_id"] is None
         assert PV_SUM in coordinator.updates
         await entity.async_will_remove_from_hass()
+        assert coordinator.registry == {}

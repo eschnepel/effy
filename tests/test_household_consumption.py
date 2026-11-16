@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from tests.support import GROUP_KEYS
 from tests.test_additional_sensors_series import _compute, _slots
 from tests.test_history_recent_equivalence import (
     _const,
@@ -708,14 +709,29 @@ class TestLiveStateAndRestore:
         await entity.async_added_to_hass()
         assert entity._attr_native_value is None
 
-    async def test_it_is_not_published_yet_and_unsubscribes_on_removal(self) -> None:
+    async def test_it_is_published_as_the_household_consumption_and_unregisters_on_removal(
+        self,
+    ) -> None:
         coordinator = _HouseholdCoordinator()
         entity = _consumption_sensor(coordinator)
         await entity.async_added_to_hass()
-        assert coordinator.registry == {}  # TASK-0045f publishes it, not this task
+        # ADR-029: an output of the system with role and function of the household
+        descriptor = coordinator.registry[CONSUMPTION]
+        assert [descriptor[k] for k in GROUP_KEYS] == [
+            "consumption",
+            "power",
+            "system",
+            "slot",
+            "household",
+            "output",
+            "consumption",
+            ["mean", "state"],
+        ]
+        assert descriptor["source_entity_id"] is None
         assert CONSUMPTION in coordinator.updates
         assert coordinator.unsubscribed == 0
         await entity.async_will_remove_from_hass()
         assert coordinator.unsubscribed == 1
+        assert coordinator.registry == {}
         await entity.async_will_remove_from_hass()  # a second removal does nothing
         assert coordinator.unsubscribed == 1

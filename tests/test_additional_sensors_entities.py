@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from tests.support import GROUP_KEYS
 from tests.test_published_sensors import _Coordinator
 from tests.test_sensor_setup import (
     ENERGY,
@@ -194,7 +195,7 @@ class TestIdentityAndDescriptor:
                 GRID,
                 "sensor.effy_house_grid_import_power",
                 "entry1_additional-house_grid_import_power",
-                "derived_power",
+                "derived",
             ),
             (
                 "EffySmoothedSensor",
@@ -215,15 +216,20 @@ class TestIdentityAndDescriptor:
 
         await entity.async_added_to_hass()
 
-        assert coordinator.registry[entity_id] == {
-            "entity_id": entity_id,
-            "series": series,
-            "source_entity_id": source,
-            "direction": "unknown",
-            "role": "other",
-            "function": "unknown",  # the key is present, with the value 'unknown'
-            "aggregations": ["mean", "state"],
-        }
+        # ADR-021/ADR-029: role other, direction and function ``unknown``, a power series of
+        # one source; the keys are present with the value 'unknown'
+        descriptor = coordinator.registry[entity_id]
+        assert [descriptor[k] for k in GROUP_KEYS] == [
+            series,
+            "power",
+            "source",
+            "slot",
+            "other",
+            "unknown",
+            "unknown",
+            ["mean", "state"],
+        ]
+        assert descriptor["source_entity_id"] == source
 
     async def test_the_entity_of_an_input_is_not_an_additional_one(self) -> None:
         coordinator = _Coordinator()

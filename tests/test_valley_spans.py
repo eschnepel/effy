@@ -12,11 +12,13 @@ boundary convention has no bias.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import math
 import random
 import sys
+import types
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,12 +53,12 @@ DROP_NO_NET_INPUT: str = _calculation.SPAN_DROP_NO_NET_INPUT
 capacity_kwh = _calculation.capacity_kwh
 capacity_by_slot = _calculation.capacity_by_slot
 
-_const_path = _calc_path.parent / "const.py"
-_const_spec = importlib.util.spec_from_file_location("effy_const_for_capacity", _const_path)
-assert _const_spec is not None and _const_spec.loader is not None
-_const_module = importlib.util.module_from_spec(_const_spec)
-sys.modules["effy_const_for_capacity"] = _const_module
-_const_spec.loader.exec_module(_const_module)
+# const.py imports the contract's symbols from ``effy_exports`` (TASK-0045f), a relative
+# import: it is loaded as a module of a private package that points at the integration's folder.
+_const_pkg = types.ModuleType("effy_const_for_capacity_pkg")
+_const_pkg.__path__ = [str(_calc_path.parent)]
+sys.modules["effy_const_for_capacity_pkg"] = _const_pkg
+_const_module = importlib.import_module("effy_const_for_capacity_pkg.const")
 
 UTC = timezone.utc
 SLOT = timedelta(minutes=5)

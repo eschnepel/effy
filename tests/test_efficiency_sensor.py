@@ -460,19 +460,24 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_it_publishes_itself_in_the_configuration(self) -> None:
         for kind, series in (
-            ("charging", "charge_efficiency"),
-            ("discharging", "discharge_efficiency"),
+            ("charging", "charge"),
+            ("discharging", "discharge"),
         ):
             coordinator = _FakeCoordinator()
             entity = _entity(kind, coordinator)
             await entity.async_added_to_hass()
+            # ADR-029: an efficiency of the system as a whole, an output of the BMS
             assert coordinator.published == [
                 {
                     "entity_id": entity.entity_id,
-                    "series": series,
                     "source_entity_id": None,
-                    "direction": "output",
+                    "series": series,
+                    "quantity": "efficiency",
+                    "scope": "system",
+                    "span": "slot",
                     "role": "bms",
+                    "direction": "output",
+                    "function": "efficiency",
                     "aggregations": ["mean", "min", "max"],
                 }
             ]
@@ -564,7 +569,7 @@ class TestBatteryAndRoundtripSensors:
         await entity.async_added_to_hass()
         assert coordinator.battery_restore_calls == [dump]
         assert entity.available and entity.native_value == 90.0
-        assert coordinator.published[0]["series"] == "battery_efficiency"
+        assert coordinator.published[0]["series"] == "battery"
         assert coordinator.published[0]["aggregations"] == ["mean", "min", "max"]
         assert entity.extra_restore_state_data.as_dict() == dump
         await entity.async_will_remove_from_hass()
@@ -583,7 +588,7 @@ class TestBatteryAndRoundtripSensors:
         assert coordinator.restore_calls == [data["efficiency"]]
         assert coordinator.battery_restore_calls == [data["battery"]]
         assert entity.available and entity.native_value == 75.3
-        assert coordinator.published[0]["series"] == "roundtrip_efficiency"
+        assert coordinator.published[0]["series"] == "roundtrip"
         assert entity.extra_restore_state_data.as_dict() == data
         assert len(coordinator.subscribers) == 1
         assert len(coordinator.battery_subscribers) == 1

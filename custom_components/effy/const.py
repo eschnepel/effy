@@ -1,5 +1,15 @@
 """Constants for the Effy integration."""
 
+from .effy_exports import (
+    EFFY_HOUSEHOLD_CONSUMPTION_ENTITY_ID,
+    EFFY_HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID,
+    EFFY_HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID,
+    EFFY_PV_ENERGY_TODAY_ENTITY_ID,
+    EFFY_PV_ENERGY_TOTAL_ENTITY_ID,
+    EFFY_PV_SHARE_ENTITY_ID,
+    EFFY_PV_SUM_ENTITY_ID,
+)
+
 DOMAIN = "effy"
 
 # Inputs and outputs are configured by role. PV inputs are a list (ADR-019); the
@@ -76,28 +86,27 @@ EPS_UNITS = ("W", "kW")
 
 # The PV combined series (ADR-027 decision 1, TASK-0045a): the effective values of all PV
 # inputs added up per slot, in W. Its statistic ID is the entity ID of the sensor "Effective PV
-# Sum now"; the series is written into ``per_sensor`` like any effective series. Not yet in the
-# published contract: TASK-0045f moves these literals into ``effy_exports.py``.
-PV_SUM_ENTITY_ID = "sensor.effy_effective_pv_sum_now"
+# Sum now"; the series is written into ``per_sensor`` like any effective series. Published
+# (TASK-0045f); the entity ID is a symbol of ``effy_exports.py``.
+PV_SUM_ENTITY_ID = EFFY_PV_SUM_ENTITY_ID
 PV_SUM_UNIQUE_ID_SUFFIX = "effective_pv_sum_now"
 PV_SUM_TRANSLATION_KEY = "effective_pv_sum_now"
 
 # The household consumption series (ADR-029 decision 3, TASK-0049): per slot, in W,
 # ``max(0, hi - he + system export + EPS output - system import)`` from the series before the
 # loss. Its statistic ID is the entity ID of the sensor "Household consumption now"; written into
-# ``per_sensor`` like the PV sum. It exists while a household import is configured. Not yet in
-# the published contract: TASK-0045f moves these literals into ``effy_exports.py``.
-HOUSEHOLD_CONSUMPTION_ENTITY_ID = "sensor.effy_household_consumption_now"
+# ``per_sensor`` like the PV sum. It exists while a household import is configured. Published
+# (TASK-0045f); the entity ID is a symbol of ``effy_exports.py``.
+HOUSEHOLD_CONSUMPTION_ENTITY_ID = EFFY_HOUSEHOLD_CONSUMPTION_ENTITY_ID
 HOUSEHOLD_CONSUMPTION_UNIQUE_ID_SUFFIX = "household_consumption_now"
 HOUSEHOLD_CONSUMPTION_TRANSLATION_KEY = "household_consumption_now"
 
 # The household consumption energy sensors (ADR-029 decision 5, TASK-0050): the delta mechanism of
 # ADR-027 on the consumption power series. ``today`` has a ``last_reset`` at local midnight,
 # ``total`` none; both kWh, state class ``total``. They exist while a household import is
-# configured. Not yet in the published contract: TASK-0045f moves these literals into
-# ``effy_exports.py``.
-HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID = "sensor.effy_household_consumption_today"
-HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID = "sensor.effy_household_consumption_total"
+# configured. Published (TASK-0045f); the entity IDs are symbols of ``effy_exports.py``.
+HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID = EFFY_HOUSEHOLD_CONSUMPTION_TODAY_ENTITY_ID
+HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID = EFFY_HOUSEHOLD_CONSUMPTION_TOTAL_ENTITY_ID
 HOUSEHOLD_CONSUMPTION_TODAY_UNIQUE_ID_SUFFIX = "household_consumption_today"
 HOUSEHOLD_CONSUMPTION_TOTAL_UNIQUE_ID_SUFFIX = "household_consumption_total"
 HOUSEHOLD_CONSUMPTION_TODAY_TRANSLATION_KEY = "household_consumption_today"
@@ -106,19 +115,20 @@ HOUSEHOLD_CONSUMPTION_TOTAL_TRANSLATION_KEY = "household_consumption_total"
 # The PV share series (ADR-027 amendment 2026-11-09, TASK-0046): per slot the percentage of the
 # effective inputs that PV and the EPS input make up, 0..100. Its statistic ID is the entity ID of
 # the sensor "PV share now"; written into ``per_sensor`` like any effective series, with the
-# slot's denominator as the weight of the hourly row. Not yet in the published contract:
-# TASK-0045f moves these literals into ``effy_exports.py``.
-PV_SHARE_ENTITY_ID = "sensor.effy_pv_share_now"
+# slot's denominator as the weight of the hourly row. Published (TASK-0045f); the entity ID is
+# a symbol of ``effy_exports.py``.
+PV_SHARE_ENTITY_ID = EFFY_PV_SHARE_ENTITY_ID
 PV_SHARE_UNIQUE_ID_SUFFIX = "pv_share_now"
 PV_SHARE_TRANSLATION_KEY = "pv_share_now"
 
 # The PV delta integrals (ADR-027 decision 3, TASK-0045c): a per-input one,
 # ``sensor.effy_<slug>_delta_integral_today``, and the combined *today* and *total* ones.
 # The combined IDs read ``deltasum`` so that no slug can make a per-input ID equal to one
-# of them (ADR-027 Amendment 2026-11-10).
+# of them (ADR-027 Amendment 2026-11-10). They are published (TASK-0045f) as PV energy sensors;
+# the two combined entity IDs are symbols of ``effy_exports.py``, like every fixed ID.
 PV_DELTA_INTEGRAL_TODAY_SUFFIX = "_delta_integral_today"
-PV_DELTA_TODAY_ENTITY_ID = "sensor.effy_pv_deltasum_integral_today"
-PV_DELTA_TOTAL_ENTITY_ID = "sensor.effy_pv_deltasum_integral_total"
+PV_DELTA_TODAY_ENTITY_ID = EFFY_PV_ENERGY_TODAY_ENTITY_ID
+PV_DELTA_TOTAL_ENTITY_ID = EFFY_PV_ENERGY_TOTAL_ENTITY_ID
 # The unique IDs (``<entry_id>_…``) follow the entity IDs, ``deltasum`` included: a per-input
 # unique ID ``<entry_id>_<slug>_delta_integral_today`` of a source named ``pv`` would otherwise
 # be the combined one's. The translation keys name the three kinds of sensor (TASK-0045d).
@@ -130,3 +140,11 @@ PV_DELTA_TOTAL_TRANSLATION_KEY = "pv_delta_integral_total"
 
 # The published contract (schema version, aggregations, entity IDs, keys) lives in
 # effy_exports.py, a standalone file other projects copy (ADR-021 Amendment 2026-10-23).
+
+# The unique ID suffix and the translation key of the four efficiency sensors (ADR-023). They
+# were the published ``series`` values until ADR-029 renamed these (``charge`` ...); a unique ID
+# must not change with that, so they are spelled out here.
+CHARGE_EFFICIENCY_KEY = "charge_efficiency"
+DISCHARGE_EFFICIENCY_KEY = "discharge_efficiency"
+BATTERY_EFFICIENCY_KEY = "battery_efficiency"
+ROUNDTRIP_EFFICIENCY_KEY = "roundtrip_efficiency"
