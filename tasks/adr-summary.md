@@ -207,7 +207,7 @@ amendment is in force: four counter pickers, no update listener;
   removing a sensor removes exactly its entity, never an input's. Published with
   `role` `other`, `direction` and `function` `unknown` (ADR-021 amendment).
 
-- **ADR-027 (Accepted 2026-11-07, decision 9 decided 2026-11-09: Q27 = A; being
+- **ADR-027 (Accepted 2026-11-07, decision 9 decided 2026-11-09: Q27 = A;
   implemented, CAP-13, TASK-0045a to TASK-0045g and TASK-0046, Gate 2 approved
   2026-11-09):** the PV combined series (the effective values of all PV inputs
   added up per slot, written like any effective series, sensor "Effective PV Sum
@@ -215,16 +215,26 @@ amendment is in force: four counter pickers, no update listener;
   combined, today and total; Home Assistant compiles their statistics from live
   states). Each run computes the PV delta from the stored values
   (`_unchanged_slots` returns them) and books it after the write succeeded, at
-  write time; a period's delta is the `change` of the statistic. Effy writes
-  `has_sum` rows once, the delta derivation, after a full history recalculation.
-  A formula signature of six options in the entry's data triggers that
-  recalculation at setup (every existing entry once after the upgrade).
-  Published additively: `pv_sum`, `pv_delta_integral`,
-  `pv_delta_integral_today`, `pv_delta_integral_total` (role `pv`, direction
-  `input`). Decision 9 (Q27 = A): when the PV inputs change, the combined
-  integrals are derived again as the addition of the configured inputs.
-  Amendment 2026-11-10 (human): the combined integrals' entity IDs read
-  `deltasum` (`sensor.effy_pv_deltasum_integral_today` / `_total`), the
+  write time; a period's delta is the `change` of the statistic, one slot late
+  against the physical slot, and a correction of earlier days lands in today
+  (which can go below 0). Effy writes `has_sum` rows once, the delta derivation,
+  after a full history recalculation. A formula signature in the entry's data
+  (nine keys: the PV inputs, the four counters, the EPS sensor, the additional
+  sensors, the household import and export) triggers that recalculation at setup
+  (every existing entry once after the upgrade); an option outside it starts
+  nothing. Published in the typed contract of ADR-029 (TASK-0045f): the PV sum
+  `effective`/`power`/`combined`/`slot`, the energy sensors `effective`/`energy`
+  with scope `source` (today) and `combined` (today, total), role `pv`,
+  direction `input`, function `pv`. Decision 9 (Q27 = A): when the PV inputs
+  change, the combined integrals are derived again as the addition of the
+  configured inputs. **Known limit (TASK-0045e, accepted for CAP-13 at
+  TASK-0045g, open for the human):** that rewrite adds the per-input *changes*,
+  so the first row of the history only fixes the start and the oldest slot's
+  energy is missing from the combined statistics and the combined total
+  afterwards. Acceptance: `tests/test_pv_delta_capability.py` (TASK-0045g) runs
+  the real setup, coordinator, history and sensors on one hand-calculated
+  scenario. Amendment 2026-11-10 (human): the combined integrals' entity IDs
+  read `deltasum` (`sensor.effy_pv_deltasum_integral_today` / `_total`), the
   per-input ones stay `sensor.effy_<slug>_delta_integral_today`, so no slug can
   collide; the unique IDs follow (`<entry_id>_pv_deltasum_integral_…`, a Lead
   Agent consequence awaiting confirmation); names and published `series` values

@@ -1,6 +1,7 @@
 # Task: CAP-13 acceptance test and README
 
-- **Status:** todo
+- **Status:** done (2026-11-16; reviewed inline by the Lead Agent, human
+  confirmation open)
 - **Capability:** CAP-13
 - **Related ADRs:** [ADR-027, ADR-019, ADR-021, ADR-024]
 - **Dependencies:** \[TASK-0045a-pv-combined-series, TASK-0045b-pv-delta-values,
@@ -79,7 +80,22 @@ and the README describes the sensors and what to expect from them.
 - The tests and the harness of TASK-0039 to TASK-0044
   (`tests/test_eps_capability.py` is the model for this module),
   `tests/test_history_recent_equivalence.py`.
-- Everything the other CAP-13 tasks deliver (→ task: TASK-0045a to TASK-0045f).
+- Everything the other CAP-13 tasks deliver (→ task: TASK-0045a to TASK-0045f),
+  as the acceptance module consumes it (verified against the code 2026-11-16):
+  `history.async_derive_pv_delta_integrals`, `history.async_read_delta_bases`,
+  `history.async_rederive_pv_combined`; `delta_integrals.DeltaIntegrals`; the
+  coordinator's `async_run_formula_recalculation`,
+  `async_recalculate_history_and_report`,
+  `_async_recalculate_recent_and_report`, `pv_delta_enabled`,
+  `published_descriptors`; `inputs.formula_signature` and
+  `const.CONF_FORMULA_SIGNATURE`; the sensor platform's `async_setup_entry`,
+  `pv_sum_unique_id`, `pv_share_unique_id` and the sensors it creates
+  (`sensor.effy_effective_pv_sum_now`, `sensor.effy_pv_share_now`,
+  `sensor.effy_<slug>_delta_integral_today`,
+  `sensor.effy_pv_deltasum_integral_today` and `_total`);
+  `const.PV_SUM_TRANSLATION_KEY`, `PV_SHARE_TRANSLATION_KEY`,
+  `PV_DELTA_INPUT_TRANSLATION_KEY`, `PV_DELTA_TODAY_TRANSLATION_KEY`,
+  `PV_DELTA_TOTAL_TRANSLATION_KEY`; `__init__.async_setup_entry`.
 - From TASK-0045f-pv-published-entries (done 2026-11-15), exact: the contract
   `custom_components/effy/effy_exports.py` (`EFFY_PUBLISHED_SCHEMA_VERSION` = 2,
   `EFFY_KEY_*` including `EFFY_KEY_SENSORS`, `EFFY_ATTR_SOURCES`,
@@ -101,4 +117,44 @@ and the README describes the sensors and what to expect from them.
 <!-- Filled by the Worker AFTER implementation. Be exact — downstream tasks
      depend on this information. -->
 
-- _(open)_
+- `tests/test_pv_delta_capability.py` (new, 46 test functions, 60 tests with the
+  parametrized ones). Loader and rig: `_load_integration()` (the real
+  `delta_integrals.py`, `coordinator.py` and `__init__.py`, registered in the
+  private package of `test_history_recent_equivalence` for the time of the load,
+  Home Assistant stubbed), `_Rig`, `_Entry`, `_ConfigEntries` (runs the real
+  sensor platform), `_Clock`, `_Compile` (a model of Home Assistant's compile of
+  a `total` sensor, only for the `change` of an hour), `_world()`,
+  `_snapshot()`. Test classes: `TestThePvCombinedSeries`, `TestTheDerivation`,
+  `TestTheNextSlotBooksItsEnergy`, `TestTheFormulaRecalculationRunsByItself`,
+  `TestAButtonRunAfterACorrection`, `TestTheChangeOfAnHourIsWhatWasBookedInIt`,
+  `TestAnEntryWithoutAPvInputHasNoneOfTheSensors`, `TestThePublishedList` (an
+  exact literal list of the 7 groups, and every row of the ADR-029 table the
+  entry configures, parsed from the ADR file), `TestTheTranslations`,
+  `TestTheReadme`.
+- `tests/test_history_recent_equivalence.py` →
+  `_load_history_modules(mean_type)` and `_MODULES` added; `_load_history`
+  delegates to it and returns what it returned before (a behaviour-neutral
+  refactor so that the loaded modules stay reachable).
+- `README.md` → new section "PV sum now and PV energy" (sensors and IDs, the
+  delta and the formula, what the derivation writes and when, the formula
+  signature and the recalculation of every existing entry after the upgrade,
+  `change` and the one-slot shift, today below 0 after a correction, the known
+  limit of the combined rewrite) and "The published entries" (the ADR-029 table,
+  every entry, the household ones included); the ADR-029 row of the ADR table
+  now carries its title.
+- `GLOSSARY.md` → "PV combined series" no longer says it is published as
+  `pv_sum`.
+- `tasks/adr-summary.md` → the ADR-027 entry says implemented, with decision 9
+  and the known limit.
+- Translations en and de: nothing to add, every text of the capability exists in
+  both (checked by `TestTheTranslations`). No code under `custom_components/`
+  changed.
+- External dependencies added: none; `tasks/DEPENDENCIES.md` unchanged.
+- **Found while writing the acceptance test (open for the human):** after the
+  one-time rewrite of the combined integrals (Q27 = A, a change of the PV
+  inputs) the combined statistics lack the oldest slot of the history, and the
+  combined *total* sensor is that slot's energy short (0.075 kWh in the test
+  scenario). It is the limit TASK-0045e already flagged ("the first row of every
+  per-input series only fixes its starting point"). The test pins it
+  (`test_a_new_pv_input_is_derived_and_…`) and the README states it. Fixing it
+  is a patch task (Phase 6, Scenario C) and the human's call.

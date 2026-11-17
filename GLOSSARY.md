@@ -182,8 +182,8 @@ of an hour is the change of its slots added up.
 
 **PV combined series**: The effective values of all PV inputs added up per slot,
 in W. Effy writes it like any effective series (the sensor "Effective PV Sum
-now", published as `pv_sum`). The EPS sensor and the BMS inputs are not in it.
-_Avoid_: PV total
+now", published with `series` `effective`, `scope` `combined`, `span` `slot`).
+The EPS sensor and the BMS inputs are not in it. _Avoid_: PV total
 
 **PV share**: For a slot, 100 times the effective PV values plus the effective
 EPS input, divided by all effective inputs; the part of the outputs that PV and

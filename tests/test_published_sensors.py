@@ -807,7 +807,9 @@ def _sensor_classes() -> dict[str, tuple[Any, str]]:
     import ast
     from pathlib import Path
 
-    source = Path(_sensor.__file__).read_text(encoding="utf-8")
+    sensor_file = _sensor.__file__
+    assert sensor_file is not None
+    source = Path(sensor_file).read_text(encoding="utf-8")
     nodes = {n.name: n for n in ast.parse(source).body if isinstance(n, ast.ClassDef)}
 
     def text(node: Any, method: str) -> str:

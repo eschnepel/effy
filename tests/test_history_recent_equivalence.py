@@ -73,6 +73,14 @@ def _load_history(
 
     ``mean_type`` is the ``StatisticMeanType`` a newer HA core ships (TASK-0028);
     left out, the older-core stub applies and history.py takes its ImportError branch."""
+    loaded = _load_history_modules(mean_type)
+    return loaded["history"], loaded["const"], loaded["effy_exports"]
+
+
+def _load_history_modules(mean_type: Any = None) -> dict[str, ModuleType]:
+    """Every module ``_load_history`` loads, by file name, so that a test which needs more of
+    the real package (TASK-0045g loads the coordinator and ``__init__`` over the same history)
+    can register them under the private package name again for the time of its own load."""
     stub_names = [
         "homeassistant",
         "homeassistant.core",
@@ -158,10 +166,11 @@ def _load_history(
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = previous
-    return loaded["history"], loaded["const"], loaded["effy_exports"]
+    return loaded
 
 
-_history, _const, _exports = _load_history()
+_MODULES = _load_history_modules()
+_history, _const, _exports = _MODULES["history"], _MODULES["const"], _MODULES["effy_exports"]
 
 
 # ---------------------------------------------------------------------------

@@ -231,6 +231,83 @@ output is 0 %, not a gap.
 - The statistics of the series are written like those of an effective sensor,
   and a history recalculation fills the history of a new entry.
 
+### PV sum now and PV energy
+
+With at least one PV input in the configuration (see "Configuration") Effy
+creates the PV sum and the PV energy sensors. An entry without a PV input has
+none of them, and the ones an earlier configuration created are removed from the
+entity registry (their statistics stay).
+
+| Sensor | Entity ID | What it is |
+| -- | -- | -- |
+| Effective PV Sum now | `sensor.effy_effective_pv_sum_now` | The effective values of all PV inputs added up per slot, in W (a kW input is converted). The EPS sensor and the BMS inputs are not in it. Written like an effective series; a history recalculation fills its history |
+| PV energy today, per PV input | `sensor.effy_<slug>_delta_integral_today` | The energy of one PV input since local midnight, in Wh or kWh like the input's effective sensor |
+| PV energy today, all PV | `sensor.effy_pv_deltasum_integral_today` | All PV inputs added up, in kWh, since local midnight |
+| PV energy total, all PV | `sensor.effy_pv_deltasum_integral_total` | All PV inputs added up, in kWh, since the running total began |
+
+The energy sensors are `total` sensors with device class energy, so the Energy
+dashboard and the statistics cards can use them. The two *today* kinds start at
+0 at local midnight and carry a `last_reset` for it; the *total* kind never
+resets.
+
+An example. A PV input of 600 W and a second of 0.4 kW (400 W) with the system's
+outputs at 900 W: the loss is 100 W and each input takes half of it. The
+effective values are 550 W and 0.35 kW, the PV sum is 900 W, and in a full hour
+the energy sensors gain 550 Wh, 0.35 kWh and 0.9 kWh. With the outputs at 700 W
+the loss is 300 W, the effective values are 450 W and 0.25 kW, the sum 700 W.
+
+**What the energy sensors count.** Not the energy of the slot clock, but what
+each recalculation *changed*. Every run (the job after each 5-minute slot, the
+history button, the full recalculation) compares the effective values it writes
+with the ones that are stored, adds up `(new − stored) × 5/60 h` over the rows
+it wrote (the new value alone where there was no row), and books that into the
+sensors once the write has succeeded. Two consequences:
+
+- **A new slot books its own energy** shortly after the slot closed, when the
+  recorder has compiled it. The statistics of these sensors are compiled by Home
+  Assistant from their states, so they are one slot late against the physical
+  slot, and the *change* of an hour (the statistic type `change`) is what was
+  booked while that hour lasted: the hour 03:00 holds the slots 02:55 to 03:50,
+  not 03:00 to 03:55.
+- **A correction lands in today.** If you correct the history of an input and
+  press the history button, or the formula changes the effective values of
+  earlier days, the difference is booked at that moment, not into the days it
+  belongs to. The *today* sensors can therefore go below 0 after a correction
+  (an input whose 1550 Wh of the last three hours turned out to be 0 changes a
+  *today* of 1000 Wh to −550 Wh), and the *total* shows the corrected energy
+  again.
+
+The combined sensors are always the per-input sensors added up: after a booking,
+*today, all PV* is the sum of the per-input *today* sensors in kWh.
+
+**The history.** Effy writes the statistics of these sensors once, the *delta
+derivation*, after a full history recalculation (the entry's setup starts it by
+itself when it is needed, see below): for a sensor without statistics it writes
+the running total of all rows of the history and, per row, the energy since
+local midnight of the row's day, from the stored rows of the effective series.
+From then on Home Assistant compiles them and Effy writes none. A sensor stays
+unavailable until its base (the last derived row) is written.
+
+**When Effy recalculates by itself.** The entry keeps a *formula signature* in
+its data: the PV inputs, the grid import, discharge, charge and grid export
+counters, the EPS sensor, the additional sensors and the household import and
+export, the sensors that decide what the history is. At setup Effy compares it
+with the one the entry stored. If they differ, or none is stored (every existing
+entry once, after the update that brought these sensors), Effy runs the full
+history recalculation and the derivation in the background and stores the new
+signature last. Changing anything else (the history days, the valley hysteresis,
+the SoC and capacity sensors, the debug export) starts nothing.
+
+When the PV inputs change, the two combined sensors are written again as the
+addition of the configured inputs' per-input statistics, and the per-input ones
+of the inputs that stay are not touched. **A known limit of that rewrite:** the
+first row of every per-input series only fixes where the addition starts, so the
+energy of the oldest slot of the history (5 minutes of PV) is missing from the
+combined statistics afterwards: the combined *total* is that much short from its
+first row on, and the combined *today* is short for the rows of the oldest day
+only. The live sensors continue from the last row, so the *total* sensor is
+short by the same amount.
+
 ### Household consumption now
 
 With a household import sensor configured (see "Configuration"), Effy also
@@ -497,6 +574,46 @@ searching the groups. A source with no Effy sensor has no key.
   system, the EPS sensor, a household import and export, and entity IDs of 40 to
   50 characters) reaches that at roughly 30 configured sources; shorter entity
   IDs fit more. Every source is listed twice, in its group and in `sources`.
+
+### The published entries
+
+Every kind of Effy sensor and the attributes its group carries (ADR-029). A row
+is published for each sensor of that kind that exists: the table lists the
+groups a fully configured system has, and a configuration with fewer sensors has
+fewer groups. Where a cell has several values (`effective / derived / smoothed`)
+each is a group of its own. Which of them a sensor has depends on its kind: an
+energy counter has the `derived` series (the power derived from it), a power
+sensor the `smoothed` one, and an input also the `effective` one, the value
+after the loss is distributed. An output has no `effective` series.
+
+| Entry | series | quantity | scope | span | role | direction | function |
+| -- | -- | -- | -- | -- | -- | -- | -- |
+| PV input | effective / derived / smoothed | power | source | slot | pv | input | pv |
+| Grid import counter | effective / derived / smoothed | power | source | slot | bms | input | grid_import |
+| Discharge counter | effective / derived / smoothed | power | source | slot | bms | input | discharge |
+| Charge counter | derived / smoothed | power | source | slot | bms | output | charge |
+| Grid export counter | derived / smoothed | power | source | slot | bms | output | grid_export |
+| EPS sensor, input half | effective | power | source | slot | eps | input | eps |
+| EPS sensor, signed | smoothed | power | source | slot | eps | both | eps |
+| Additional sensor | derived / smoothed | power | source | slot | other | unknown | unknown |
+| Standby power | standby | power | system | slot | bms | output | standby |
+| Charge efficiency | charge | efficiency | system | slot | bms | output | efficiency |
+| Discharge efficiency | discharge | efficiency | system | slot | bms | output | efficiency |
+| Battery efficiency | battery | efficiency | system | slot | bms | output | efficiency |
+| Roundtrip efficiency | roundtrip | efficiency | system | slot | bms | output | efficiency |
+| Effective PV Sum now | effective | power | combined | slot | pv | input | pv |
+| PV energy today, per PV input | effective | energy | source | today | pv | input | pv |
+| PV energy today, all PV | effective | energy | combined | today | pv | input | pv |
+| PV energy total, all PV | effective | energy | combined | total | pv | input | pv |
+| PV share now | pv | share | system | slot | pv | input | share |
+| Household import meter | derived / smoothed | power | source | slot | household | input (`both` if signed) | household_import |
+| Household export meter | derived / smoothed | power | source | slot | household | output | household_export |
+| Household consumption now | consumption | power | system | slot | household | output | consumption |
+| Household consumption today | consumption | energy | system | today | household | output | consumption |
+| Household consumption total | consumption | energy | system | total | household | output | consumption |
+
+The three PV energy rows and the PV sum are the sensors of "PV sum now and PV
+energy" above; their entity IDs are fixed symbols of `effy_exports.py`.
 
 ### Charge and discharge efficiency
 
@@ -990,4 +1107,4 @@ test suite runs against.
 | [026](adr/026-eps-port-sensor.md) | The EPS/UPS port as a signed power sensor |
 | [027](adr/027-effective-pv-sum-sensors.md) | The Effective PV Sum and the PV delta integrals |
 | [028](adr/028-additional-sensors.md) | Additional sensors with derived power and smoothed series |
-| [029](adr/029-household-consumption-and-contract-types.md) | Household consumption and the typed published contract (the household meter inputs, the consumption power and energy sensors are implemented; the published contract follows) |
+| [029](adr/029-household-consumption-and-contract-types.md) | Household consumption and the typed published contract |

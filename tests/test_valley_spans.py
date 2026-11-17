@@ -135,7 +135,7 @@ def span_sums(first: int, last: int, socs: Sequence[float], cap: float = CAP) ->
 
 class TestThePureModule:
     def test_calculation_py_imports_no_home_assistant_module(self) -> None:
-        source = _calc_path.read_text()
+        source = _calc_path.read_text(encoding="utf-8")
         assert "homeassistant" not in source
 
 
